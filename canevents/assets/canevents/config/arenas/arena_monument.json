@@ -1,0 +1,7 @@
+{
+  "code": "arena_monument",
+  "schematicPath": "arena_monument",
+  "placeTypes": ["ARENA1X1"],
+  "spawnOffsets": [],
+  "description": "Monument arena (6x15x6). Edit to set spawn points."
+}

@@ -1,0 +1,211 @@
+{
+	code: "arenabot",
+	class: "ArenaBot",
+	hitboxSize: { x: 0.6, y: 1.85 },
+	deadHitboxSize: { x: 0.6, y: 0.6 },
+	eyeHeight: 1.7,
+	canClimb: false,
+	habitat: "land",
+	drops: [],
+	attributes: {
+		// Bots are event props, not wildlife: nothing about them should be harvestable or farmable.
+		isMechanical: false,
+		// The extraskinnable behavior randomises these per bot on the server the first time it
+		// initializes (AppliedSkinParts empty -> CharacterSystem.randomizeSkin), so a lobby of bots
+		// looks like a lobby of people rather than twelve copies of one body.
+		skinnableParts: [
+			{
+				code: "baseskin",
+				type: "texture",
+				variants: [
+					{ code: "skin1", texture: "game:entity/humanoid/seraphskinparts/body/skin1" },
+					{ code: "skin2", texture: "game:entity/humanoid/seraphskinparts/body/skin2" },
+					{ code: "skin3", texture: "game:entity/humanoid/seraphskinparts/body/skin3" },
+					{ code: "skin4", texture: "game:entity/humanoid/seraphskinparts/body/skin4" },
+					{ code: "skin5", texture: "game:entity/humanoid/seraphskinparts/body/skin5" },
+					{ code: "skin6", texture: "game:entity/humanoid/seraphskinparts/body/skin6" },
+					{ code: "skin7", texture: "game:entity/humanoid/seraphskinparts/body/skin7" },
+					{ code: "skin8", texture: "game:entity/humanoid/seraphskinparts/body/skin8" },
+					{ code: "skin9", texture: "game:entity/humanoid/seraphskinparts/body/skin9" },
+					{ code: "skin10", texture: "game:entity/humanoid/seraphskinparts/body/skin10" }
+				]
+			},
+			{
+				code: "eyecolor",
+				type: "texture",
+				textureRenderTo: { x: 109, y: 0 },
+				variants: [
+					{ code: "amethyst", texture: "game:entity/humanoid/seraphskinparts/eyes/amethyst" },
+					{ code: "aquamarine", texture: "game:entity/humanoid/seraphskinparts/eyes/aquamarine" },
+					{ code: "azure", texture: "game:entity/humanoid/seraphskinparts/eyes/azure" },
+					{ code: "acid-green", texture: "game:entity/humanoid/seraphskinparts/eyes/acid-green" },
+					{ code: "bismuth", texture: "game:entity/humanoid/seraphskinparts/eyes/bismuth" }
+				]
+			},
+			{
+				// Shape parts take a template with {code} substituted per variant, not a path per
+				// variant - that form is only for facialexpression below.
+				code: "hairbase",
+				type: "shape",
+				shapeTemplate: { base: "game:entity/humanoid/seraphskinparts/hair-base/{code}" },
+				variants: [
+					{ code: "bald" },
+					{ code: "balding" },
+					{ code: "afro" },
+					{ code: "bowlcut" },
+					{ code: "combed" },
+					{ code: "layered" }
+				]
+			},
+			{
+				code: "facialexpression",
+				type: "shape",
+				variants: [
+					{ code: "adequate", shape: { base: "game:entity/humanoid/seraphskinparts/face/adequate" } },
+					{ code: "angry", shape: { base: "game:entity/humanoid/seraphskinparts/face/angry" } },
+					{ code: "determined", shape: { base: "game:entity/humanoid/seraphskinparts/face/determined" } },
+					{ code: "caring", shape: { base: "game:entity/humanoid/seraphskinparts/face/caring" } }
+				]
+			}
+		]
+	},
+	client: {
+		renderer: "Shape",
+		pitchStep: false,
+		// The player model from the base game, so a bot reads as "another tribute" at a glance.
+		// seraph-faceless, not plain seraph: this is the bare base the skin parts are meant to be
+		// layered onto (no face, no hair of its own). Plain seraph already carries a Hair element,
+		// so adding a hairbase part on top of it produced a second head lying at the bot's feet.
+		shape: { base: "game:entity/humanoid/seraph-faceless" },
+		// Keyed "seraph" because that is the texture name every face in the shape references
+		// (#seraph). An unkeyed base texture leaves them unresolved, which renders as flat blue.
+		textures: {
+			"seraph": { base: "game:entity/humanoid/seraph-naked-hairless" }
+		},
+		behaviors: [
+			{ code: "repulseagents" },
+			{ code: "controlledphysics", stepHeight: 1.1 },
+			{ code: "interpolateposition" },
+			{ code: "nametag", selfnameonly: false },
+			{ code: "extraskinnable" },
+			{ code: "seraphinventory" }
+		],
+		animations: [
+			{
+				code: "walk",
+				animation: "walk",
+				blendMode: "Average",
+				mulWithWalkSpeed: true,
+				animationSpeed: 1.1,
+				triggeredBy: { onControls: ["Move"], matchExact: true }
+			},
+			{
+				code: "sprint",
+				animation: "sprint",
+				blendMode: "Average",
+				mulWithWalkSpeed: true,
+				animationSpeed: 0.6,
+				triggeredBy: { onControls: ["Move", "SprintMode"], matchExact: true }
+			},
+			{
+				code: "idle",
+				animation: "idle1",
+				blendMode: "Average",
+				triggeredBy: { onControls: ["Idle"], matchExact: true, defaultAnim: true }
+			},
+			{ code: "hit", animation: "hit", animationSpeed: 1.4, weight: 10, blendMode: "AddAverage" },
+			{ code: "swordhit", animation: "swordhit", animationSpeed: 1.2, weight: 10, blendMode: "AddAverage" },
+			{ code: "hurt", animation: "hurt", animationSpeed: 1.4, weight: 10, blendMode: "AddAverage" },
+			// Triggered by the Dead control, the same way every vanilla creature does it. With an
+			// onAnimationEnd trigger it never fired at all, so killed bots stayed upright and read
+			// as alive-but-invincible.
+			{ code: "die", animation: "die", animationSpeed: 1.25, weight: 10, blendMode: "Average", triggeredBy: { onControls: ["Dead"] } }
+		]
+	},
+	server: {
+		behaviors: [
+			{ code: "repulseagents" },
+			{ code: "controlledphysics", stepHeight: 1.1 },
+			{ code: "nametag", selfnameonly: false },
+			{ code: "extraskinnable" },
+			{ code: "seraphinventory" },
+			{ code: "health", currenthealth: 15, maxhealth: 15 },
+			{ code: "breathe" },
+			// No "deaddecay" on purpose: its decay effect spawns EntityCubeParticles, which ask the
+			// client's texture atlas for this entity's colour - a bot's shape is assembled from skin
+			// parts and has no atlas entry, so the client crashes with a NullReferenceException in
+			// TextureAtlasManager.GetRandomColor. Corpses despawn on their own anyway
+			// (EntityAgent.ShouldDespawn == !Alive && AllowDespawn, and AllowDespawn defaults true).
+			// Picks up what falls near it, so a bot that outlives a fight can arm itself from the drop.
+			{ code: "collectitems" },
+			{
+				code: "taskai",
+				aitasks: [
+					{
+						// Both combat tasks are ours, not vanilla's: they add the "is that entity an
+						// opponent in MY match" filter, without which a bot would chase any passer-by.
+						code: "caneventsbotmelee",
+						// Matched against the entity code PATH only - the engine never sees the
+						// domain here, so "canevents:arenabot" would never match and bots would
+						// only ever attack players.
+						entityCodes: ["player", "arenabot"],
+						priority: 2,
+						damage: 2,
+						damageTier: 0,
+						weaponDamageMultiplier: 1,
+						// The vanilla defaults (minDist 2, minVerDist 1, arc 20 deg) assume a
+						// creature that lines up on its prey and then holds still. Two bots shoving
+						// each other apart (repulseagents) never settle, so the required yaw is
+						// never reached and they stand nose to nose doing nothing. A wider contact
+						// box and a much wider firing arc fix that.
+						minDist: 3,
+						minVerDist: 1.5,
+						attackAngleRangeDeg: 60,
+						attackRange: 4,
+						mincooldown: 500,
+						maxcooldown: 900,
+						damagePlayerAtMs: 400,
+						attackDurationMs: 900,
+						animation: "hit",
+						animationSpeed: 1.4
+					},
+					{
+						code: "caneventsbotseek",
+						// Matched against the entity code PATH only - the engine never sees the
+						// domain here, so "canevents:arenabot" would never match and bots would
+						// only ever attack players.
+						entityCodes: ["player", "arenabot"],
+						priority: 1.5,
+						mincooldown: 200,
+						maxcooldown: 400,
+						movespeed: 0.025,
+						seekingRange: 30,
+						animation: "sprint",
+						animationSpeed: 1
+					},
+					{
+						// Keeps a bot with nobody to fight moving instead of standing on its pedestal.
+						code: "wander",
+						priority: 1,
+						movespeed: 0.012,
+						preferredLightLevel: 15,
+						animation: "walk",
+						animationSpeed: 1
+					},
+					{
+						code: "idle",
+						priority: 0.5,
+						priorityForCancel: 1.2,
+						minduration: 2000,
+						maxduration: 5000,
+						animation: "idle1"
+					}
+				]
+			}
+		]
+	},
+	sounds: {
+		hurt: "game:player/hurt",
+		death: "game:player/death"
+	}
+}

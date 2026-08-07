@@ -1,0 +1,10 @@
+{
+  "code": "arena_1x1_example",
+  "schematicPath": "schematics/arena_1x1_example",
+  "placeTypes": ["ARENA1X1"],
+  "spawnOffsets": [
+    { "x": -5, "y": 1, "z": 0 },
+    { "x": 5, "y": 1, "z": 0 }
+  ],
+  "description": "Example 1v1 arena template. Replace schematic with your own exported via /we export."
+}

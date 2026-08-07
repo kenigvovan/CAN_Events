@@ -1,0 +1,44 @@
+{
+    "code": "shrinking_spleef",
+    "rated": false,
+    "EventType": "Spleef",
+    "EventPlaceTypes": [ "SPLEEF" ],
+    "reward": {
+        "winnerItems": [
+            { "code": "game:gear-rusty", "quantity": 3 }
+        ]
+    },
+    "behaviors": [
+        {
+            "name": "FullPartyRequired",
+            "attributes": {
+                "maxPartiesCount": 8,
+                "minPartiesCount": 2,
+                "maxPartySize": 1,
+                "minPartySize": 1
+            },
+            "RegisterGameTickListener": false
+        },
+        {
+            "name": "SavePlayerAttributes",
+            "attributes": {},
+            "RegisterGameTickListener": false
+        },
+        {
+            "name": "TPThereAndBack",
+            "attributes": {},
+            "RegisterGameTickListener": false
+        },
+        {
+            "name": "ShrinkingSpleef",
+            "attributes": {
+                "platformWidth": 20,
+                "platformDepth": 20,
+                "blockCode": "game:stickslayer-wooden-ew-free",
+                "stepMeltDelay": 1.5,
+                "prefightSeconds": 3.0
+            },
+            "RegisterGameTickListener": true
+        }
+    ]
+}

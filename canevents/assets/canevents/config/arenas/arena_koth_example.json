@@ -1,0 +1,7 @@
+{
+  "code": "arena_koth_example",
+  "schematicPath": "arena_keep2",
+  "placeTypes": ["KOTH"],
+  "spawnOffsets": [],
+  "description": "Example KOTH arena. NOT USABLE until spawnOffsets are filled in — with none, no team gets a spawn. To set them up: /canep tpledit arena_koth_example, walk to each team corner and run /canep tpladdsp (one per team, 2-4), then /canep tplsave. Finally stand on the keep's center and run /canep kothhill 5 5, or use the KOTH tab in the admin panel. Add one spawn point per team, not per player: with as many spawns as players they are handed out per player and teams get split across corners."
+}

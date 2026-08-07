@@ -1,0 +1,103 @@
+{
+    "code": "hungergames_bots",
+    "rated": false,
+    "Enabled": true,
+    "EventType": "HungerGames",
+    "EventPlaceTypes": [ "HUNGERGAMES" ],
+    "reward": {
+        "placementRewards": [
+            { "items": [ { "code": "game:gear-rusty", "quantity": 1 } ] }
+        ]
+    },
+    "behaviors": [
+        {
+            "name": "FullPartyRequired",
+            "attributes": {
+                "maxPartiesCount": 12,
+                "minPartiesCount": 1,
+                "maxPartySize": 1,
+                "minPartySize": 1,
+                "botFillToParties": 6
+            },
+            "RegisterGameTickListener": false
+        },
+        {
+            "name": "ArenaBots",
+            "attributes": {
+                "health": 15,
+                "meleeDamage": 2,
+                "weapons": [
+                    "game:knife-generic-copper",
+                    "game:spear-generic-flint",
+                    "game:club-generic-wood"
+                ]
+            },
+            "RegisterGameTickListener": false
+        },
+        {
+            "name": "SavePlayerAttributes",
+            "attributes": {},
+            "RegisterGameTickListener": false
+        },
+        {
+            "name": "TPThereAndBack",
+            "attributes": {},
+            "RegisterGameTickListener": false
+        },
+        {
+            "name": "NoFriendlyFire",
+            "attributes": {},
+            "RegisterGameTickListener": false
+        },
+        {
+            "name": "HungerGames",
+            "attributes": {
+                "timeLimitSeconds": 300,
+                "showZoneParticles": true,
+                "gracePeriodSeconds": 10,
+                "startFreezeSeconds": 5,
+                "feastAtSeconds": 120,
+                "feastAnnounceSeconds": 15,
+                "feastTier": "cornucopia",
+                "sponsorEverySeconds": 45,
+                "sponsorTier": "rare",
+                "zonePhases": [
+                    { "endsAtSeconds": 60,  "radius": 50, "outsideDps": 0 },
+                    { "endsAtSeconds": 150, "radius": 25, "outsideDps": 2 },
+                    { "endsAtSeconds": 240, "radius": 8,  "outsideDps": 4 },
+                    { "endsAtSeconds": 300, "radius": 0,  "outsideDps": 8 }
+                ],
+                "lootContainerBlock": "game:chest-east",
+                "defaultLootTier": "common",
+                "minSlotsPerChest": 3,
+                "maxSlotsPerChest": 6,
+                "lootTables": {
+                    "common": [
+                        { "code": "game:knife-generic-copper",   "minQty": 1, "maxQty": 1, "weight": 5 },
+                        { "code": "game:bread-spelt-charred",    "minQty": 2, "maxQty": 6, "weight": 5 }
+                    ],
+                    "rare": [
+                        { "code": "game:bow-simple",             "minQty": 1, "maxQty": 1, "weight": 3 },
+                        { "code": "game:arrow-copper",           "minQty": 8, "maxQty": 20, "weight": 5 },
+                        { "code": "game:poultice-linen-horsetail", "minQty": 1, "maxQty": 2, "weight": 4 }
+                    ],
+                    "cornucopia": [
+                        { "code": "game:blade-falx-steel",       "minQty": 1, "maxQty": 1, "weight": 3 },
+                        { "code": "game:armor-body-plate-steel", "minQty": 1, "maxQty": 1, "weight": 3 },
+                        { "code": "game:gear-temporal",          "minQty": 1, "maxQty": 1, "weight": 1 }
+                    ]
+                },
+                "loadoutSets": [
+                    {
+                        "name": "Tribute",
+                        "items": [
+                            { "code": "game:knife-generic-flint", "quantity": 1 },
+                            { "code": "game:bread-spelt-charred", "quantity": 4 }
+                        ]
+                    }
+                ]
+            },
+            "RegisterGameTickListener": true
+        }
+    ]
+}

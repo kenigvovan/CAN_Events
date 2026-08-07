@@ -1,0 +1,51 @@
+{
+    "code": "ctf_test",
+    "rated": false,
+    "Enabled": true,
+    "EventType": "CaptureTheFlag",
+    "Category": "Testing",
+    "EventPlaceTypes": [ "CTF" ],
+    "reward": {},
+    "behaviors": [
+        {
+            "name": "FullPartyRequired",
+            "attributes": {
+                "maxPartiesCount": 1,
+                "minPartiesCount": 1,
+                "maxPartySize": 1,
+                "minPartySize": 1
+            },
+            "RegisterGameTickListener": false
+        },
+        {
+            "name": "SavePlayerAttributes",
+            "attributes": {},
+            "RegisterGameTickListener": false
+        },
+        {
+            "name": "TPThereAndBack",
+            "attributes": {},
+            "RegisterGameTickListener": false
+        },
+        {
+            "name": "CaptureTheFlag",
+            "attributes": {
+                "timeLimitSeconds": 600,
+                "captureLimit": 3,
+                "captureRadius": 1.5,
+                "showPostParticles": true,
+                "allowNeutralPosts": true,
+                "loadoutSets": [
+                    {
+                        "name": "Tester",
+                        "items": [
+                            { "code": "game:sword-falx-steel", "quantity": 1 },
+                            { "code": "game:bread-spelt-charred", "quantity": 4 }
+                        ]
+                    }
+                ]
+            },
+            "RegisterGameTickListener": true
+        }
+    ]
+}

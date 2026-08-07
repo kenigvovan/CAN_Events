@@ -1,0 +1,48 @@
+{
+    "code": "parkour",
+    "rated": false,
+    "EventType": "Parkour",
+    "EventPlaceTypes": [ "PARKOUR" ],
+    "reward": {
+        "winnerItems": [
+            { "code": "game:gear-rusty", "quantity": 3 }
+        ],
+        "minMatchSeconds": 0
+    },
+    "behaviors": [
+        {
+            "name": "FullPartyRequired",
+            "attributes": {
+                "maxPartiesCount": 8,
+                "minPartiesCount": 2,
+                "maxPartySize": 1,
+                "minPartySize": 1
+            },
+            "RegisterGameTickListener": false
+        },
+        {
+            "name": "SavePlayerAttributes",
+            "attributes": {},
+            "RegisterGameTickListener": false
+        },
+        {
+            "name": "TPThereAndBack",
+            "attributes": {},
+            "RegisterGameTickListener": false
+        },
+        {
+            "name": "NoFriendlyFire",
+            "attributes": {},
+            "RegisterGameTickListener": false
+        },
+        {
+            "name": "Parkour",
+            "attributes": {
+                "lives": 3,
+                "finishGraceSeconds": 90.0,
+                "prefightSeconds": 0.0
+            },
+            "RegisterGameTickListener": true
+        }
+    ]
+}

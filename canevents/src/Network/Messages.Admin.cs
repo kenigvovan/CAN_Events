@@ -1,0 +1,96 @@
+using ProtoBuf;
+
+namespace canevents.src.Network
+{
+    // Admin event enable/disable messages
+
+    /// <summary>Admin requests the full list of registered events incl. their current enabled state.</summary>
+    [ProtoContract]
+    public class RequestAdminEventListMsg { }
+
+    [ProtoContract]
+    public class AdminEventListMsg
+    {
+        [ProtoMember(1)] public AdminEventListEntryMsg[] Events;
+    }
+
+    /// <summary>Why an event can or cannot start right now. Computed against the same predicate the
+    /// real lookup uses (DefaultEventPlacesManager.TryFindEventPlace), so the panel never lies.</summary>
+    public enum EventReadiness
+    {
+        Ready = 0,
+        NoPlaceWithTags = 1,
+        AllBusy = 2,
+        AllDisabled = 3,
+        NoSpawns = 4,
+        EventDisabled = 5
+    }
+
+    [ProtoContract]
+    public class AdminEventListEntryMsg
+    {
+        [ProtoMember(1)] public string Code;
+        [ProtoMember(2)] public string Category;
+        [ProtoMember(3)] public bool Enabled;
+
+        // Place tags this event requires; a place must carry all of them.
+        [ProtoMember(4)] public string[] EventPlaceTypes;
+        [ProtoMember(5)] public int MinPlayers;
+        [ProtoMember(6)] public int MaxPlayers;
+        [ProtoMember(7)] public bool Rated;
+        // ProtoBuf serializes an enum as its underlying int, so this stays wire-compatible with
+        // the plain int it used to be.
+        [ProtoMember(8)] public EventReadiness Readiness;
+        [ProtoMember(9)] public string ReadinessDetail; // place name, or what is missing
+        // Spawn points needed for a full match, one per team.
+        [ProtoMember(10)] public int RequiredSpawns;
+    }
+
+    /// <summary>Admin toggles an event's enabled flag (persisted in ModConfig).</summary>
+    [ProtoContract]
+    public class ToggleEventEnabledMsg
+    {
+        [ProtoMember(1)] public string Code;
+    }
+
+    // Admin control + scheduler state
+
+    public enum AdminAction
+    {
+        AnnounceEvent = 0,
+        StopAll = 1,
+        ScheduleOn = 2,
+        ScheduleOff = 3,
+        ScheduleInterval = 4,
+        /// <summary>Testing: start an event right now with the caller plus IntValue bots.</summary>
+        BotMatch = 5
+    }
+
+    /// <summary>Admin panel actions. Sent as packets rather than chat commands so they answer with
+    /// PlaceOperationResultMsg and the panel can show success or failure itself.</summary>
+    [ProtoContract]
+    public class AdminActionMsg
+    {
+        [ProtoMember(1)] public AdminAction Action;
+        [ProtoMember(2)] public string EventCode;  // AnnounceEvent
+        [ProtoMember(3)] public int IntValue;      // ScheduleInterval: minutes
+    }
+
+    [ProtoContract]
+    public class RequestScheduleStateMsg { }
+
+    /// <summary>Live scheduler state for the dashboard.</summary>
+    [ProtoContract]
+    public class ScheduleStateMsg
+    {
+        [ProtoMember(1)] public bool Enabled;
+        [ProtoMember(2)] public int IntervalMinutes;
+        [ProtoMember(3)] public float SecondsUntilNext;  // -1 when disabled
+        [ProtoMember(4)] public string NextEventCode;    // next rotation entry, null if none
+        [ProtoMember(5)] public string[] RotationCodes;
+        [ProtoMember(6)] public int MinPlayersToStart;
+        [ProtoMember(7)] public int MaxConcurrentEvents;
+        [ProtoMember(8)] public int OnlinePlayers;
+        [ProtoMember(9)] public int RunningEvents;
+    }
+}

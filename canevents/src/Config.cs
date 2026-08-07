@@ -1,0 +1,65 @@
+namespace canevents.src
+{
+    public class Config
+    {
+        public bool allowFriendlyFire = false;
+        public string eventPlaceFolderName = "eventPlaces";
+        public int attemptComposeTeamsEveryNSeconds = 5;
+        public int attemptFindLocationForRunningEventEveryNSeconds = 5;
+        // Abort an assembled match that found no free arena in this many seconds, refunding stakes. 0 = never.
+        public int maxLocationSearchSeconds = 120;
+        public int maxEventDurationSeconds = 300;
+        public int countdownSeconds = 5;
+
+        // Default key for the Events Browser (GlKeys name). Only a default: a player's own rebind
+        // in clientsettings.json wins over it.
+        public string mainDialogHotkey = "K";
+
+        // Auto-schedule
+        public bool autoScheduleEnabled = true;
+        public int scheduleIntervalMinutes = 30;
+        public int minPlayersToStart = 1;
+        public string[] enabledGameModes = new string[] { "1x1", "spleef" };
+        public int maxConcurrentEvents = 3;
+
+        // Events disabled from the admin GUI: blocks new registrations and auto-scheduling, running
+        // matches continue. Runtime-toggled, persisted.
+        public string[] disabledEventCodes = new string[0];
+
+        // Player UIDs banned from all event queues (/eventadmin blacklist). Runtime-toggled, persisted.
+        public string[] queueBlacklistedUids = new string[0];
+
+        // Ranked matchmaking: Elo spread allowed within a match, starting at Base and widening per
+        // second the oldest waiting side has queued, so nobody waits forever.
+        public int rankedMmrBaseTolerance = 150;
+        public int rankedMmrToleranceWidenPerSecond = 25;
+
+        // Admin safety caps
+        public int maxPlatformFloodFillRadius = 30;
+        public int maxPlatformFloodFillBlocks = 5000;
+
+        // Rewards
+        public string rewardWinnerItemCode = "game:gear-rusty";
+        public int rewardWinnerQuantity = 1;
+        public bool rewardParticipation = false;
+        public string rewardParticipationItemCode = "";
+        public int rewardParticipationQuantity = 0;
+
+        // Anti-throw: matches shorter than this pay no reward. 0 = off; overridable per event via
+        // RewardSpec.MinMatchSeconds.
+        public int minMatchDurationSecondsForReward = 0;
+
+        // Anti-farm token bucket on the top reward: <burst> rewards, then one slot back per
+        // <refillHours>. 0 burst = disabled. Default ≈ 12 winner rewards/day.
+        public int rewardRateCapBurst = 12;
+        public double rewardRateCapRefillHours = 2.0;
+        // false = one bucket per player across all events; true = a bucket per (player, event).
+        // Overridable per event via RewardSpec.SeparateRewardCap.
+        public bool rewardRateCapPerEvent = false;
+
+        // Entry fee / wager
+        // On a void fee match (draw or under the contribution-gate), refund a disconnector's stake
+        // (true) or burn it (false). On a real result a disconnect always forfeits it (anti-dodge).
+        public bool entryFeeRefundForfeitOnVoid = true;
+    }
+}

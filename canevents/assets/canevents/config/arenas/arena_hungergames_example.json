@@ -1,0 +1,7 @@
+{
+  "code": "arena_hungergames_example",
+  "schematicPath": "arena_monument",
+  "placeTypes": ["HUNGERGAMES"],
+  "spawnOffsets": [],
+  "description": "Example Hunger Games arena. Fastest setup: create/mark the place, stand at the arena centre on the floor, and use the Admin panel's Hunger Games section (or the wizard's Spawns step) -> 'Generate full layout here'. That lays a ring of tribute spawns, centres the storm zone, and places cornucopia/rare/common loot chests in one click; tune anything afterwards. Manual alternative: set spawnOffsets (one per tribute) and per-place BehaviorData['HungerGames'] = { X, Y, Z, InitialRadius, LootSpots: [{ X, Y, Z, Tier? }, ...] } via the panel buttons (tiers: common/rare/cornucopia)."
+}

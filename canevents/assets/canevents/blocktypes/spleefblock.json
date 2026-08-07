@@ -1,0 +1,26 @@
+{
+    "code": "spleefblock",
+    "class": "Block",
+    "behaviors": [],
+    "creativeinventory": { "general": ["*"] },
+    "shape": { "base": "game:block/basic/cube" },
+    "drawtype": "Cube",
+    "blockmaterial": "Snow",
+    "resistance": 0.1,
+    "lightAbsorption": 0,
+    "sounds": {
+        "place": "game:block/snow",
+        "break": "game:block/snow",
+        "walk": "game:walk/snow"
+    },
+    "drops": [],
+    "textures": {
+        "all": { "base": "game:block/snow/snow" }
+    },
+    "sidesolid": {
+        "all": true
+    },
+    "sideopaque": {
+        "all": true
+    }
+}

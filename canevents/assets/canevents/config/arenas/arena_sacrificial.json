@@ -1,0 +1,10 @@
+{
+  "code": "arena_sacrificial",
+  "schematicPath": "arena_sacrificial",
+  "placeTypes": ["ARENA1X1"],
+  "spawnOffsets": [
+    { "x": 3, "y": 2, "z": 5 },
+    { "x": 11, "y": 2, "z": 5 }
+  ],
+  "description": "Sacrificial place arena (15x12x10) taken from vanilla worldgen."
+}

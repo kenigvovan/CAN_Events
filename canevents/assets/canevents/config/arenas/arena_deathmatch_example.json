@@ -1,0 +1,7 @@
+{
+  "code": "arena_deathmatch_example",
+  "schematicPath": "arena_keep2",
+  "placeTypes": ["DEATHMATCH"],
+  "spawnOffsets": [],
+  "description": "Example DEATHMATCH arena. Provide team spawn points via spawnOffsets (one per team)."
+}

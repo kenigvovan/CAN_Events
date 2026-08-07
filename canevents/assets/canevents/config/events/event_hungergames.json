@@ -1,0 +1,136 @@
+{
+    "code": "hungergames",
+    "rated": false,
+    "Enabled": true,
+    "EventType": "HungerGames",
+    "EventPlaceTypes": [ "HUNGERGAMES" ],
+    "reward": {
+        "placementRewards": [
+            { "items": [ { "code": "game:gear-rusty", "quantity": 3 } ] },
+            { "items": [ { "code": "game:gear-rusty", "quantity": 2 } ] },
+            { "items": [ { "code": "game:gear-rusty", "quantity": 1 } ] }
+        ]
+    },
+    "behaviors": [
+        {
+            "name": "FullPartyRequired",
+            "attributes": {
+                "maxPartiesCount": 12,
+                "minPartiesCount": 3,
+                "maxPartySize": 1,
+                "minPartySize": 1
+            },
+            "RegisterGameTickListener": false
+        },
+        {
+            "name": "SavePlayerAttributes",
+            "attributes": {},
+            "RegisterGameTickListener": false
+        },
+        {
+            "name": "TPThereAndBack",
+            "attributes": {},
+            "RegisterGameTickListener": false
+        },
+        {
+            "name": "NoFriendlyFire",
+            "attributes": {},
+            "RegisterGameTickListener": false
+        },
+        {
+            "name": "HungerGames",
+            "attributes": {
+                "timeLimitSeconds": 900,
+                "showZoneParticles": true,
+                "gracePeriodSeconds": 10,
+                "startFreezeSeconds": 5,
+                "feastAtSeconds": 540,
+                "feastAnnounceSeconds": 30,
+                "feastTier": "cornucopia",
+                "sponsorEverySeconds": 180,
+                "sponsorTier": "rare",
+                "zonePhases": [
+                    { "endsAtSeconds": 180, "radius": 50, "outsideDps": 0 },
+                    { "endsAtSeconds": 480, "radius": 25, "outsideDps": 2 },
+                    { "endsAtSeconds": 750, "radius": 8,  "outsideDps": 4 },
+                    { "endsAtSeconds": 900, "radius": 0,  "outsideDps": 8 }
+                ],
+                "lootContainerBlock": "game:chest-east",
+                "defaultLootTier": "common",
+                "minSlotsPerChest": 3,
+                "maxSlotsPerChest": 6,
+                "lootTables": {
+                    "common": [
+                        { "code": "game:knife-generic-copper",         "minQty": 1, "maxQty": 1, "weight": 6 },
+                        { "code": "game:spear-generic-copper",         "minQty": 1, "maxQty": 1, "weight": 4 },
+                        { "code": "game:club-scrap-scrap",             "minQty": 1, "maxQty": 1, "weight": 4 },
+                        { "code": "game:club-generic-wood",            "minQty": 1, "maxQty": 1, "weight": 5 },
+                        { "code": "game:axe-felling-copper",           "minQty": 1, "maxQty": 1, "weight": 3 },
+                        { "code": "game:bow-crude",                    "minQty": 1, "maxQty": 1, "weight": 3 },
+                        { "code": "game:arrow-crude",                  "minQty": 6, "maxQty": 16, "weight": 5 },
+                        { "code": "game:arrow-flint",                  "minQty": 4, "maxQty": 12, "weight": 4 },
+                        { "code": "game:sling",                        "minQty": 1, "maxQty": 1, "weight": 3 },
+                        { "code": "game:stone-granite",                "minQty": 12, "maxQty": 32, "weight": 4 },
+                        { "code": "game:bread-spelt-charred",          "minQty": 2, "maxQty": 6, "weight": 10 },
+                        { "code": "game:bread-spelt-perfect",          "minQty": 1, "maxQty": 3, "weight": 5 },
+                        { "code": "game:vegetable-carrot",             "minQty": 3, "maxQty": 8, "weight": 5 },
+                        { "code": "game:vegetable-onion",              "minQty": 3, "maxQty": 8, "weight": 5 },
+                        { "code": "game:fruit-blueberry",              "minQty": 6, "maxQty": 16, "weight": 5 },
+                        { "code": "game:bushmeat-cooked",              "minQty": 2, "maxQty": 5, "weight": 5 },
+                        { "code": "game:cheese-cheddar-1slice",        "minQty": 1, "maxQty": 3, "weight": 3 },
+                        { "code": "game:poultice-reed-horsetail",      "minQty": 1, "maxQty": 2, "weight": 4 },
+                        { "code": "game:armor-head-tailored-plain-linen", "minQty": 1, "maxQty": 1, "weight": 3 },
+                        { "code": "game:armor-body-tailored-plain-linen", "minQty": 1, "maxQty": 1, "weight": 3 },
+                        { "code": "game:armor-legs-tailored-plain-linen", "minQty": 1, "maxQty": 1, "weight": 3 }
+                    ],
+                    "rare": [
+                        { "code": "game:blade-falx-iron",              "minQty": 1, "maxQty": 1, "weight": 5 },
+                        { "code": "game:axe-battle-iron",              "minQty": 1, "maxQty": 1, "weight": 4 },
+                        { "code": "game:spear-generic-iron",           "minQty": 1, "maxQty": 1, "weight": 4 },
+                        { "code": "game:bow-simple",                   "minQty": 1, "maxQty": 1, "weight": 4 },
+                        { "code": "game:bow-long",                     "minQty": 1, "maxQty": 1, "weight": 3 },
+                        { "code": "game:arrow-copper",                 "minQty": 8, "maxQty": 20, "weight": 5 },
+                        { "code": "game:arrow-iron",                   "minQty": 8, "maxQty": 24, "weight": 6 },
+                        { "code": "game:shield-crude",                 "minQty": 1, "maxQty": 1, "weight": 3 },
+                        { "code": "game:armor-head-sewn-linen",        "minQty": 1, "maxQty": 1, "weight": 3 },
+                        { "code": "game:armor-body-sewn-linen",        "minQty": 1, "maxQty": 1, "weight": 3 },
+                        { "code": "game:armor-legs-sewn-linen",        "minQty": 1, "maxQty": 1, "weight": 3 },
+                        { "code": "game:armor-body-lamellar-tinbronze", "minQty": 1, "maxQty": 1, "weight": 2 },
+                        { "code": "game:armor-head-chain-silver",      "minQty": 1, "maxQty": 1, "weight": 2 },
+                        { "code": "game:armor-body-chain-steel",       "minQty": 1, "maxQty": 1, "weight": 2 },
+                        { "code": "game:armor-legs-scale-steel",       "minQty": 1, "maxQty": 1, "weight": 2 },
+                        { "code": "game:poultice-linen-horsetail",     "minQty": 1, "maxQty": 2, "weight": 4 },
+                        { "code": "game:redmeat-cooked",               "minQty": 2, "maxQty": 5, "weight": 4 },
+                        { "code": "game:cheese-cheddar-4slice",        "minQty": 1, "maxQty": 1, "weight": 2 },
+                        { "code": "game:bread-amaranth-perfect",       "minQty": 2, "maxQty": 4, "weight": 4 }
+                    ],
+                    "cornucopia": [
+                        { "code": "game:blade-blackguard-iron",        "minQty": 1, "maxQty": 1, "weight": 4 },
+                        { "code": "game:blade-falx-steel",             "minQty": 1, "maxQty": 1, "weight": 3 },
+                        { "code": "game:spear-generic-steel",          "minQty": 1, "maxQty": 1, "weight": 3 },
+                        { "code": "game:bow-long",                     "minQty": 1, "maxQty": 1, "weight": 3 },
+                        { "code": "game:bow-recurve",                  "minQty": 1, "maxQty": 1, "weight": 2 },
+                        { "code": "game:arrow-steel",                  "minQty": 16, "maxQty": 48, "weight": 5 },
+                        { "code": "game:shield-blackguard",            "minQty": 1, "maxQty": 1, "weight": 2 },
+                        { "code": "game:armor-head-plate-steel",       "minQty": 1, "maxQty": 1, "weight": 3 },
+                        { "code": "game:armor-body-plate-steel",       "minQty": 1, "maxQty": 1, "weight": 3 },
+                        { "code": "game:armor-legs-plate-steel",       "minQty": 1, "maxQty": 1, "weight": 3 },
+                        { "code": "game:poultice-linen-honey-sulfur",  "minQty": 2, "maxQty": 3, "weight": 4 },
+                        { "code": "game:gear-temporal",                "minQty": 1, "maxQty": 1, "weight": 1 },
+                        { "code": "game:bread-amaranth-perfect",       "minQty": 4, "maxQty": 8, "weight": 4 }
+                    ]
+                },
+                "loadoutSets": [
+                    {
+                        "name": "Tribute",
+                        "items": [
+                            { "code": "game:knife-generic-flint", "quantity": 1 },
+                            { "code": "game:bread-spelt-charred", "quantity": 4 }
+                        ]
+                    }
+                ]
+            },
+            "RegisterGameTickListener": true
+        }
+    ]
+}

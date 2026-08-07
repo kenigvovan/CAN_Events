@@ -1,0 +1,7 @@
+{
+  "code": "arena_witchhut",
+  "schematicPath": "arena_witchhut",
+  "placeTypes": ["ARENA1X1"],
+  "spawnOffsets": [],
+  "description": "Witch hut arena. Edit to set spawn points."
+}

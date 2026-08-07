@@ -1,0 +1,84 @@
+{
+    "code": "ctf",
+    "rated": false,
+    "Enabled": true,
+    "EventType": "CaptureTheFlag",
+    "EventPlaceTypes": [ "CTF" ],
+    "reward": {
+        "winnerItems": [
+            { "code": "game:gear-rusty", "quantity": 3 }
+        ]
+    },
+    "behaviors": [
+        {
+            "name": "FullPartyRequired",
+            "attributes": {
+                "maxPartiesCount": 2,
+                "minPartiesCount": 2,
+                "maxPartySize": 5,
+                "minPartySize": 1
+            },
+            "RegisterGameTickListener": false
+        },
+        {
+            "name": "SavePlayerAttributes",
+            "attributes": {},
+            "RegisterGameTickListener": false
+        },
+        {
+            "name": "TPThereAndBack",
+            "attributes": {},
+            "RegisterGameTickListener": false
+        },
+        {
+            "name": "NoFriendlyFire",
+            "attributes": {},
+            "RegisterGameTickListener": false
+        },
+        {
+            "name": "CaptureTheFlag",
+            "attributes": {
+                "timeLimitSeconds": 600,
+                "captureLimit": 3,
+                "captureRadius": 3.0,
+                "showPostParticles": true,
+                "loadoutSets": [
+                    {
+                        "name": "Runner",
+                        "items": [
+                            { "code": "game:sword-falx-steel", "quantity": 1 },
+                            { "code": "game:bread-spelt-charred", "quantity": 12 },
+                            { "code": "game:armor-head-tailored-plain-linen", "quantity": 1 },
+                            { "code": "game:armor-body-tailored-plain-linen", "quantity": 1 },
+                            { "code": "game:armor-legs-tailored-plain-linen", "quantity": 1 }
+                        ]
+                    },
+                    {
+                        "name": "Defender",
+                        "items": [
+                            { "code": "game:spear-generic-steel", "quantity": 1 },
+                            { "code": "game:shield-crude", "quantity": 1 },
+                            { "code": "game:bread-spelt-charred", "quantity": 12 },
+                            { "code": "game:armor-head-scale-steel", "quantity": 1 },
+                            { "code": "game:armor-body-chain-steel", "quantity": 1 },
+                            { "code": "game:armor-legs-scale-steel", "quantity": 1 }
+                        ]
+                    },
+                    {
+                        "name": "Archer",
+                        "items": [
+                            { "code": "game:bow-long", "quantity": 1 },
+                            { "code": "game:arrow-steel", "quantity": 64 },
+                            { "code": "game:club-scrap-scrap", "quantity": 1 },
+                            { "code": "game:bread-amaranth-perfect", "quantity": 10 },
+                            { "code": "game:armor-head-lamellar-blackbronze", "quantity": 1 },
+                            { "code": "game:armor-body-lamellar-blackbronze", "quantity": 1 },
+                            { "code": "game:armor-legs-lamellar-blackbronze", "quantity": 1 }
+                        ]
+                    }
+                ]
+            },
+            "RegisterGameTickListener": true
+        }
+    ]
+}

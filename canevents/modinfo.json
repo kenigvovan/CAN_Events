@@ -1,0 +1,16 @@
+{
+  "type": "code",
+  "modid": "canevents",
+  "name": "C&N EVENTS",
+  "authors": [
+    "KenigVovan"
+  ],
+  "side": "universal",
+  "description": "Queue-based arena PvP for Vintage Story: duels, team fights, FFA, deathmatch, king of the hill, capture the flag, juggernaut, hunger games, spleef and parkour - with safe inventory, auto-teleport, spectating, leaderboard with Elo, rewards and entry fees, scheduled tournaments and an in-game arena builder.",
+  "version": "1.0.14",
+  "dependencies": {
+    "game": "",
+    "vsimgui": "",
+    "canparty": ""
+  }
+}

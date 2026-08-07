@@ -1,0 +1,77 @@
+{
+  "code": "ctfflag",
+  "class": "Block",
+  "behaviors": [ { "name": "CtfFlag" } ],
+  "variantgroups": [
+    { "code": "team", "states": [ "1", "2", "3", "4", "5", "6" ] }
+  ],
+  "creativeinventory": { "general": [ "*" ] },
+
+  "shape": { "base": "game:block/wood/banner/ground" },
+  "drawtype": "JSON",
+  "renderpass": "OpaqueNoCull",
+
+  "blockmaterial": "Cloth",
+  "resistance": 1.5,
+  "lightAbsorption": 0,
+  "replaceable": 900,
+  "collisionbox": null,
+  "selectionbox": { "x1": 0.2, "y1": 0, "z1": 0.2, "x2": 0.8, "y2": 1.6, "z2": 0.8 },
+
+  "sounds": {
+    "place": "game:block/planks",
+    "break": "game:block/planks",
+    "walk": "game:walk/grass"
+  },
+  "drops": [],
+
+  "textures": {
+    "lead": { "base": "game:block/metal/plate/lead" },
+    "aged": { "base": "game:block/wood/bark/aged" },
+    "oak2": { "base": "game:block/wood/debarked/oak" },
+    "symboltop": { "base": "game:block/cloth/banner/hansa/ship-top" },
+    "symbolbot": { "base": "game:block/cloth/banner/hansa/ship-bottom" }
+  },
+
+  "texturesByType": {
+    "*-1": {
+      "white":   { "base": "game:block/cloth/wool/blue1" },
+      "pennon1": { "base": "game:block/cloth/wool/blue2" },
+      "pennon2": { "base": "game:block/cloth/wool/blue1" },
+      "pennon3": { "base": "game:block/cloth/wool/blue3" }
+    },
+    "*-2": {
+      "white":   { "base": "game:block/cloth/wool/red1" },
+      "pennon1": { "base": "game:block/cloth/wool/red2" },
+      "pennon2": { "base": "game:block/cloth/wool/red1" },
+      "pennon3": { "base": "game:block/cloth/wool/red3" }
+    },
+    "*-3": {
+      "white":   { "base": "game:block/cloth/wool/green1" },
+      "pennon1": { "base": "game:block/cloth/wool/green2" },
+      "pennon2": { "base": "game:block/cloth/wool/green1" },
+      "pennon3": { "base": "game:block/cloth/wool/green3" }
+    },
+    "*-4": {
+      "white":   { "base": "game:block/cloth/wool/yellow1" },
+      "pennon1": { "base": "game:block/cloth/wool/yellow2" },
+      "pennon2": { "base": "game:block/cloth/wool/yellow1" },
+      "pennon3": { "base": "game:block/cloth/wool/yellow3" }
+    },
+    "*-5": {
+      "white":   { "base": "game:block/cloth/wool/orange1" },
+      "pennon1": { "base": "game:block/cloth/wool/orange2" },
+      "pennon2": { "base": "game:block/cloth/wool/orange1" },
+      "pennon3": { "base": "game:block/cloth/wool/orange3" }
+    },
+    "*-6": {
+      "white":   { "base": "game:block/cloth/wool/purple1" },
+      "pennon1": { "base": "game:block/cloth/wool/purple2" },
+      "pennon2": { "base": "game:block/cloth/wool/purple1" },
+      "pennon3": { "base": "game:block/cloth/wool/purple3" }
+    }
+  },
+
+  "sidesolid": { "all": false },
+  "sideopaque": { "all": false }
+}

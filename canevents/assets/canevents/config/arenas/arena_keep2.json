@@ -1,0 +1,7 @@
+{
+  "code": "arena_keep2",
+  "schematicPath": "arena_keep2",
+  "placeTypes": ["ARENA1X1"],
+  "spawnOffsets": [],
+  "description": "Keep arena (19x16x25). Edit to set spawn points."
+}
