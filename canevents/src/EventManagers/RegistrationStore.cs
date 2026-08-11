@@ -62,6 +62,14 @@ namespace canevents.src.EventManagers
             }
         }
 
+        /// <summary>How many registrations are queued for one event. Exists so a caller that only
+        /// wants the number does not copy the whole store to count one list.</summary>
+        public int CountFor(CANEvent ev)
+        {
+            lock (_lock)
+                return ev != null && _byEvent.TryGetValue(ev, out var set) ? set.Count : 0;
+        }
+
         /// <summary>Snapshot of all registrations for a player. Returns empty list if none.</summary>
         public List<Registration> SnapshotForPlayer(string uid)
         {

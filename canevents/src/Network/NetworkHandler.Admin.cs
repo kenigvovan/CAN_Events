@@ -10,6 +10,7 @@ namespace canevents.src.Network
     public partial class ServerNetworkHandler
     {
         private EventScheduler Scheduler => sapi.ModLoader.GetModSystem<canevents>()?.eventScheduler;
+        private EventManagers.SignupWindows Signups => sapi.ModLoader.GetModSystem<canevents>()?.signupWindows;
 
         private void OnAdminAction(IServerPlayer player, AdminActionMsg msg)
         {
@@ -17,9 +18,29 @@ namespace canevents.src.Network
 
             switch (msg.Action)
             {
+                // Named "Announce" on the wire since the first version; it has always been a
+                // force-start, and the panel labels it as one.
                 case AdminAction.AnnounceEvent:
-                    AnnounceEvent(player, msg.EventCode);
+                    ForceStartEvent(player, msg.EventCode);
                     break;
+
+                case AdminAction.OpenSignup:
+                {
+                    var signups = Signups;
+                    if (signups == null) { Reply(player, false, "Signup windows are not available."); return; }
+                    bool opened = signups.Open(msg.EventCode, msg.IntValue, out var openMessage);
+                    Reply(player, opened, openMessage);
+                    break;
+                }
+
+                case AdminAction.CancelSignup:
+                {
+                    var signups = Signups;
+                    if (signups == null) { Reply(player, false, "Signup windows are not available."); return; }
+                    bool cancelled = signups.Cancel(msg.EventCode, out var cancelMessage);
+                    Reply(player, cancelled, cancelMessage);
+                    break;
+                }
 
                 case AdminAction.StopAll:
                 {
@@ -45,9 +66,9 @@ namespace canevents.src.Network
                 {
                     var scheduler = Scheduler;
                     if (scheduler == null) { Reply(player, false, "Scheduler not initialized."); return; }
-                    int minutes = msg.IntValue < 1 ? 1 : msg.IntValue;
-                    scheduler.SetInterval(minutes);
-                    Reply(player, true, "Schedule interval set to " + minutes + " min.");
+                    // No clamp here: SetInterval owns the bounds for every caller.
+                    scheduler.SetInterval(msg.IntValue);
+                    Reply(player, true, "Schedule interval set to " + scheduler.IntervalMinutes + " min.");
                     SendScheduleStateTo(player);
                     break;
                 }
@@ -81,7 +102,7 @@ namespace canevents.src.Network
                 : "Could not start: " + reason);
         }
 
-        private void AnnounceEvent(IServerPlayer player, string eventCode)
+        private void ForceStartEvent(IServerPlayer player, string eventCode)
         {
             var scheduler = Scheduler;
             if (scheduler == null) { Reply(player, false, "Scheduler not initialized."); return; }
@@ -115,8 +136,12 @@ namespace canevents.src.Network
             var scheduler = Scheduler;
             if (scheduler == null) return;
 
+            var open = Signups?.OpenWindows() ?? new List<(string code, float secondsLeft)>();
+
             serverChannel.SendPacket(new ScheduleStateMsg
             {
+                OpenSignupCodes = open.Select(w => w.code).ToArray(),
+                OpenSignupSeconds = open.Select(w => w.secondsLeft).ToArray(),
                 Enabled = scheduler.Enabled,
                 IntervalMinutes = scheduler.IntervalMinutes,
                 SecondsUntilNext = scheduler.SecondsUntilNext,

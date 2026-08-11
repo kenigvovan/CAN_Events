@@ -25,7 +25,7 @@ namespace canevents.src.EventManagers
         public static bool Charge(IServerPlayer player, string eventCode, IReadOnlyList<RewardItem> fee)
         {
             if (player == null || fee == null || fee.Count == 0) return false;
-            if (player.GetModdata(ModDataKey) != null) return false;
+            if (Has(player)) return false;   // one wager at a time, judged the one way
 
             // Coalesce duplicate codes so [stone:4, stone:4] is charged as stone:8 rather than validated
             // twice against the full carried count, which would mint the shortfall.
@@ -81,8 +81,17 @@ namespace canevents.src.EventManagers
             return items.Count > 0 ? items : null;
         }
 
-        /// <summary>True if the player currently holds an entry-fee escrow.</summary>
-        public static bool Has(IServerPlayer player) => player?.GetModdata(ModDataKey) != null;
+        /// <summary>
+        /// True if the player currently holds an entry-fee escrow. Judged the same way
+        /// <see cref="ReadTree"/> judges it - an empty blob is no escrow. The two used to disagree,
+        /// and a player carrying one was refused every paid queue forever: the queue asked Has()
+        /// (yes) while the refund asked Read() (nothing to give back, nothing cleared).
+        /// </summary>
+        public static bool Has(IServerPlayer player)
+        {
+            byte[] data = player?.GetModdata(ModDataKey);
+            return data != null && data.Length > 0;
+        }
 
         /// <summary>Drops the escrow record without returning anything (the stake was paid out / sunk).</summary>
         public static void Clear(IServerPlayer player) => player?.RemoveModdata(ModDataKey);

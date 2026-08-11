@@ -238,6 +238,58 @@ namespace canevents.src.commands
             return TextCommandResult.Error(reason);
         }
 
+        public TextCommandResult AdminOpenSignup(TextCommandCallingArgs args)
+        {
+            string eventCode = (string)args.Parsers[0].GetValue();
+            var mod = sapi.ModLoader.GetModSystem<canevents>();
+            var signups = mod?.signupWindows;
+            if (signups == null) return TextCommandResult.Error(Lang.Get("canevents:scheduler-not-initialized"));
+
+            // Omitted, like every optional parser here, arrives as null - not as 0, which is a
+            // meaningful value of its own (a window only the admin closes).
+            var rawMinutes = args.Parsers[1].GetValue();
+            int minutes = rawMinutes == null ? (mod.config?.signupWindowMinutes ?? 5) : Convert.ToInt32(rawMinutes);
+
+            if (signups.Open(eventCode, minutes, out var message))
+                return TextCommandResult.Success(message);
+            return TextCommandResult.Error(message);
+        }
+
+        /// <summary>What is open right now and how long it has left - the chat answer to "when does
+        /// the event I announced actually start?".</summary>
+        public TextCommandResult AdminSignupStatus(TextCommandCallingArgs args)
+        {
+            var signups = sapi.ModLoader.GetModSystem<canevents>()?.signupWindows;
+            if (signups == null) return TextCommandResult.Error(Lang.Get("canevents:scheduler-not-initialized"));
+
+            var open = signups.OpenWindows();
+            if (open.Count == 0) return TextCommandResult.Success("No registration window is open.");
+
+            var lines = open.Select(w =>
+            {
+                var ev = canEventManager.FindEventByCode(w.code);
+                int registered = canEventManager.CountRegistrations(ev);
+                int max = ev?.AssemblingEB?.MaxPartiesCount ?? 0;
+                string signedUp = max > 0 ? registered + "/" + max : registered.ToString();
+                return w.secondsLeft < 0f
+                    ? string.Format("{0}: signed up {1}, starts when you run /eventadmin start {0}", w.code, signedUp)
+                    : string.Format("{0}: signed up {1}, starts in {2}",
+                        w.code, signedUp, TimeText.Short(w.secondsLeft));
+            });
+            return TextCommandResult.Success("Registration open:\n" + string.Join("\n", lines));
+        }
+
+        public TextCommandResult AdminCancelSignup(TextCommandCallingArgs args)
+        {
+            string eventCode = (string)args.Parsers[0].GetValue();
+            var signups = sapi.ModLoader.GetModSystem<canevents>()?.signupWindows;
+            if (signups == null) return TextCommandResult.Error(Lang.Get("canevents:scheduler-not-initialized"));
+
+            if (signups.Cancel(eventCode, out var message))
+                return TextCommandResult.Success(message);
+            return TextCommandResult.Error(message);
+        }
+
         public TextCommandResult AdminStopAll(TextCommandCallingArgs args)
         {
             var toStop = canEventManager.CurrentlyRunningEvents.ToList();
@@ -273,7 +325,9 @@ namespace canevents.src.commands
             if (scheduler == null) return TextCommandResult.Error(Lang.Get("canevents:scheduler-not-initialized"));
 
             scheduler.SetInterval(minutes);
-            return TextCommandResult.Success(Lang.Get("canevents:schedule-interval", minutes));
+            // Reported from the scheduler, not from the argument: SetInterval clamps, and the answer
+            // must say what is actually in force.
+            return TextCommandResult.Success(Lang.Get("canevents:schedule-interval", scheduler.IntervalMinutes));
         }
 
         // Queue blacklist

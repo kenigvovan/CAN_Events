@@ -22,6 +22,10 @@ namespace canevents.src
         public string[] enabledGameModes = new string[] { "1x1", "spleef" };
         public int maxConcurrentEvents = 3;
 
+        // Default length of an /eventadmin open registration window when no minutes are given.
+        // 0 means the window stays open until the admin starts the event themselves.
+        public int signupWindowMinutes = 5;
+
         // Events disabled from the admin GUI: blocks new registrations and auto-scheduling, running
         // matches continue. Runtime-toggled, persisted.
         public string[] disabledEventCodes = new string[0];

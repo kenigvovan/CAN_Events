@@ -157,6 +157,79 @@ namespace canevents.src.EventManagers
 
         /// <summary>Position of a player in the starting line-up, or -1. Used for spawn assignment.</summary>
         public int IndexInStartingLineup(string uid) => Roster.IndexInStartingLineup(uid);
+
+        // Spawn points are handed out by line-up position, so a half-full arena fills the first few
+        // points and leaves the rest empty - on a ring of twelve that is a huddle on one arc rather
+        // than a circle. With this on, the points are dealt in a shuffled order instead. Off by
+        // default: modes where a spawn point means something (a CTF team's own base, whose flag post
+        // is indexed by team number) must keep the order the arena was laid out in.
+        private bool shuffleSpawns;
+        private int[] spawnOrder;
+
+        /// <summary>Deals this match's spawn points in a random order. Call before the first spawn is
+        /// resolved (OnBeforeStart); the order itself is drawn once and then holds for the match, so
+        /// players, bots and respawns all read the same layout.</summary>
+        public void EnableSpawnShuffle() => shuffleSpawns = true;
+
+        /// <summary>Translates a spawn-point index picked by line-up position into the point that
+        /// index actually maps to. The identity when the shuffle is off.</summary>
+        public int MapSpawnIndex(int index)
+        {
+            if (!shuffleSpawns || index < 0) return index;
+            spawnOrder ??= BuildSpawnOrder();
+            return spawnOrder != null && index < spawnOrder.Length ? spawnOrder[index] : index;
+        }
+
+        // Whole teams move together: a team occupies a contiguous run of points (see
+        // TPThereAndBack.ResolveSpawn), so the shuffle permutes runs, never the points inside one -
+        // teammates would end up on opposite sides of the arena. Returns null when there is nothing
+        // to shuffle, which leaves MapSpawnIndex the identity.
+        private int[] BuildSpawnOrder()
+        {
+            int count = Place?.spawnPositions?.Count ?? 0;
+            if (count < 2) return null;
+
+            int run = TeamRunLength(count);
+            int runs = count / run;
+            if (runs < 2) return null;
+
+            var perm = new int[runs];
+            for (int i = 0; i < runs; i++) perm[i] = i;
+            var rand = sapi.World.Rand;
+            for (int i = runs - 1; i > 0; i--)          // Fisher-Yates
+            {
+                int j = rand.Next(i + 1);
+                (perm[i], perm[j]) = (perm[j], perm[i]);
+            }
+
+            var order = new int[count];
+            for (int i = 0; i < count; i++)
+            {
+                int r = i / run;
+                // The tail that no whole run covers keeps its own index: nothing is dealt from there.
+                order[i] = r < runs ? perm[r] * run + i % run : i;
+            }
+            return order;
+        }
+
+        // How many consecutive points one team takes. Only the per-player layout (a point each) hands
+        // a team more than one; anything else - unequal team sizes, or fewer points than players -
+        // deals point by point.
+        private int TeamRunLength(int spawnCount)
+        {
+            var groups = ParticipantsByGroupsBefore;
+            if (groups == null || groups.Count == 0) return 1;
+
+            int size = groups[0].Count;
+            int total = size;
+            for (int i = 1; i < groups.Count; i++)
+            {
+                if (groups[i].Count != size) return 1;
+                total += groups[i].Count;
+            }
+
+            return spawnCount >= total ? Math.Max(1, size) : 1;
+        }
         /// <summary>Set once the match has a reason to end; the manager picks it up on its next tick.
         /// Write it through <see cref="RequestFinish"/>, which records why.</summary>
         public bool ShouldFinish { get; private set; }

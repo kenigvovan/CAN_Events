@@ -21,6 +21,17 @@ namespace canevents.src
 
         public bool Enabled { get; set; }
 
+        /// <summary>
+        /// What "announce this event" means. Returns true when it took the announcement over - the
+        /// signup windows do, by opening one, which tells players in chat AND gives them a countdown
+        /// and a way in. Left null (or returning false) the scheduler falls back to the bare chat
+        /// line it always sent. A delegate rather than a reference: the windows already hold a
+        /// reference to the scheduler, and two-way would be a cycle.
+        /// </summary>
+        // Namespace spelled out: Vintagestory.API.Common declares a Func<> of its own, and it is in
+        // scope here alongside System.
+        public System.Func<string, bool> AnnounceHandler { get; set; }
+
         // State exposed to the admin panel
         public int IntervalMinutes => config.scheduleIntervalMinutes;
         public int MinPlayersToStart => config.minPlayersToStart;
@@ -106,11 +117,29 @@ namespace canevents.src
 
             if (targetEvent == null) return;
 
-            EventManagers.eventBehavior.Shared.EventBroadcaster.BroadcastToServer(
-                sapi, Lang.Get("canevents:event-announced", nextCode));
+            // Opening a signup window is the real announcement: it says the same thing in chat and
+            // adds the countdown, the panel and the hold on early assembly. The bare line is only for
+            // installs where nothing took the announcement over.
+            bool handled;
+            if (AnnounceHandler != null)
+            {
+                // False means it declined - a window for this event is already open, say. Then nothing
+                // is announced at all; repeating the old chat line on top of an open window would be
+                // the announcement saying one thing and the panel another.
+                handled = AnnounceHandler(nextCode);
+            }
+            else
+            {
+                EventManagers.eventBehavior.Shared.EventBroadcaster.BroadcastToServer(
+                    sapi, Lang.Get("canevents:event-announced", nextCode));
+                handled = true;
+            }
 
+            // Reset either way: a declined turn waits for the next interval rather than retrying every
+            // tick, which would also spin the rotation index past every other mode.
             secondsSinceLastEvent = 0f;
-            sapi.World.Logger.Notification("EventScheduler: Announced event '{0}'", nextCode);
+            sapi.World.Logger.Notification("EventScheduler: {0} event '{1}'",
+                handled ? "Announced" : "Skipped (already announced)", nextCode);
         }
 
         /// <summary>
@@ -152,6 +181,10 @@ namespace canevents.src
 
         public void SetInterval(int minutes)
         {
+            // Clamped here rather than at each caller: the admin panel already did, the chat command
+            // did not, and zero means the interval check never holds - an announcement every tick.
+            minutes = Math.Clamp(minutes, 1, 24 * 60);
+
             config.scheduleIntervalMinutes = minutes;
             secondsSinceLastEvent = 0f;
             PersistConfig();

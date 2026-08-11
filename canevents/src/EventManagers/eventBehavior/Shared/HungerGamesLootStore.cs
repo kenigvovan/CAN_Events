@@ -69,6 +69,10 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
 
             ba.Commit();
             Delete(placeId);
+            // Logged, not silent: "the chests are still there" is otherwise impossible to tell apart
+            // from "this never ran" after the fact.
+            sapi.World.Logger.Notification("[HG] Restored {0} block(s) under the loot chests of place {1}.",
+                data.SavedBlocks.Count - skipped, placeId);
             return true;
         }
 

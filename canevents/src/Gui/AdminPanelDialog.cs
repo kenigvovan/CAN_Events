@@ -83,6 +83,14 @@ namespace canevents.src.Gui
         // Dashboard countdown, ticked locally between scheduler packets.
         private float dashSecondsUntilNext = -1f;
 
+        // How long the "Open" button keeps registration open, in minutes. 0 = until "Start now".
+        private int signupMinutes = 5;
+
+        // Open registration windows from the last scheduler packet, their countdowns ticked locally
+        // the same way as the auto-scheduler's. A negative value means the window has no deadline.
+        private readonly System.Collections.Generic.List<(string code, float left)> dashSignups
+            = new System.Collections.Generic.List<(string, float)>();
+
         // New Arena wizard state
         private enum WizardStep { ChooseEvent, CreatePlace, Bounds, Spawns, Special, Activate, Done }
         private WizardStep wizStep = WizardStep.ChooseEvent;
@@ -193,7 +201,21 @@ namespace canevents.src.Gui
 
             _onScheduleStateReceived = () =>
             {
-                dashSecondsUntilNext = networkHandler.ScheduleState.Value?.SecondsUntilNext ?? -1f;
+                var state = networkHandler.ScheduleState.Value;
+                dashSecondsUntilNext = state?.SecondsUntilNext ?? -1f;
+
+                dashSignups.Clear();
+                var codes = state?.OpenSignupCodes;
+                if (codes == null) return;
+                for (int i = 0; i < codes.Length; i++)
+                {
+                    if (string.IsNullOrEmpty(codes[i])) continue;
+                    // Protobuf omits an all-default array, so the seconds can arrive short or missing;
+                    // -1 is also the real value for a window with no deadline.
+                    float left = state.OpenSignupSeconds != null && i < state.OpenSignupSeconds.Length
+                        ? state.OpenSignupSeconds[i] : -1f;
+                    dashSignups.Add((codes[i], left));
+                }
             };
 
             // The highlight is keyed by place id, so editing the place already shown would not
@@ -260,6 +282,16 @@ namespace canevents.src.Gui
             }
 
             if (dashSecondsUntilNext > 0) dashSecondsUntilNext -= deltaSeconds;
+            for (int i = dashSignups.Count - 1; i >= 0; i--)
+            {
+                var w = dashSignups[i];
+                if (w.left < 0f) continue;             // no deadline: only the admin ends it
+                float left = w.left - deltaSeconds;
+                // At zero the server has already started the match; dropping the row here keeps the
+                // panel from offering a Cancel that would answer "no window is open".
+                if (left <= 0f) dashSignups.RemoveAt(i);
+                else dashSignups[i] = (w.code, left);
+            }
 
             var (styleVars, styleColors) = PushTheme();
             ImGui.SetNextWindowSize(new Vector2(860, 620), ImGuiCond.FirstUseEver);
@@ -349,7 +381,13 @@ namespace canevents.src.Gui
             switch (tabId)
             {
                 case 0: networkHandler.RequestScheduleState(); networkHandler.RequestAdminEventList(); break;
-                case 1: networkHandler.RequestAdminEventList(); networkHandler.RequestPlaceList(); break;
+                // The events table needs the scheduler state too: it is where the open registration
+                // windows come from, and their rows show Cancel instead of Open.
+                case 1:
+                    networkHandler.RequestAdminEventList();
+                    networkHandler.RequestPlaceList();
+                    networkHandler.RequestScheduleState();
+                    break;
                 case 2: networkHandler.RequestPlaceList(); break;
                 case 3: networkHandler.RequestAdminEventList(); networkHandler.RequestPlaceList(); break;
                 case 4: networkHandler.RequestLoadoutList(); break;
@@ -437,6 +475,8 @@ namespace canevents.src.Gui
                     ImGui.Spacing();
                     ImGui.TextDisabled("Rotation: " + string.Join(" > ", s.RotationCodes));
                 }
+
+                DrawOpenSignupWindows();
             }
 
             ImGui.Spacing();
@@ -481,6 +521,49 @@ namespace canevents.src.Gui
             }
         }
 
+        /// <summary>Registration windows currently open, with the two ways out of one: start it now,
+        /// or close it without starting anything.</summary>
+        private void DrawOpenSignupWindows()
+        {
+            if (dashSignups.Count == 0) return;
+
+            ImGui.Spacing();
+            ImGui.TextColored(ColAccent, "Registration open");
+            foreach (var (code, left) in dashSignups)
+            {
+                ImGui.PushID("signup_" + code);
+                // TimeText, not FormatDuration: this is the same countdown players read on the HUD
+                // and in chat, and it should not be spelled "5m 00s" here and "5:00" there.
+                ImGui.Text(left < 0f
+                    ? code + " - until you start it"
+                    : code + " - " + TimeText.Short(left) + " left");
+                ImGui.SameLine();
+                StartNowButton(code);
+                ImGui.SameLine();
+                CancelSignupButton(code);
+                ImGui.PopID();
+            }
+        }
+
+        // The two ways out of an open window, offered both on the dashboard and in the events table.
+
+        /// <summary>Starts a match now from whoever is queued. "Announce" is its name on the wire only.</summary>
+        private void StartNowButton(string code)
+        {
+            if (!GoSmallButton("Start now")) return;
+            networkHandler.SendAdminAction(AdminAction.AnnounceEvent, code);
+            networkHandler.RequestScheduleState();
+            LogAction(true, "> start now: " + code);
+        }
+
+        private void CancelSignupButton(string code)
+        {
+            if (!StopSmallButton("Cancel")) return;
+            networkHandler.SendAdminAction(AdminAction.CancelSignup, code);
+            networkHandler.RequestScheduleState();
+            LogAction(true, "> cancel signup: " + code);
+        }
+
         private static string FormatDuration(float seconds) => GuiItemUtil.FormatShortDuration(seconds);
 
         // Events
@@ -491,6 +574,13 @@ namespace canevents.src.Gui
             ImGui.SameLine();
             if (ImGui.SmallButton("Refresh##adminev")) networkHandler.RequestAdminEventList();
             ImGui.TextDisabled("Ready tells you whether a match could be placed right now. Disabled events are hidden from the J browser.");
+            ImGui.Spacing();
+
+            IntField("Signup window (min)", ref signupMinutes, 0, 1440);
+            HelpMarker("How long \"Open\" keeps registration open. Everyone online gets a popup with a "
+                + "Join button and the countdown, and the match starts when the time is up - or earlier "
+                + "if the lobby fills.\n\n"
+                + "0 keeps it open until you press \"Start now\" yourself.");
             ImGui.Spacing();
 
             var adminList = networkHandler.AdminEventList.Value;
@@ -509,7 +599,7 @@ namespace canevents.src.Gui
                 ImGui.TableSetupColumn("Category", ImGuiTableColumnFlags.WidthFixed, 90f);
                 ImGui.TableSetupColumn("Players", ImGuiTableColumnFlags.WidthFixed, 60f);
                 ImGui.TableSetupColumn("Ready", ImGuiTableColumnFlags.WidthFixed, 170f);
-                ImGui.TableSetupColumn("", ImGuiTableColumnFlags.WidthFixed, 150f);
+                ImGui.TableSetupColumn("", ImGuiTableColumnFlags.WidthFixed, 230f);
                 ImGui.TableSetupScrollFreeze(0, 1);
                 ImGui.TableHeadersRow();
 
@@ -534,17 +624,51 @@ namespace canevents.src.Gui
                         e.MaxPlayers > 0 ? e.MinPlayers + "-" + e.MaxPlayers : "-");
 
                     ImGui.TableSetColumnIndex(3);
-                    DrawReadinessCell(e);
+                    // While registration is open, the time left is what the admin is watching for;
+                    // readiness was already checked when the window opened.
+                    int openIdx = dashSignups.FindIndex(w => w.code == e.Code);
+                    if (openIdx >= 0)
+                    {
+                        float left = dashSignups[openIdx].left;
+                        ImGui.TextColored(ColAccent, left < 0f
+                            ? "Signup open - manual start"
+                            : "Signup - starts in " + TimeText.Short(left));
+                    }
+                    else DrawReadinessCell(e);
 
                     ImGui.TableSetColumnIndex(4);
                     ImGui.PushID("row_" + e.Code);
-                    bool canAnnounce = e.Enabled && e.Readiness == EventReadiness.Ready;
-                    if (!canAnnounce) ImGui.BeginDisabled();
-                    if (ImGui.SmallButton("Announce"))
-                        networkHandler.SendAdminAction(AdminAction.AnnounceEvent, e.Code);
-                    if (!canAnnounce) ImGui.EndDisabled();
+                    bool canRun = e.Enabled && e.Readiness == EventReadiness.Ready;
+                    bool signupOpen = dashSignups.Any(w => w.code == e.Code);
+
+                    // The same button position is the way in and the way out, so a window opened by
+                    // mistake is closed where it was opened rather than on another tab.
+                    if (signupOpen)
+                    {
+                        CancelSignupButton(e.Code);
+                        if (ImGui.IsItemHovered())
+                            ImGui.SetTooltip("Closes the open registration window without starting anything.");
+                    }
+                    else
+                    {
+                        if (!canRun) ImGui.BeginDisabled();
+                        if (GoSmallButton("Open"))
+                        {
+                            networkHandler.SendAdminAction(AdminAction.OpenSignup, e.Code, signupMinutes);
+                            networkHandler.RequestScheduleState();
+                            LogAction(true, "> open signup: " + e.Code + " (" + signupMinutes + "m)");
+                        }
+                        if (!canRun) ImGui.EndDisabled();
+                        if (ImGui.IsItemHovered())
+                            ImGui.SetTooltip("Opens registration for the window set above.\nEveryone online gets a popup with a Join button; the match starts when the time is up.");
+                    }
+                    ImGui.SameLine();
+
+                    if (!canRun) ImGui.BeginDisabled();
+                    StartNowButton(e.Code);
+                    if (!canRun) ImGui.EndDisabled();
                     if (ImGui.IsItemHovered())
-                        ImGui.SetTooltip("Tells every online player the event is starting soon.\nThey still have to register; this does not start a match.");
+                        ImGui.SetTooltip("Starts a match right now from whoever is already queued.\nFails if the queue is empty.");
                     ImGui.SameLine();
                     if (e.Enabled)
                     {

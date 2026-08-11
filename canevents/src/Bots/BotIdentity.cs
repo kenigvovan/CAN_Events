@@ -19,11 +19,12 @@ namespace canevents.src.Bots
         public static string NewUid(int index) => UidPrefix + Guid.NewGuid().ToString("N").Substring(0, 8) + "-" + index;
 
         // Deliberately not player-like: a bot must not be mistaken for a person in feeds/results.
+        // Instruments and ship parts - none of them doubles as a human first name.
         private static readonly string[] Names =
         {
-            "Aspen", "Birch", "Cedar", "Dahlia", "Ember", "Flint", "Garnet", "Hazel",
-            "Indigo", "Juniper", "Kestrel", "Larch", "Marlow", "Nettle", "Onyx", "Poppy",
-            "Quill", "Rowan", "Sable", "Thistle", "Umber", "Vesper", "Willow", "Yarrow"
+            "Astrolabe", "Ballast", "Caliper", "Dynamo", "Ecliptic", "Fathom", "Gantry", "Halyard",
+            "Isobar", "Jetty", "Keel", "Latitude", "Meridian", "Nadir", "Octant", "Plumbline",
+            "Quadrant", "Rudder", "Spinnaker", "Transit", "Undertow", "Vernier", "Windlass", "Yardarm"
         };
 
         /// <summary>Display name for the bot at <paramref name="index"/> in this match, unique within it.</summary>

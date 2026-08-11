@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using canevents.src.EventManagers;
+using canevents.src.EventManagers.eventBehavior.Shared;
 using canevents.src.EventManagers.events;
 using Vintagestory.API.Common;
 using Vintagestory.API.Datastructures;
@@ -39,6 +40,18 @@ namespace canevents.src.EventManagers.eventBehavior
         public override string Name { get => "TPThereAndBack"; set { } }
 
         // No Clone() override: the base Activator clone is exactly equivalent.
+
+        public override void OnBeforeStart()
+        {
+            // Shuffled by default: handing points out in line-up order fills the first few of them,
+            // so a half-full arena starts as a huddle on one arc of the ring instead of a circle.
+            // Modes whose points are a particular team's ground say so (ISpawnOrderMatters) and keep
+            // the arena's own order; "randomizeSpawns" in the event JSON overrides either way.
+            bool ordered = runningEvent.Behaviors.Any(b => b is ISpawnOrderMatters);
+            // Set before any spawn is resolved and before the bots spawn, so players, bots and
+            // respawns all read the same layout for the whole match.
+            if (Config.Bool("randomizeSpawns", !ordered)) runningEvent.EnableSpawnShuffle();
+        }
 
         public override void OnStart()
         {
@@ -141,12 +154,14 @@ namespace canevents.src.EventManagers.eventBehavior
             int spawnCount = spawnPositions.Count;
 
             var zero = new Vec3i(0, 0, 0);
+            // Every index below is a place in the line-up, not a point on the ground: MapSpawnIndex
+            // turns it into one, shuffled or not (see RunningEvent.EnableSpawnShuffle).
             if (teamIdx < 0)
             {
                 // Player not found in groups, fallback to cycle.
                 int idx = runningEvent.IndexInStartingLineup(playerUid);
                 if (idx < 0) idx = 0;
-                return (spawnPositions[idx % spawnCount], zero);
+                return (Point(spawnPositions, idx % spawnCount), zero);
             }
 
             // perPlayer: enough points for everyone
@@ -154,14 +169,14 @@ namespace canevents.src.EventManagers.eventBehavior
             {
                 int globalIdx = teamSizesPrefix + memberIdx;
                 if (globalIdx >= spawnCount) globalIdx %= spawnCount;
-                return (spawnPositions[globalIdx], zero);
+                return (Point(spawnPositions, globalIdx), zero);
             }
 
             // perTeam: one point per team, spread members with offsets
             int teamCount = groups.Count;
             if (spawnCount >= teamCount)
             {
-                var basePoint = spawnPositions[teamIdx];
+                var basePoint = Point(spawnPositions, teamIdx);
                 var off = memberIdx < memberOffsets.Length ? memberOffsets[memberIdx] : zero;
                 return (basePoint, off);
             }
@@ -169,8 +184,11 @@ namespace canevents.src.EventManagers.eventBehavior
             // cycle fallback
             int absIdx = runningEvent.IndexInStartingLineup(playerUid);
             if (absIdx < 0) absIdx = 0;
-            return (spawnPositions[absIdx % spawnCount], zero);
+            return (Point(spawnPositions, absIdx % spawnCount), zero);
         }
+
+        private BlockPos Point(List<BlockPos> spawnPositions, int index)
+            => spawnPositions[runningEvent.MapSpawnIndex(index)];
 
         private static string ResolveMode(int spawnCount, int totalPlayers, int teamCount)
         {

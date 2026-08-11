@@ -111,6 +111,8 @@ namespace canevents.src.Network
             clientChannel.SetMessageHandler<TournamentBracketMsg>(TournamentBracket.Set);
             clientChannel.SetMessageHandler<TournamentReadyRequestMsg>(OnTournamentReadyRequest);
             clientChannel.SetMessageHandler<TournamentReadyClosedMsg>(HandleTournamentReadyClosed);
+            clientChannel.SetMessageHandler<EventInviteMsg>(OnEventInvite);
+            clientChannel.SetMessageHandler<EventInviteClosedMsg>(HandleEventInviteClosed);
         }
 
         /// <summary>Last admin-configured default key for the main dialog (null until received).</summary>

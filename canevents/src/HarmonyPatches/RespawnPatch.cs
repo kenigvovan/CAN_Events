@@ -17,6 +17,9 @@ namespace canevents.src.HarmonyPatches
     {
         public static canevents Mod;
 
+        /// <summary>One log line per session for a failing prefix; see the catch in <see cref="Prefix"/>.</summary>
+        private static bool errorLogged;
+
         public static void Apply(Harmony harmony)
         {
             var serverPlayerType = AccessTools.TypeByName("Vintagestory.Server.ServerPlayer");
@@ -36,7 +39,10 @@ namespace canevents.src.HarmonyPatches
                 string uid = __instance?.PlayerUID;
                 if (string.IsNullOrEmpty(uid)) return true;
 
-                foreach (var re in mgr.CurrentlyRunningEvents)
+                // Snapshot: this runs on a respawn, which can land while a match is being started or
+                // torn down; iterating the live list would throw mid-loop and drop the player back on
+                // the vanilla spawn - in the middle of an arena.
+                foreach (var re in mgr.RunningEventsSnapshot())
                 {
                     if (re == null) continue;
                     if (re.EventState != EventState.Running) continue;
@@ -59,9 +65,17 @@ namespace canevents.src.HarmonyPatches
                     }
                 }
             }
-            catch
+            catch (System.Exception e)
             {
-                // On any error fall back to vanilla, never block respawn.
+                // On any error fall back to vanilla, never block respawn - but say so once. Silently
+                // respawning a fighter on the world spawn used to look like a mod that "sometimes
+                // forgets", with nothing in the log to work from. Once, because this runs per respawn
+                // and a broken state would otherwise flood the file.
+                if (!errorLogged)
+                {
+                    errorLogged = true;
+                    Mod?.CANEventManager?.log?.Error("RespawnPatch: falling back to the vanilla spawn point: {0}", e);
+                }
             }
             return true;
         }

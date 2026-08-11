@@ -31,6 +31,13 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
         // a spot Place() skipped because a real player chest sat there is never overwritten.
         private readonly HashSet<string> placedChestKeys = new HashSet<string>();
 
+        // The same positions as blocks, for the hand teardown Restore falls back to when no rollback
+        // file survives. Kept alongside the keys rather than parsed back out of them.
+        private readonly List<BlockPos> placedChestPositions = new List<BlockPos>();
+
+        // Block id actually placed, resolved in Place(). Only a block that is still ours gets removed.
+        private int placedChestBlockId;
+
         private string containerBlockCode = "game:chest-east";
         private string defaultTier = "common";
         private int minSlotsPerChest = 3;
@@ -92,6 +99,9 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
             // holding a block entity are skipped: SetBlock would delete it and its contents with no drop.
             var toPlace = new List<(BlockPos pos, string tier)>();
             var snapshot = new Dictionary<string, int>();
+            // Spots a leftover loot chest of ours occupies. They are cleared to air first, so the new
+            // chest is a fresh container rather than the old one topped up.
+            var stale = new HashSet<string>();
             foreach (var spot in spots)
             {
                 if (!JsonPos.TryRead(spot, out var pos)) continue;
@@ -105,8 +115,22 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
 
                 if (ba.GetBlockEntity(pos) != null)
                 {
-                    world.Logger.Warning("[HG] LootSpot at {0} sits on an existing block entity (chest/sign/...); "
-                        + "skipping it so its contents aren't destroyed. Move the spot onto an empty block.", pos);
+                    // Our own loot container standing here is what an earlier match left behind (its
+                    // rollback never ran, or the file was lost). Skipping it would wedge the spot for
+                    // good: every later match skips it too, so nothing ever clears it either. Ours is
+                    // safe to take out; anything else is somebody's build and is still left alone.
+                    if (ba.GetBlock(pos).BlockId != chestBlock.BlockId)
+                    {
+                        world.Logger.Warning("[HG] LootSpot at {0} sits on an existing block entity (chest/sign/...); "
+                            + "skipping it so its contents aren't destroyed. Move the spot onto an empty block.", pos);
+                        continue;
+                    }
+
+                    world.Logger.Warning("[HG] LootSpot at {0} still holds a loot chest from an earlier match - "
+                        + "replacing it. What was under it is no longer recorded, so this spot rolls back to air.", pos);
+                    stale.Add(HungerGamesLootStore.Key(pos));
+                    snapshot[HungerGamesLootStore.Key(pos)] = 0;
+                    toPlace.Add((pos, tier));
                     continue;
                 }
 
@@ -125,11 +149,18 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
             }
 
             placedChestKeys.Clear();
+            placedChestPositions.Clear();
+            placedChestBlockId = chestBlock.BlockId;
             foreach (var (pos, tier) in toPlace)
             {
+                string key = HungerGamesLootStore.Key(pos);
+                // Same block id over itself keeps the existing block entity - and last match's loot
+                // with it. Air first forces a new, empty container.
+                if (stale.Contains(key)) ba.SetBlock(0, pos);
                 ba.SetBlock(chestBlock.BlockId, pos);
                 FillChest(runningEvent, pos, tier);
-                placedChestKeys.Add(HungerGamesLootStore.Key(pos));
+                placedChestKeys.Add(key);
+                placedChestPositions.Add(pos.Copy());
             }
             ba.Commit();
             world.Logger.Notification("[HG] Placed {0} loot chests on place id={1}.", toPlace.Count, place.Id);
@@ -189,9 +220,26 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
         /// an unclean shutdown mid-match is swept at boot too.</summary>
         public void Restore(RunningEvent runningEvent)
         {
+            var world = runningEvent.sapi.World;
             var place = runningEvent.Place;
-            if (place == null) return;
-            HungerGamesLootStore.Restore(place.Id);
+            bool restored = place != null && HungerGamesLootStore.Restore(place.Id);
+
+            // No rollback file - lost, or the arena was released before this ran - while this match
+            // did place chests. Take them out by hand: a chest left standing wedges its spot for
+            // every later match, which then skips it and never clears it either.
+            if (!restored && placedChestPositions.Count > 0)
+            {
+                world.Logger.Warning("[HG] no loot rollback file for place {0}; removing the {1} chest(s) "
+                    + "this match placed by hand.", place?.Id ?? -1, placedChestPositions.Count);
+
+                var ba = world.BlockAccessor;
+                foreach (var pos in placedChestPositions)
+                    if (ba.GetBlock(pos)?.BlockId == placedChestBlockId) ba.SetBlock(0, pos);
+                ba.Commit();
+            }
+
+            placedChestKeys.Clear();
+            placedChestPositions.Clear();
         }
 
         /// <summary>Rolls loot into a chest and returns how many stacks it actually placed.</summary>

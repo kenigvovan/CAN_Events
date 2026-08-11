@@ -37,7 +37,10 @@ namespace canevents.src.Bots
 
             sapi.World.Logger.Notification(
                 "[bots] Removing orphaned bot body {0} at {1} (no live match).", uid ?? "?", entity.Pos.AsBlockPos);
-            entity.Die(EnumDespawnReason.Removed);
+            // DespawnEntity, not Die(): bots are spawned with AllowDespawn = false (see
+            // ArenaBotManager.Spawn), so Die() would leave the corpse standing here for good - which is
+            // exactly what this sweep exists to clear.
+            sapi.World.DespawnEntity(entity, new EntityDespawnData { Reason = EnumDespawnReason.Removed });
         }
     }
 }

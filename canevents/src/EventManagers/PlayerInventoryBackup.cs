@@ -13,6 +13,13 @@ namespace canevents.src.EventManagers
     {
         public const string ModDataKey = "canevents_inventory_backup";
 
+        /// <summary>
+        /// Where a snapshot goes when restoring it threw. Kept rather than deleted: by then the event
+        /// loadout has already been stripped, so the blob is the only copy of the player's real items
+        /// left anywhere. An admin can pull it out of ModData; deleting it loses them for good.
+        /// </summary>
+        public const string FailedModDataKey = "canevents_inventory_backup_failed";
+
         /// <summary>Snapshot the player's current inventory + health to ModData. Call right before
         /// clearing their inventory and handing out the event loadout.</summary>
         /// <param name="gearStaysWithPlayer">
@@ -188,9 +195,23 @@ namespace canevents.src.EventManagers
             }
             catch (System.Exception e)
             {
-                // A corrupt blob must not strand the player: log, drop it, move on.
-                sapi.World.Logger.Error("PlayerInventoryBackup.Restore for {0}: {1}", player.PlayerName, e.Message);
-                player.RemoveModdata(ModDataKey);
+                // A failed restore must not strand the player in a retry loop - but it must not throw
+                // their belongings away either. The blob is parked under a second key: the loadout is
+                // already stripped by this point, so this is the only copy of their real inventory.
+                sapi.World.Logger.Error(
+                    "PlayerInventoryBackup.Restore for {0}: {1} - snapshot kept under '{2}' in their "
+                    + "ModData for manual recovery.", player.PlayerName, e.Message, FailedModDataKey);
+                try
+                {
+                    player.SetModdata(FailedModDataKey, data);
+                    player.RemoveModdata(ModDataKey);
+                }
+                catch (System.Exception parkError)
+                {
+                    // Parking failed too; keep the original rather than losing both.
+                    sapi.World.Logger.Error("PlayerInventoryBackup: could not park the failed snapshot for {0}: {1}",
+                        player.PlayerName, parkError.Message);
+                }
                 return false;
             }
         }

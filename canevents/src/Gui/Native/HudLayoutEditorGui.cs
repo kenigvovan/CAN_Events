@@ -104,6 +104,17 @@ namespace canevents.src.Gui.Native
                 Key = "feed", Label = Lang.Get("canevents:hud-panel-killfeed"), Pos = layout.KillFeed,
                 Width = 360, Height = 72, DefaultX = 10, DefaultY = screenH - 132
             });
+            // Nothing to place when the panel is switched off - the toolbox button below turns it back
+            // on, and the ghost reappears with it.
+            if (layout.InviteMode != HudLayout.InviteDisplay.Off)
+            {
+                bool mini = layout.InviteMode == HudLayout.InviteDisplay.Mini;
+                ghosts.Add(new Ghost
+                {
+                    Key = "invite", Label = Lang.Get("canevents:hud-panel-invite"), Pos = layout.Invite,
+                    Width = 300, Height = mini ? 30 : 96, DefaultX = screenW - 310, DefaultY = 110
+                });
+            }
 
             foreach (var g in ghosts)
             {
@@ -170,8 +181,36 @@ namespace canevents.src.Gui.Native
                         ElementBounds.Fixed(EnumDialogArea.LeftFixed, 0, 46, 0, 0).WithFixedPadding(9, 4))
                     .AddSmallButton(Lang.Get("canevents:hud-edit-done"), () => { OnDone(); return true; },
                         ElementBounds.Fixed(EnumDialogArea.LeftFixed, 110, 46, 0, 0).WithFixedPadding(9, 4))
+                    // The registration toast is the one panel a player may want gone rather than
+                    // moved, so its full/mini/off choice belongs where the panels are arranged.
+                    .AddSmallButton(InviteModeLabel(), OnCycleInviteMode,
+                        ElementBounds.Fixed(EnumDialogArea.LeftFixed, 0, 78, 0, 0).WithFixedPadding(9, 4))
                 .EndChildElements()
                 .Compose();
+        }
+
+        private string InviteModeLabel()
+            => Lang.Get("canevents:hud-invite-mode-button",
+                Lang.Get("canevents:hud-invite-mode-" + layout.InviteMode.ToString().ToLowerInvariant()));
+
+        /// <summary>Full -> mini -> off -> full. One button rather than three: it is a preference,
+        /// not a decision that needs a row of its own.</summary>
+        private bool OnCycleInviteMode()
+        {
+            layout.InviteMode = layout.InviteMode switch
+            {
+                HudLayout.InviteDisplay.Full => HudLayout.InviteDisplay.Mini,
+                HudLayout.InviteDisplay.Mini => HudLayout.InviteDisplay.Off,
+                _ => HudLayout.InviteDisplay.Full
+            };
+            dirty = true;
+            Save();
+            onChanged?.Invoke();   // the toast switches form, or disappears, behind the editor
+            // Its ghost changes size with the mode and is gone entirely when off, so the ghosts are
+            // rebuilt, not just the toolbox label.
+            BuildGhosts();
+            Compose();
+            return true;
         }
 
         private bool OnReset()

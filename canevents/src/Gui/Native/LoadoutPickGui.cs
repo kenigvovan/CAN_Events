@@ -177,10 +177,11 @@ namespace canevents.src.Gui.Native
             // height with how far their item list wraps.
             listTop = y;
             var listBounds = ElementBounds.Fixed(0, y, CardWidth, ListViewportHeight);
+            // Fixed coords of its own, not a copy of listBounds: ForkBoundingParent rearranges the
+            // child it takes, so a copy made after the fork starts at y=0 instead of the list's top.
+            var scrollbarBounds = ElementBounds.Fixed(
+                CardWidth + 12, y, 20, ListViewportHeight + 4);
             clipBounds = listBounds.ForkBoundingParent();
-            var scrollbarBounds = listBounds.FlatCopy().FixedGrow(4)
-                .CopyOffsetedSibling(4 + CardWidth + 8, 0, 0, 0)
-                .WithFixedWidth(20);
 
             composer
                 .BeginClip(clipBounds)

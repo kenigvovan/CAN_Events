@@ -45,7 +45,20 @@ namespace canevents.src.Scoring
         public void RefundEscrow(IServerPlayer player)
         {
             var stake = EntryFeeEscrow.Read(player);
-            if (stake == null) return;
+            if (stake == null)
+            {
+                // Held but unreadable (empty or corrupt blob). The items are unrecoverable either way,
+                // and leaving the record in place would refuse this player every paid queue from now
+                // on - the escrow is only ever cleared by a refund, and a refund is what just failed.
+                if (EntryFeeEscrow.Has(player))
+                {
+                    EntryFeeEscrow.Clear(player);
+                    sapi.World.Logger.Warning(
+                        "[canevents] Cleared an unreadable entry-fee escrow for {0}; the stake could not "
+                        + "be returned, but they are no longer blocked from paid queues.", player.PlayerName);
+                }
+                return;
+            }
             EntryFeeEscrow.Clear(player);
             RefundItems(player, stake);
         }

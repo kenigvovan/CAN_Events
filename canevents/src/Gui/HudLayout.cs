@@ -26,6 +26,20 @@ namespace canevents.src.Gui
         public PanelPos Zone { get; set; } = new PanelPos();
         public PanelPos Scoreboard { get; set; } = new PanelPos();
         public PanelPos KillFeed { get; set; } = new PanelPos();
+        /// <summary>The "registration is open" toast. Shown between matches, not during one.</summary>
+        public PanelPos Invite { get; set; } = new PanelPos();
+
+        /// <summary>
+        /// How much of the invite toast this player wants: the full panel, a single line, or none at
+        /// all. Off is a real choice - the countdown is still on the event's card in the browser - so
+        /// the panel is never forced on someone who finds it in the way.
+        /// </summary>
+        public enum InviteDisplay { Full, Mini, Off }
+
+        // Written as "full"/"mini"/"off" rather than 0/1/2: this file is meant to be hand-editable,
+        // and a bare number says nothing about which mode it is.
+        [Newtonsoft.Json.JsonConverter(typeof(Newtonsoft.Json.Converters.StringEnumConverter))]
+        public InviteDisplay InviteMode { get; set; } = InviteDisplay.Full;
 
         // Older or hand-edited json can leave these null; heal instead of throwing on frame one.
         public void EnsureComplete()
@@ -34,6 +48,7 @@ namespace canevents.src.Gui
             Zone ??= new PanelPos();
             Scoreboard ??= new PanelPos();
             KillFeed ??= new PanelPos();
+            Invite ??= new PanelPos();
         }
 
         public void ResetAll()
@@ -42,6 +57,8 @@ namespace canevents.src.Gui
             Zone.Clear();
             Scoreboard.Clear();
             KillFeed.Clear();
+            Invite.Clear();
+            InviteMode = InviteDisplay.Full;
         }
 
         /// <summary>

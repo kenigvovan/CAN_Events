@@ -34,6 +34,10 @@ namespace canevents.src.EventManagers
         public Dictionary<CANEvent, List<Registration>> SnapshotRegistrations()
             => _store.Snapshot();
 
+        /// <summary>How many sides are queued for one event, without copying the whole store.</summary>
+        public int CountRegistrations(CANEvent canEvent)
+            => _store.CountFor(canEvent);
+
         /// <summary>The pending registration for this player in this event, or null. Public so
         /// NetworkHandler need not touch _store directly.</summary>
         public Registration FindRegistration(string uid, CANEvent ev)
@@ -230,7 +234,8 @@ namespace canevents.src.EventManagers
 
         /// <summary>Turns a finished team assembly into a live match, with MatchServices attached from
         /// the first hook. Both the normal path and the admin force-start end here.</summary>
-        private RunningEvent StartMatch(CANEvent canEvent, TeamAssembly assembly, bool allowBots = true)
+        private RunningEvent StartMatch(CANEvent canEvent, TeamAssembly assembly,
+            MatchStartSource source, bool allowBots = true)
         {
             // Bots join here rather than in the queue managers: they never queue, hold a registration
             // or pay a fee, and this is the one place both start paths pass through. A tournament opts
@@ -242,6 +247,11 @@ namespace canevents.src.EventManagers
             var re = new RunningEvent(sapi, canEvent, assembly, MatchServices);
             lock (CurrentlyRunningEvents)
                 CurrentlyRunningEvents.Add(re);
+
+            // The one place every start path passes through, so the one place observers are told.
+            // Wrapped: a throwing observer must not take the match down with it.
+            log.Safely("OnMatchStarted observer for " + canEvent.Code,
+                () => OnMatchStarted?.Invoke(re, source));
             return re;
         }
 
@@ -254,6 +264,10 @@ namespace canevents.src.EventManagers
             foreach (var (canEvent, registrations) in snapshot)
             {
                 if (registrations.Count == 0) continue;
+                // Something may be holding this event's queue open on purpose (a signup window):
+                // assembling now would start the match on the mode's minimum, which is exactly what
+                // the hold exists to prevent.
+                if (QueueHold != null && QueueHold(canEvent.Code)) continue;
                 if (!QueueManagers.TryGetValue(canEvent.Code, out var qm)) continue;
 
                 var assemblies = qm.TryAssemble(canEvent, registrations);
@@ -263,7 +277,7 @@ namespace canevents.src.EventManagers
                     foreach (var reg in consumed)
                         RemoveRegistration(reg);
 
-                    var re = StartMatch(canEvent, assembly);
+                    var re = StartMatch(canEvent, assembly, MatchStartSource.Queue);
                     sapi.World.Logger.Notification(
                         "Team assembly completed for event {0}, RunningEvent {1} created", canEvent.Code, re.Id);
                 }
@@ -312,7 +326,7 @@ namespace canevents.src.EventManagers
             foreach (var reg in usable)
                 RemoveRegistration(reg);
 
-            var re = StartMatch(canEvent, assembly);
+            var re = StartMatch(canEvent, assembly, MatchStartSource.ForceStart);
             sapi.World.Logger.Notification(
                 "Force-start: event {0} composed from {1} registration(s), RunningEvent {2} created",
                 canEvent.Code, usable.Count, re.Id);
@@ -379,7 +393,7 @@ namespace canevents.src.EventManagers
                 assembly.AddShard(new TeamShard(reg));
             }
 
-            var re = StartMatch(canEvent, assembly, allowBots: false);
+            var re = StartMatch(canEvent, assembly, MatchStartSource.External, allowBots: false);
             if (allowedPlaceIds != null && allowedPlaceIds.Count > 0)
                 re.AllowedPlaceIds = new HashSet<long>(allowedPlaceIds);
 

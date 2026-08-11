@@ -38,7 +38,7 @@ namespace canevents.src.BlockEntities
 
             var pos = Blockentity.Pos;
 
-            foreach (var re in mgr.CurrentlyRunningEvents)
+            foreach (var re in mgr.RunningEventsSnapshot())
             {
                 if (re.EventState != EventState.Running) continue;
                 var eb = re.GetBehavior<ParkourEB>();

@@ -591,6 +591,10 @@ namespace canevents.src.EventManagers.eventBehavior
 
         public override void OnEnd()
         {
+            // First, and in its own guard: this is the only step here that writes to the world, and a
+            // throw from any of the teardown below it used to leave the chests standing for good.
+            log.Safely("loot restore", () => loot.Restore(runningEvent));
+
             graceHooks.UnhookAll();
             damageHooks.UnhookAll();
             EndStartFreeze();   // safety: a match cancelled mid-countdown must not leak the listener
@@ -601,7 +605,6 @@ namespace canevents.src.EventManagers.eventBehavior
             }
             // Clear the dome from every client, or the last radius stays painted forever.
             SendZoneState(false);
-            loot.Restore(runningEvent);
             EventBroadcaster.Broadcast(runningEvent, Lang.Get("canevents:hg-ended"));
         }
     }

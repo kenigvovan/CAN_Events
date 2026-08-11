@@ -24,6 +24,7 @@ namespace canevents.src
     {
         public PartyManager partyManager;
         public EventScheduler eventScheduler;
+        public EventManagers.SignupWindows signupWindows;
 
         public Config config;
         public Dictionary<string, Type> CANEventBehaviors = new Dictionary<string, Type>();
@@ -178,6 +179,15 @@ namespace canevents.src
 
             // Initialize scheduler
             this.eventScheduler = new EventScheduler(api, config, this.CANEventManager);
+
+            // Registration windows hold the queue open on purpose, so they need both the manager whose
+            // assembly they pause and the scheduler that starts the match when the time is up. The two
+            // wires back out are delegates, so neither the match driver nor the scheduler has to know
+            // this feature exists.
+            this.signupWindows = new EventManagers.SignupWindows(api, this.CANEventManager, this.eventScheduler);
+            this.CANEventManager.QueueHold = this.signupWindows.IsHolding;
+            this.eventScheduler.AnnounceHandler =
+                code => this.signupWindows.Open(code, config.signupWindowMinutes, out _, auto: true);
 
             // Tournaments drive the match machinery externally; wired after the scheduler so they can
             // pause it while a bracket runs. No RunningEvent survives a restart, so in-flight matches
@@ -346,6 +356,7 @@ namespace canevents.src
         private Gui.Native.TournamentReadyGui tournamentReadyGui;
         private Action<Network.TournamentReadyRequestMsg> _onTournamentReady;
         private Action<Network.TournamentReadyClosedMsg> _onTournamentReadyClosed;
+        private Gui.Native.EventInviteHud eventInviteHud;
         private Gui.AdminPanelDialog adminPanel;
         private Gui.CtfFlagRenderer ctfFlagRenderer;
         private Gui.HgZoneDomeRenderer hgZoneDomeRenderer;
@@ -361,7 +372,11 @@ namespace canevents.src
             // without it nothing drew. Only the admin panel stays on ImGui.
             hudLayout = Gui.HudLayout.Load(api);
             eventHudGui = new Gui.Native.EventHudGui(api, ClientNetworkHandler, hudLayout);
-            hudLayoutEditor = new Gui.Native.HudLayoutEditorGui(api, hudLayout, () => eventHudGui.OnLayoutChanged());
+            hudLayoutEditor = new Gui.Native.HudLayoutEditorGui(api, hudLayout, () =>
+            {
+                eventHudGui.OnLayoutChanged();
+                eventInviteHud?.OnLayoutChanged();
+            });
             loadoutPickGui = new Gui.Native.LoadoutPickGui(api, ClientNetworkHandler);
             eventBrowserGui = new Gui.Native.EventBrowserGui(api, ClientNetworkHandler)
             {
@@ -369,9 +384,33 @@ namespace canevents.src
                 OnEditHudLayout = () => hudLayoutEditor.TryOpen()
             };
             tournamentReadyGui = new Gui.Native.TournamentReadyGui(api, ClientNetworkHandler);
+            // The signup invite is a HUD toast, not a dialog: it must stay readable for the whole
+            // window without holding the mouse, and it subscribes to its own packets.
+            eventInviteHud = new Gui.Native.EventInviteHud(api, ClientNetworkHandler, hudLayout)
+            {
+                LoadoutPick = loadoutPickGui
+            };
             // Cancelling a queue-time class pick returns to the browser it was opened from.
             loadoutPickGui.OnQueuePickCancelled = () => eventBrowserGui.TryOpen();
-            api.Gui.RegisterDialog(eventHudGui, eventBrowserGui, loadoutPickGui, hudLayoutEditor, tournamentReadyGui);
+            api.Gui.RegisterDialog(eventHudGui, eventBrowserGui, loadoutPickGui, hudLayoutEditor,
+                tournamentReadyGui, eventInviteHud);
+
+            // Two keys answer the registration panel, so both joining and changing your mind cost no
+            // clicks and no open windows. Ordinary hotkeys: they appear in Settings -> Controls and
+            // each player can rebind them; the panel prints whatever binding is in force.
+            api.Input.RegisterHotKey(Gui.Native.EventInviteHud.JoinHotkeyCode,
+                Vintagestory.API.Config.Lang.Get("canevents:hotkey-join"), GlKeys.G,
+                HotkeyType.GUIOrOtherControls);
+            api.Input.SetHotKeyHandler(Gui.Native.EventInviteHud.JoinHotkeyCode,
+                _ => eventInviteHud.TryToggleQueue());
+
+            // Shift+G by default: the same finger, and a modifier makes an accidental dismissal of a
+            // panel you meant to answer far less likely.
+            api.Input.RegisterHotKey(Gui.Native.EventInviteHud.DismissHotkeyCode,
+                Vintagestory.API.Config.Lang.Get("canevents:hotkey-dismiss"), GlKeys.G,
+                HotkeyType.GUIOrOtherControls, shiftPressed: true);
+            api.Input.SetHotKeyHandler(Gui.Native.EventInviteHud.DismissHotkeyCode,
+                _ => eventInviteHud.TryDismissCurrent());
 
             // The server can raise the class pick on its own (party leader queued the group), so it
             // must work with the browser closed.
@@ -400,7 +439,37 @@ namespace canevents.src
                         hudLayout.ResetAll();
                         hudLayout.Save(api);
                         eventHudGui.OnLayoutChanged();
+                        eventInviteHud?.OnLayoutChanged();
                         return TextCommandResult.Success(Vintagestory.API.Config.Lang.Get("canevents:hud-edit-reset-done"));
+                    })
+                .EndSubCommand()
+                // How much of the registration toast this player wants. Off is allowed on purpose:
+                // the countdown also lives on the event's card in the browser, so turning the panel
+                // off loses nothing but the panel.
+                .BeginSubCommand("invite")
+                    .WithDescription(Vintagestory.API.Config.Lang.Get("canevents:hud-invite-mode-desc"))
+                    .WithArgs(api.ChatCommands.Parsers.OptionalWord("mode"))
+                    .HandleWith(args =>
+                    {
+                        string mode = (args.Parsers[0].GetValue() as string)?.ToLowerInvariant();
+                        switch (mode)
+                        {
+                            case "full": hudLayout.InviteMode = Gui.HudLayout.InviteDisplay.Full; break;
+                            case "mini": hudLayout.InviteMode = Gui.HudLayout.InviteDisplay.Mini; break;
+                            case "off":  hudLayout.InviteMode = Gui.HudLayout.InviteDisplay.Off; break;
+                            case null:
+                            case "":
+                                // No argument: say what it is set to rather than guess at a change.
+                                return TextCommandResult.Success(Vintagestory.API.Config.Lang.Get(
+                                    "canevents:hud-invite-mode-current", hudLayout.InviteMode.ToString().ToLowerInvariant()));
+                            default:
+                                return TextCommandResult.Error(Vintagestory.API.Config.Lang.Get("canevents:hud-invite-mode-usage"));
+                        }
+
+                        hudLayout.Save(api);
+                        eventInviteHud?.OnLayoutChanged();
+                        return TextCommandResult.Success(Vintagestory.API.Config.Lang.Get(
+                            "canevents:hud-invite-mode-set", mode));
                     })
                 .EndSubCommand();
 
@@ -447,6 +516,7 @@ namespace canevents.src
             // Before CANEventManager.Dispose: the leaderboard is reached through its MatchServices.
             CANEventManager?.Leaderboard?.Dispose();
             CANEventManager?.Dispose();
+            signupWindows?.Dispose();
             eventScheduler?.Dispose();
             adminPanel?.Dispose();
             if (loadoutPickGui != null && ClientNetworkHandler != null)
@@ -461,6 +531,7 @@ namespace canevents.src
             eventBrowserGui?.Dispose();
             loadoutPickGui?.Dispose();
             tournamentReadyGui?.Dispose();
+            eventInviteHud?.Dispose();
             hudLayoutEditor?.Dispose();
             eventHudGui?.Dispose();
             // Unregister before disposing, or the next frame draws meshes we just freed.

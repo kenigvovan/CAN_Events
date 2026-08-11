@@ -18,7 +18,9 @@ namespace canevents.src.EventManagers.eventBehavior
     // Capture the Flag: score by carrying an enemy flag to your own post while your flag is home.
     // Posts are per-place: BehaviorData["CaptureTheFlag"] = { Posts: [{X,Y,Z}, ...] }, index = team.
     // v1 has only two flag states (home / carried); killing the carrier sends the flag home.
-    public class CaptureTheFlagEB : TeamScoreEB, IProvidesRespawnPoint, IStartCryProvider
+    // ISpawnOrderMatters: a team's spawn point and its flag post are both indexed by team number, so
+    // shuffling the points would have teams defending somebody else's flag.
+    public class CaptureTheFlagEB : TeamScoreEB, IProvidesRespawnPoint, IStartCryProvider, ISpawnOrderMatters
     {
         private int captureLimit = 3;
         // Only the capture area is a radius; pickup is a right-click on the flag block.

@@ -118,7 +118,9 @@ namespace canevents.src.Network
                 .RegisterMessageType<TournamentAdminActionMsg>()
                 .RegisterMessageType<TournamentReadyRequestMsg>()
                 .RegisterMessageType<TournamentReadyResponseMsg>()
-                .RegisterMessageType<TournamentReadyClosedMsg>();
+                .RegisterMessageType<TournamentReadyClosedMsg>()
+                .RegisterMessageType<EventInviteMsg>()
+                .RegisterMessageType<EventInviteClosedMsg>();
         }
     }
 }

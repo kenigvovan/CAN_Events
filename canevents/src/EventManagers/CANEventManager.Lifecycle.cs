@@ -156,7 +156,11 @@ namespace canevents.src.EventManagers
                     catch (Exception ex)
                     {
                         sapi.World.Logger.Error("ActuallyStartEvent for event {0}: {1}", runningEvent.Event.Code, ex);
-                        try { FinishEvent(runningEvent); } catch { }
+                        // The salvage attempt is allowed to fail, but not silently: if it does, this
+                        // match stays in CurrentlyRunningEvents with its arena marked occupied and its
+                        // players in the loadout, and the reason has to be in the log.
+                        log.Safely("FinishEvent (salvage) for " + runningEvent.Event.Code,
+                            () => FinishEvent(runningEvent));
                     }
                 }
             }, 500);

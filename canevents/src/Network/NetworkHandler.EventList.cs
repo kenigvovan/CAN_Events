@@ -202,7 +202,7 @@ namespace canevents.src.Network
                     });
                 }
 
-                foreach (var re in eventManager.CurrentlyRunningEvents)
+                foreach (var re in eventManager.RunningEventsSnapshot())
                 {
                     if (re.Event.Code == ev.Code && re.EventState != EventManagers.EventState.Finished)
                     {

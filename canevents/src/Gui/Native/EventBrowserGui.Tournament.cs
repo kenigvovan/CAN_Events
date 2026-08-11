@@ -199,11 +199,14 @@ namespace canevents.src.Gui.Native
                 Math.Max(canvasHeight, element.ContentHeight));
             element.Bounds = innerBounds;
 
+            // Spelled out instead of copied off viewBounds below: the fork rearranges its child's
+            // fixed coords, and a copy taken afterwards draws the frame ListTop pixels too high.
+            var insetBounds = ElementBounds.Fixed(-6, ListTop - 6, DialogWidth + 12, canvasHeight + 12);
             var clip = viewBounds.ForkBoundingParent();
             var vScroll = ElementBounds.Fixed(DialogWidth + 10, ListTop, 12, canvasHeight);
 
             SingleComposer
-                .AddInset(viewBounds.FlatCopy().FixedGrow(6), 4)
+                .AddInset(insetBounds, 4)
                 .BeginClip(clip)
                 .AddInteractiveElement(element, "bracket")
                 .EndClip()

@@ -21,6 +21,21 @@ using Vintagestory.API.Util;
 
 namespace canevents.src.EventManagers
 {
+    /// <summary>
+    /// Where a live match came from. Observers of <see cref="CANEventManager.OnMatchStarted"/> that
+    /// care about the queue must be able to tell a queue-driven start from one dictated externally:
+    /// a tournament match of the same event code has nothing to do with whatever the queue was doing.
+    /// </summary>
+    public enum MatchStartSource
+    {
+        /// <summary>The queue manager assembled it from waiting registrations.</summary>
+        Queue,
+        /// <summary>An admin started it from whoever was queued, ignoring the mode's thresholds.</summary>
+        ForceStart,
+        /// <summary>The line-up was dictated by something else - the tournament driver, a debug match.</summary>
+        External
+    }
+
     public partial class CANEventManager
     {
         public HashSet<CANEvent> Events { get; }
@@ -113,6 +128,12 @@ namespace canevents.src.EventManagers
         /// own tick inside FinishEvent, before it leaves CurrentlyRunningEvents: observers must be
         /// read-only and must NOT start another match from here.
         /// </summary>
+        /// <summary>Raised the moment a match becomes live, whichever path assembled it: the queue,
+        /// the admin force-start or a tournament. Observers that must react to "this event is now
+        /// running" hook here instead of being called by hand from each start path; the source tells
+        /// them which of those it was.</summary>
+        public event Action<RunningEvent, MatchStartSource> OnMatchStarted;
+
         public event Action<RunningEvent, MatchResult> OnMatchFinished;
 
         /// <summary>Raised when an assembled match was dropped before it ever ran (no arena in time).</summary>
@@ -120,6 +141,15 @@ namespace canevents.src.EventManagers
 
         /// <summary>The tournament driver, when one is wired. Null on servers that never run one.</summary>
         public Tournaments.TournamentManager Tournaments { get; set; }
+
+        /// <summary>
+        /// Asked before assembling a match: true means "leave this event's queue alone for now".
+        /// A delegate rather than a reference to the feature that uses it (signup windows), so the
+        /// match driver keeps knowing nothing about it. Null = nothing holds anything.
+        /// </summary>
+        // Namespace spelled out: Vintagestory.API.Common declares a Func<> of its own and both
+        // namespaces are in scope here (same reason as DropRegistrations in the Queue partial).
+        public System.Func<string, bool> QueueHold { get; set; }
 
         /// <summary>This player's party roster, or null when they are not in one. Lets a tournament
         /// signup take the same snapshot the queue does, without touching the queue.</summary>
@@ -162,6 +192,17 @@ namespace canevents.src.EventManagers
                         return true;
             }
             return false;
+        }
+
+        /// <summary>
+        /// A copy of the live match list, taken under the same lock every mutation uses. For callers
+        /// outside this class that iterate it - a foreach over the live list races with a match
+        /// starting or ending and throws mid-iteration.
+        /// </summary>
+        public List<RunningEvent> RunningEventsSnapshot()
+        {
+            lock (CurrentlyRunningEvents)
+                return new List<RunningEvent>(CurrentlyRunningEvents);
         }
 
         /// <summary>

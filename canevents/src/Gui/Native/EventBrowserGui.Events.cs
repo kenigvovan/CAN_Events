@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using canevents.src.EventManagers;
 using canevents.src.Network;
@@ -32,8 +33,13 @@ namespace canevents.src.Gui.Native
             }
             else
             {
+                // An open registration window is on a clock, so it goes to the top of the list where
+                // it is read first. OrderBy, not List.Sort: the rest must keep the order the server
+                // sent, and Sort is not stable.
+                var ordered = queued.OrderByDescending(e => networkHandler.HasOpenSignup(e.GameModeCode));
+
                 // No heading above the queues: the tab itself is the heading.
-                foreach (var ev in queued) AddEventCard(ev);
+                foreach (var ev in ordered) AddEventCard(ev);
                 if (running.Count > 0)
                 {
                     AddHeader(Lang.Get("canevents:gui-section-running"));
@@ -44,6 +50,7 @@ namespace canevents.src.Gui.Native
             AddLastResultCard();
             ComposeCards();
             ComposeRefreshButton(() => networkHandler.RequestEventList());
+            ComposeSignupNotice();
         }
 
         private void AddEventCard(EventListEntryMsg ev)
@@ -85,6 +92,11 @@ namespace canevents.src.Gui.Native
                 accent = ev.State == EventState.Running ? Palette.Live : Palette.Idle;
             }
 
+            // An event taking sign-ups right now is the one thing on this list with a deadline, so it
+            // carries the live colour whatever its lobby count says.
+            if (ev.EventId == 0 && !ev.IsQueued && networkHandler.HasOpenSignup(ev.GameModeCode))
+                accent = Palette.Live;
+
             // The fill bar only means something for a lobby; a running match's headcount is alive players.
             double? fill = ev.EventId == 0 && ev.MaxPlayers > 0
                 ? (double?)ev.CurrentPlayers / ev.MaxPlayers
@@ -112,6 +124,13 @@ namespace canevents.src.Gui.Native
         private string BuildEventDetail(EventListEntryMsg ev)
         {
             var sb = new StringBuilder();
+
+            // That registration is open is said here; the seconds are not. A card is drawn into a
+            // texture, so a countdown baked into it would sit frozen until the next list packet - the
+            // live clock is the dynamic line under the list (see ComposeSignupNotice).
+            if (ev.EventId == 0 && networkHandler.HasOpenSignup(ev.GameModeCode))
+                sb.Append(Lang.Get("canevents:gui-signup-open")).Append('\n');
+
             sb.Append(ev.CurrentPlayers).Append(" / ").Append(ev.MaxPlayers);
 
             if (ev.EventId == 0 && ev.MinPlayers > 0)

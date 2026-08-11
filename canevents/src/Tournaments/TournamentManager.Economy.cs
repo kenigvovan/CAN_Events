@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using canevents.src.EventManagers;
@@ -180,15 +181,29 @@ namespace canevents.src.Tournaments
             });
         }
 
-        /// <summary>Hands over anything owed to a returning player.</summary>
+        /// <summary>
+        /// Hands over anything owed to a returning player. The rows are taken out of the store first
+        /// (they must be, or a second login would pay twice), so a payout that throws half-way is put
+        /// back rather than lost: the prize outlives the failure and is tried again next login.
+        /// </summary>
         private void DeliverPendingPayouts(IServerPlayer player)
         {
             var owed = store.TakePayouts(player.PlayerUID);
             if (owed.Count == 0) return;
 
             foreach (var p in owed)
-                foreach (var it in p.Items)
-                    InventoryUtil.GiveByCode(sapi, player, it.Code, it.Quantity, "tournament " + p.Reason);
+            {
+                try
+                {
+                    foreach (var it in p.Items)
+                        InventoryUtil.GiveByCode(sapi, player, it.Code, it.Quantity, "tournament " + p.Reason);
+                }
+                catch (Exception e)
+                {
+                    log.Error("payout for {0} ({1}) failed, re-queued: {2}", player.PlayerName, p.Reason, e.Message);
+                    store.QueuePayout(p);
+                }
+            }
 
             player.SendMessage(0, Lang.Get("canevents:tournament-payout-delivered"), EnumChatType.Notification);
         }

@@ -45,7 +45,7 @@ namespace canevents.src.BlockBehaviors
             var mgr = sapi?.ModLoader.GetModSystem<canevents>()?.CANEventManager;
             if (mgr == null) return false;
 
-            foreach (var re in mgr.CurrentlyRunningEvents)
+            foreach (var re in mgr.RunningEventsSnapshot())
             {
                 if (re.EventState != EventState.Running) continue;
                 for (int i = 0; i < re.Behaviors.Count; i++)
@@ -83,7 +83,7 @@ namespace canevents.src.BlockBehaviors
             var mgr = sapi.ModLoader.GetModSystem<canevents>()?.CANEventManager;
             if (mgr == null) return true;
 
-            foreach (var re in mgr.CurrentlyRunningEvents)
+            foreach (var re in mgr.RunningEventsSnapshot())
             {
                 if (re.EventState != EventState.Running) continue;
                 if (!re.IsActive(player.PlayerUID)) continue;

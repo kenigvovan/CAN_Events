@@ -53,8 +53,13 @@ namespace canevents.src.Gui.Native
         protected void ComposeCards()
         {
             var listBounds = ElementBounds.Fixed(0, ListTop, DialogWidth, viewportHeight);
+            // Built from the same numbers, NOT copied off listBounds afterwards: ForkBoundingParent
+            // rearranges its child's fixed coords (the list becomes the clip's child at 0,0), so a
+            // copy taken after the fork sat ListTop pixels too high - the frame ended above the last
+            // row, which then hung out under it. FixedGrow only grows, so the 6px margin is spelled
+            // out on all four sides here.
+            var insetBounds = ElementBounds.Fixed(-6, ListTop - 6, DialogWidth + 12, viewportHeight + 12);
             clipBounds = listBounds.ForkBoundingParent();
-            var insetBounds = listBounds.FlatCopy().FixedGrow(6);
             // Height matches the clip, not the inset, so the handle travels exactly the visible range.
             var scrollbarBounds = ElementBounds.Fixed(
                 listBounds.fixedWidth + ScrollbarGap, ListTop, ScrollbarWidth, viewportHeight);
@@ -197,6 +202,48 @@ namespace canevents.src.Gui.Native
         protected void ComposeRefreshButton(Action onRefresh)
             => SingleComposer.AddSmallButton(Vintagestory.API.Config.Lang.Get("canevents:gui-refresh"),
                 () => { onRefresh(); return true; }, ButtonAt(0, ControlsY), EnumButtonStyle.Normal);
+
+        /// <summary>
+        /// The live countdown of an open registration window, next to the Refresh button. A dynamic
+        /// text rather than a line on the event's card: cards are baked into textures and would show
+        /// whatever the clock said when the list last arrived. Nothing is composed when no window is
+        /// open. Refreshed per frame by <see cref="UpdateSignupNotice"/>.
+        /// </summary>
+        protected void ComposeSignupNotice()
+        {
+            string text = SignupNoticeText();
+            if (text == null) return;
+
+            lastSignupNotice = text;
+            SingleComposer.AddDynamicText(text,
+                CairoFont.WhiteSmallText().WithColor(Palette.Live),
+                ElementBounds.Fixed(90, ControlsY + 3, DialogWidth - 100, 20), "signupnotice");
+        }
+
+        /// <summary>Per-frame refresh, but only writes when the line reads differently: the clock
+        /// moves once a second and setting a dynamic text redraws its texture.</summary>
+        protected void UpdateSignupNotice()
+        {
+            string text = SignupNoticeText();
+            if (text == null || text == lastSignupNotice) return;
+            SingleComposer?.GetDynamicText("signupnotice")?.SetNewText(text);
+            lastSignupNotice = text;
+        }
+
+        private string lastSignupNotice;
+
+        /// <summary>"HUNGERGAMES - starts in 4:32", or null when nothing is taking sign-ups.</summary>
+        private string SignupNoticeText()
+        {
+            var invite = networkHandler.SoonestInvite();
+            if (invite == null) return null;
+
+            string code = (invite.EventCode ?? "").ToUpperInvariant();
+            float left = networkHandler.SecondsLeftFor(invite.EventCode);
+            return left < 0f
+                ? Vintagestory.API.Config.Lang.Get("canevents:gui-signup-notice-manual", code)
+                : Vintagestory.API.Config.Lang.Get("canevents:gui-signup-notice", code, TimeText.Short(left));
+        }
 
         private void UpdateScrollbar()
         {

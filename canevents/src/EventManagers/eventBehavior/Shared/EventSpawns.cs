@@ -59,7 +59,9 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
             else if (count >= groups.Count) idx = teamIdx;        // perTeam: one point per team
             else idx = teamIdx % count;                           // cycle
 
-            var bp = spawns[idx];
+            // Through the match's spawn order, the same way TPThereAndBack picked the point at the
+            // start: a respawn has to land on the point this team actually started from.
+            var bp = spawns[runningEvent.MapSpawnIndex(idx)];
             pos = new PlayerSpawnPos { x = bp.X, y = bp.Y, z = bp.Z };
             return true;
         }

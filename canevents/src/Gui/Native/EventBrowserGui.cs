@@ -31,6 +31,8 @@ namespace canevents.src.Gui.Native
         private readonly Action onTournaments;
         private readonly Action onBracket;
         private readonly Action<string> onHotkeyPush;
+        private readonly Action<EventInviteMsg> onInvite;
+        private readonly Action<EventInviteClosedMsg> onInviteEnded;
 
         /// <summary>Opens the HUD layout editor - wired up by the mod system, see canevents.cs.</summary>
         public Action OnEditHudLayout { get; set; }
@@ -63,6 +65,10 @@ namespace canevents.src.Gui.Native
             onTournaments = () => RecomposeIfOpen();
             onBracket    = () => RecomposeIfOpen();
             onHotkeyPush = ApplyServerDefaultHotkey;
+            // A window opening or closing changes both the card order and whether the live countdown
+            // line exists at all, so it is a recompose, not a text update.
+            onInvite      = _ => RecomposeIfOpen();
+            onInviteEnded = _ => RecomposeIfOpen();
 
             networkHandler.EventList.Changed += onEventList;
             networkHandler.Leaderboard.Changed += onLeaderboard;
@@ -73,6 +79,8 @@ namespace canevents.src.Gui.Native
             networkHandler.TournamentList.Changed += onTournaments;
             networkHandler.TournamentBracket.Changed += onBracket;
             networkHandler.OnMainDialogHotkeyReceived += onHotkeyPush;
+            networkHandler.OnEventInvited += onInvite;
+            networkHandler.OnEventInviteClosed += onInviteEnded;
             if (networkHandler.MainDialogHotkey != null) ApplyServerDefaultHotkey(networkHandler.MainDialogHotkey);
         }
 
@@ -91,6 +99,13 @@ namespace canevents.src.Gui.Native
             // live list.
             networkHandler.RequestTournamentList(includeHistory: true);
             ComposeDialog();
+        }
+
+        public override void OnRenderGUI(float deltaTime)
+        {
+            base.OnRenderGUI(deltaTime);
+            // The one number here that moves without a packet behind it.
+            UpdateSignupNotice();
         }
 
         private void RecomposeIfOpen()
@@ -132,16 +147,11 @@ namespace canevents.src.Gui.Native
 
             SingleComposer.GetHorizontalTabs("tabs").activeElement = curTab;
 
-            // How short a tab may shrink. Queue lists snap to content; rosters, ladders and brackets
-            // are panels that should keep their shape as rows come and go.
-            switch (curTab)
-            {
-                case 2: MinListHeight = 300; break;             // party
-                case 3: MinListHeight = 360; break;             // leaderboard
-                case 4: MinListHeight = 360; break;             // history
-                case 5: MinListHeight = MaxListHeight; break;   // tournaments / bracket
-                default: MinListHeight = 80; break;             // event lists hug their content
-            }
+            // One height for every tab. Letting a list hug its content made the window jump between
+            // Ranked and Casual - and moved the buttons under the pointer - for no gain: the tab row
+            // is a switch you use repeatedly, so a stable frame is worth the empty space under a
+            // short list.
+            MinListHeight = MaxListHeight;
 
             // Rosters and ladders are lists of rows, not a grid of choices.
             SingleColumnCards = curTab == 2 || curTab == 3 || curTab == 4;
@@ -266,6 +276,8 @@ namespace canevents.src.Gui.Native
             networkHandler.TournamentList.Changed -= onTournaments;
             networkHandler.TournamentBracket.Changed -= onBracket;
             networkHandler.OnMainDialogHotkeyReceived -= onHotkeyPush;
+            networkHandler.OnEventInvited -= onInvite;
+            networkHandler.OnEventInviteClosed -= onInviteEnded;
         }
     }
 }
