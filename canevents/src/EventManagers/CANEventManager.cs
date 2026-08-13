@@ -59,7 +59,25 @@ namespace canevents.src.EventManagers
         public DefaultEventPlacesManager eventPlacesManager;
         /// <summary>Every per-behavior place edit; both chat commands and admin panel packets go through it.</summary>
         public PlaceConfigService placeConfig;
-        public List<RunningEvent> CurrentlyRunningEvents = new();
+        /// <summary>
+        /// Every match that is currently live. PRIVATE on purpose: the danger is not another thread
+        /// (the server runs this on its tick), it is re-entrancy on this one. Half the code that
+        /// touches a match can end it - a death eliminates the last player, a tick hits the time
+        /// limit - and FinishEvent removes it from this list. A plain foreach over the live list
+        /// therefore mutates the collection it is walking and throws.
+        ///
+        /// That is what the scattered .ToList() calls were defending against, and why the defence has
+        /// to be structural: <see cref="RunningEventsSnapshot"/> is the only way out, so the next
+        /// person to iterate cannot forget. The lock is cheap insurance for the callback that does
+        /// turn out to run off-tick.
+        /// </summary>
+        private readonly List<RunningEvent> runningEvents = new();
+
+        /// <summary>How many matches are live right now.</summary>
+        public int RunningEventCount
+        {
+            get { lock (runningEvents) return runningEvents.Count; }
+        }
         ICoreServerAPI sapi;
 
         /// <summary>Everything the match driver writes to the log, under one tag.</summary>
@@ -76,6 +94,7 @@ namespace canevents.src.EventManagers
         public SpectatorManager     SpectatorManager => MatchServices?.Spectator;
         public RewardDistributor RewardDistributor { get; set; }
         public Scoring.MatchHistory MatchHistory { get; set; }
+        public Scoring.HeadToHeadStore HeadToHead { get; set; }
         public List<ArenaTemplate> ArenaTemplates { get; set; } = new List<ArenaTemplate>();
         public SchematicPlacer SchematicPlacer { get; set; }
         public TemplateEditor TemplateEditor { get; set; }
@@ -119,13 +138,18 @@ namespace canevents.src.EventManagers
 
             composeTeamsListenerId = sapi.Event.RegisterGameTickListener(
                 dt => AttemptToComposeTeams(), config.attemptComposeTeamsEveryNSeconds * 1000);
-            findLocationListenerId = sapi.Event.RegisterGameTickListener(
-                dt => AttemptFindLocationForEvent(), config.attemptFindLocationForRunningEventEveryNSeconds * 1000);
+            findLocationListenerId = sapi.Event.RegisterGameTickListener(dt =>
+            {
+                // Ready windows first: a match that closes its window this pass can start looking for
+                // an arena in the same one, instead of idling until the next.
+                AttemptReadyChecks();
+                AttemptFindLocationForEvent();
+            }, config.attemptFindLocationForRunningEventEveryNSeconds * 1000);
         }
 
         /// <summary>
         /// Raised once a match finished and its result was recorded. Fires from the finishing match's
-        /// own tick inside FinishEvent, before it leaves CurrentlyRunningEvents: observers must be
+        /// own tick inside FinishEvent, before it leaves the live list: observers must be
         /// read-only and must NOT start another match from here.
         /// </summary>
         /// <summary>Raised the moment a match becomes live, whichever path assembled it: the queue,
@@ -185,9 +209,9 @@ namespace canevents.src.EventManagers
         private bool IsOccupiedByAMatch(string uid)
         {
             if (SpectatorManager != null && SpectatorManager.IsSpectating(uid)) return true;
-            lock (CurrentlyRunningEvents)
+            lock (runningEvents)
             {
-                foreach (var re in CurrentlyRunningEvents)
+                foreach (var re in runningEvents)
                     if (re.EventState != EventState.Finished && re.IsParticipant(uid))
                         return true;
             }
@@ -195,14 +219,26 @@ namespace canevents.src.EventManagers
         }
 
         /// <summary>
-        /// A copy of the live match list, taken under the same lock every mutation uses. For callers
-        /// outside this class that iterate it - a foreach over the live list races with a match
-        /// starting or ending and throws mid-iteration.
+        /// A copy of the live match list. The only way to iterate matches: walking the live list
+        /// breaks as soon as anything inside the loop ends a match, which is a normal outcome of
+        /// almost every hook that runs there.
         /// </summary>
         public List<RunningEvent> RunningEventsSnapshot()
         {
-            lock (CurrentlyRunningEvents)
-                return new List<RunningEvent>(CurrentlyRunningEvents);
+            lock (runningEvents)
+                return new List<RunningEvent>(runningEvents);
+        }
+
+        /// <summary>Adds a freshly assembled match to the live list.</summary>
+        private void AddRunningEvent(RunningEvent re)
+        {
+            lock (runningEvents) runningEvents.Add(re);
+        }
+
+        /// <summary>Takes a finished match off the live list. Safe to call for one already gone.</summary>
+        private void RemoveRunningEvent(RunningEvent re)
+        {
+            lock (runningEvents) runningEvents.Remove(re);
         }
 
         /// <summary>
@@ -225,9 +261,9 @@ namespace canevents.src.EventManagers
         /// this is the lookup on the way in.</summary>
         public RunningEvent FindRunningEvent(long id)
         {
-            lock (CurrentlyRunningEvents)
+            lock (runningEvents)
             {
-                foreach (var re in CurrentlyRunningEvents)
+                foreach (var re in runningEvents)
                     if (re.Id == id) return re;
             }
             return null;
@@ -237,9 +273,9 @@ namespace canevents.src.EventManagers
         /// ask this first: undoing anything is only safe once no live match owns them.</summary>
         internal bool IsInLiveEvent(string uid)
         {
-            lock (CurrentlyRunningEvents)
+            lock (runningEvents)
             {
-                foreach (var re in CurrentlyRunningEvents)
+                foreach (var re in runningEvents)
                     if (re.IsParticipant(uid)) return true;
             }
             return false;
@@ -249,9 +285,9 @@ namespace canevents.src.EventManagers
         /// <see cref="IsInLiveEvent"/>: an eliminated player's arena state is no longer needed.</summary>
         internal bool IsPlayingLiveEvent(string uid)
         {
-            lock (CurrentlyRunningEvents)
+            lock (runningEvents)
             {
-                foreach (var re in CurrentlyRunningEvents)
+                foreach (var re in runningEvents)
                     if (re.IsActive(uid)) return true;
             }
             return false;

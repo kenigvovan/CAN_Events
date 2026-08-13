@@ -65,6 +65,11 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
         {
             if (inv == null || outfits == null || outfits.Count == 0 || uid == null) return;
 
+            // Every piece is seated first, then notified parents-before-dependents: a gear slot
+            // announced while its parent is missing sends CombatOverhaul's client into an uncatchable
+            // MarkDirty recursion - see GearSlotOrderCompat.
+            var dressed = new List<ItemSlot>();
+
             foreach (string code in outfits[StableIndex(uid, outfits.Count)])
             {
                 var item = sapi.World.GetItem(new AssetLocation(code));
@@ -88,8 +93,13 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
                 if (slot.Itemstack != null) continue;
 
                 slot.Itemstack = new ItemStack(item);
-                slot.MarkDirty();
+                dressed.Add(slot);
             }
+
+            // Outfit pieces are conjured from thin air, so one whose parent slot item is missing is
+            // simply not worn - nothing to hand back.
+            Compat.GearSlotOrderCompat.MarkDirtyAfterFill(dressed, stack =>
+                sapi.World.Logger.Debug("[outfit] {0} skipped: its parent gear is not worn.", stack.Collectible?.Code));
 
             sapi.World.Logger.Debug("[outfit] Dressed {0}", who ?? uid);
         }

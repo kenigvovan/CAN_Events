@@ -98,14 +98,18 @@ namespace canevents.src.Gui.Native
             // With history: the History tab lists finished tournaments, already archived out of the
             // live list.
             networkHandler.RequestTournamentList(includeHistory: true);
+            // Who is free to fight changes minute to minute, so it is fetched with everything else
+            // and again whenever the tab is opened.
+            networkHandler.RequestDuelTargets();
             ComposeDialog();
         }
 
         public override void OnRenderGUI(float deltaTime)
         {
             base.OnRenderGUI(deltaTime);
-            // The one number here that moves without a packet behind it.
+            // The two numbers here that move without a packet behind them.
             UpdateSignupNotice();
+            UpdateQueueNotice();
         }
 
         private void RecomposeIfOpen()
@@ -123,6 +127,7 @@ namespace canevents.src.Gui.Native
                 new GuiTab { Name = Lang.Get("canevents:gui-tab-leaderboard"), DataInt = 3 },
                 new GuiTab { Name = Lang.Get("canevents:gui-tab-history"),     DataInt = 4 },
                 new GuiTab { Name = Lang.Get("canevents:gui-tab-tournaments"), DataInt = 5 },
+                new GuiTab { Name = Lang.Get("canevents:gui-tab-duels"),       DataInt = 6 },
             };
 
             var tabFont = CairoFont.WhiteDetailText();
@@ -153,8 +158,9 @@ namespace canevents.src.Gui.Native
             // short list.
             MinListHeight = MaxListHeight;
 
-            // Rosters and ladders are lists of rows, not a grid of choices.
-            SingleColumnCards = curTab == 2 || curTab == 3 || curTab == 4;
+            // Rosters and ladders are lists of rows, not a grid of choices. Duel targets are a roster
+            // too - one player per row reads better than a grid of names.
+            SingleColumnCards = curTab == 2 || curTab == 3 || curTab == 4 || curTab == 6;
 
             switch (curTab)
             {
@@ -163,6 +169,7 @@ namespace canevents.src.Gui.Native
                 case 2: ComposePartyTab(); break;
                 case 3: ComposeLeaderboardTab(); break;
                 case 4: ComposeHistoryTab(); break;
+                case 6: ComposeDuelsTab(); break;
                 default: ComposeTournamentTab(); break;
             }
 
@@ -236,6 +243,11 @@ namespace canevents.src.Gui.Native
         {
             curTab = index;
             scrollOffset = 0f;
+
+            // Who is available is the one list that goes stale while the window sits open - people
+            // start matches and finish them. Re-asked on arrival rather than on a timer.
+            if (curTab == 6) networkHandler.RequestDuelTargets();
+
             ComposeDialog();
         }
 

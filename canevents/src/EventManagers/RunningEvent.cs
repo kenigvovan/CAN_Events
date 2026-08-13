@@ -19,7 +19,16 @@ namespace canevents.src.EventManagers
         SearchingForLocation,
         LocationFound,
         Running,
-        Finished
+        Finished,
+
+        /// <summary>
+        /// Assembled, but still asking its players whether they are actually at the keyboard. Runs
+        /// BEFORE the arena search, so a match nobody confirms never occupies one.
+        ///
+        /// Appended rather than inserted: the value travels to clients in EventStateUpdateMsg, and
+        /// renumbering the others would make an older client read every state wrong.
+        /// </summary>
+        AwaitingReady
     }
     public class RunningEvent
     {
@@ -137,6 +146,37 @@ namespace canevents.src.EventManagers
             }
         }
 
+        /// <summary>
+        /// Admins watching this match without playing it. Deliberately outside <see cref="MatchRoster"/>:
+        /// an observer must not count towards the head count, the last-team-standing check, winners,
+        /// rewards, standings or the entry-fee pot. The only thing they share with participants is the
+        /// HUD feed - see <see cref="HudAudience"/>.
+        /// </summary>
+        public HashSet<string> Observers { get; } = new HashSet<string>();
+
+        /// <summary>
+        /// Everyone whose client should be drawing this match: the starting line-up (eliminated players
+        /// included - they are watching from the spectator seat) plus the observers. The single
+        /// recipient list for every HUD packet, so an observer cannot end up with half a HUD because
+        /// one send site was missed.
+        /// </summary>
+        public IEnumerable<IServerPlayer> HudAudience
+        {
+            get
+            {
+                foreach (var uid in ParticipantsBefore)
+                    if (sapi.World.PlayerByUid(uid) is IServerPlayer player) yield return player;
+
+                foreach (var uid in Observers)
+                {
+                    // An observer who somehow also sits on the roster (an admin who joined the match
+                    // and then asked to watch it) must not get every packet twice.
+                    if (Roster.IsParticipant(uid)) continue;
+                    if (sapi.World.PlayerByUid(uid) is IServerPlayer observer) yield return observer;
+                }
+            }
+        }
+
         /// <summary>The same, narrowed to those still in play - eliminated players are left out.</summary>
         public IEnumerable<IServerPlayer> OnlineActiveParticipants
         {
@@ -230,6 +270,16 @@ namespace canevents.src.EventManagers
 
             return spawnCount >= total ? Math.Max(1, size) : 1;
         }
+        /// <summary>
+        /// Who confirmed they are at the keyboard, while this match sits in
+        /// <see cref="EventState.AwaitingReady"/>. Bots and offline players are never asked; anyone
+        /// missing when the window closes is dropped from the line-up before it starts.
+        /// </summary>
+        public HashSet<string> ReadyUids { get; } = new HashSet<string>();
+
+        /// <summary>Server clock at which the ready window closes. 0 when none is running.</summary>
+        public long ReadyDeadlineMs { get; set; }
+
         /// <summary>Set once the match has a reason to end; the manager picks it up on its next tick.
         /// Write it through <see cref="RequestFinish"/>, which records why.</summary>
         public bool ShouldFinish { get; private set; }

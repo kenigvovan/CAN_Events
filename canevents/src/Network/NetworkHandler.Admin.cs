@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Vintagestory.API.Common;
 using Vintagestory.API.Config;
 using Vintagestory.API.Server;
 
@@ -44,7 +45,8 @@ namespace canevents.src.Network
 
                 case AdminAction.StopAll:
                 {
-                    var toStop = eventManager.CurrentlyRunningEvents.ToList();
+                    // Snapshot: FinishEvent takes each match off the live list as it goes.
+                    var toStop = eventManager.RunningEventsSnapshot();
                     foreach (var re in toStop) eventManager.FinishEvent(re);
                     Reply(player, true, "Stopped " + toStop.Count + " running event(s).");
                     break;
@@ -59,7 +61,7 @@ namespace canevents.src.Network
                     break;
 
                 case AdminAction.BotMatch:
-                    StartBotMatch(player, msg.EventCode, msg.IntValue);
+                    StartBotMatch(player, msg.EventCode, msg.IntValue, msg.BotMode);
                     break;
 
                 case AdminAction.ScheduleInterval:
@@ -75,9 +77,15 @@ namespace canevents.src.Network
             }
         }
 
-        /// <summary>Testing shortcut: puts the admin into a match of this event against bots right
-        /// now, since a one-player lobby ends instantly in most modes.</summary>
-        private void StartBotMatch(IServerPlayer player, string eventCode, int botCount)
+        /// <summary>
+        /// Testing shortcut: starts a match of this event against bots right now, since a one-player
+        /// lobby ends instantly in most modes. What the caller does in it is
+        /// <paramref name="mode"/>: fight, be seated to watch, or nothing at all. The latter two run
+        /// on bots alone, which is the only way to reach the spectator features on a server with one
+        /// person on it - a participant may not watch their own match.
+        /// </summary>
+        private void StartBotMatch(IServerPlayer player, string eventCode, int botCount,
+            BotMatchMode mode = BotMatchMode.Play)
         {
             var template = eventManager.FindEventByCode(eventCode);
             if (template == null) { Reply(player, false, "No such event: " + eventCode); return; }
@@ -90,16 +98,72 @@ namespace canevents.src.Network
             ev.EntryFee = null;
             ev.Rated = false;
 
-            int bots = Math.Clamp(botCount, 1, 32);
-            var teams = new List<IReadOnlyList<string>> { new List<string> { player.PlayerUID } };
+            bool playing = mode == BotMatchMode.Play;
+
+            // Two sides minimum, and with the admin out of the line-up the bots have to supply both:
+            // StartMatchFor refuses a single-team match outright.
+            int bots = Math.Clamp(botCount, playing ? 1 : 2, 32);
+
+            var teams = new List<IReadOnlyList<string>>();
+            if (playing) teams.Add(new List<string> { player.PlayerUID });
             for (int i = 0; i < bots; i++)
                 teams.Add(new List<string> { Bots.BotIdentity.NewUid(i) });
 
             var re = eventManager.StartMatchFor(ev, teams, null, null, out string reason);
-            if (re != null) re.SuppressRating = true;
-            Reply(player, re != null, re != null
-                ? "Started " + ev.Code + " with " + bots + " bot(s)."
-                : "Could not start: " + reason);
+            if (re == null) { Reply(player, false, "Could not start: " + reason); return; }
+
+            re.SuppressRating = true;
+
+            string tail = mode switch
+            {
+                BotMatchMode.Watch => " - taking you to the stands.",
+                // Says where to go next: the point of this mode is to then join the ordinary way,
+                // and the match id is what /canspectate wants.
+                BotMatchMode.Unattended => " (id " + re.Id + "). Join it with /canspectate watch "
+                    + re.Id + ", or from the events browser.",
+                _ => "."
+            };
+            Reply(player, true, "Started " + ev.Code + " with " + bots + " bot(s)" + tail);
+
+            if (mode == BotMatchMode.Watch) ObserveWhenPlaced(player, re);
+        }
+
+        /// <summary>
+        /// Seats the caller as an observer as soon as the match has an arena. The seat needs somewhere
+        /// to hover, and a fresh match spends its first seconds in SearchingForLocation - so this
+        /// waits for the arena rather than refusing on the spot.
+        /// </summary>
+        private void ObserveWhenPlaced(IServerPlayer player, EventManagers.RunningEvent re)
+        {
+            const int attempts = 20;
+            const int intervalMs = 1000;
+
+            string uid = player.PlayerUID;
+            long matchId = re.Id;
+            int left = attempts;
+
+            void Retry(float _)
+            {
+                var pl = sapi.World.PlayerByUid(uid) as IServerPlayer;
+                if (pl == null) return;
+
+                // Gone or over before it was placed: nothing to watch, and no point saying so twice.
+                var match = eventManager.FindRunningEvent(matchId);
+                if (match == null || match.EventState == EventManagers.EventState.Finished) return;
+
+                if (match.Place != null)
+                {
+                    var (_, message) = eventManager.StartObserving(pl, matchId, notifyClient: true);
+                    if (message != null) sapi.World.Logger.VerboseDebug("[canevents] bot-match observe: {0}", message);
+                    return;
+                }
+
+                if (--left > 0) sapi.Event.RegisterCallback(Retry, intervalMs);
+                else pl.SendMessage(0, Lang.Get("canevents:spectate-not-placed", match.Event.Code),
+                    EnumChatType.Notification);
+            }
+
+            sapi.Event.RegisterCallback(Retry, intervalMs);
         }
 
         private void ForceStartEvent(IServerPlayer player, string eventCode)
@@ -150,7 +214,7 @@ namespace canevents.src.Network
                 MinPlayersToStart = scheduler.MinPlayersToStart,
                 MaxConcurrentEvents = scheduler.MaxConcurrentEvents,
                 OnlinePlayers = sapi.World.AllOnlinePlayers.Length,
-                RunningEvents = eventManager.CurrentlyRunningEvents.Count
+                RunningEvents = eventManager.RunningEventCount
             }, player);
         }
 

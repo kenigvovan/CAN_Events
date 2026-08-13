@@ -65,5 +65,29 @@ namespace canevents.src
         // On a void fee match (draw or under the contribution-gate), refund a disconnector's stake
         // (true) or burn it (false). On a real result a disconnect always forfeits it (anti-dodge).
         public bool entryFeeRefundForfeitOnVoid = true;
+
+        // Ready check
+        // Seconds a queue match waits for its players to confirm they are at the keyboard before it
+        // looks for an arena. A queue slot is taken minutes in advance and people wander off; without
+        // this the match started with them, costing their side a player and them a loss they never
+        // played. 0 disables the check entirely.
+        public int queueReadyCheckSeconds = 20;
+
+        // Duels
+        // Player-to-player challenges. A duel never affects Elo whatever it is played for: the
+        // players pick their own opponent, so a rated one would just be two people trading wins.
+        public bool duelsEnabled = true;
+
+        // How long a challenge waits for an answer before it lapses.
+        public int duelInviteTimeoutSeconds = 60;
+
+        // Spectating
+        // Seat idle admins as observers of every match that goes live. Off by default: it moves a
+        // player without them asking. They can always watch on demand with /canspectate.
+        public bool autoSpectateAdmins = false;
+
+        // How often (ms) an observer's client is sent participant positions and health. Only
+        // observers with the admin privilege receive it, and only while at least one is watching.
+        public int spectatorTelemetryIntervalMs = 500;
     }
 }

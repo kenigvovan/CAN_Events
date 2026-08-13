@@ -308,6 +308,7 @@ namespace canevents.src.Gui
                 if (BeginTab("Content", 4)) { DrawContentTab(); ImGui.EndTabItem(); }
                 if (BeginTab("Economy", 5)) { DrawEconomyTab(); ImGui.EndTabItem(); }
                 if (BeginTab("Tournaments", 7)) { DrawTournamentTab(); ImGui.EndTabItem(); }
+                if (BeginTab("Players", 9)) { DrawPlayersTab(); ImGui.EndTabItem(); }
                 if (BeginTab("Debug", 8)) { DrawDebugTab(); ImGui.EndTabItem(); }
                 if (BeginTab("Help", 6)) { DrawHelpTab(); ImGui.EndTabItem(); }
                 ImGui.EndTabBar();
@@ -404,6 +405,7 @@ namespace canevents.src.Gui
                     networkHandler.RequestTournamentList();
                     networkHandler.RequestScheduleState();
                     break;
+                case 9: networkHandler.RequestPlayerAccess(); break;
             }
         }
 

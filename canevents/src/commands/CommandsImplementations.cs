@@ -181,8 +181,159 @@ namespace canevents.src.commands
             var spectator = canEventManager?.SpectatorManager;
             if (spectator == null) return TextCommandResult.Error("Spectator manager not available.");
 
+            // An observer is on a match's feed as well as in the seat; leaving has to undo both.
+            if (canEventManager.StopObserving(player))
+                return TextCommandResult.Success(Lang.Get("canevents:spectate-stopped"));
+
             spectator.RemoveSpectator(player);
             return TextCommandResult.Success(Lang.Get("canevents:spectator-left"));
+        }
+
+        /// <summary>
+        /// Start watching a live match. With no id: the only running match, or a list to pick from.
+        /// </summary>
+        public TextCommandResult WatchEvent(TextCommandCallingArgs args)
+        {
+            var player = args.Caller.Player as IServerPlayer;
+            if (player == null) return TextCommandResult.Error("Players only.");
+            if (canEventManager == null) return TextCommandResult.Error("Event manager not available.");
+
+            // Omitted, like every optional parser here, arrives as null - and 0 is what
+            // StartObserving reads as "the only match running", which is exactly the intent.
+            var rawId = args.Parsers[0].GetValue();
+            long eventId = rawId == null ? 0 : Convert.ToInt64(rawId);
+
+            var (ok, message) = canEventManager.StartObserving(player, eventId);
+            if (ok) return TextCommandResult.Success(message);
+
+            // A refusal that is really "say which one" is far more useful with the list attached.
+            var live = canEventManager.WatchableEvents();
+            if (eventId <= 0 && live.Count > 1)
+                return TextCommandResult.Success(message + "\n" + DescribeWatchable(live));
+
+            return TextCommandResult.Error(message);
+        }
+
+        /// <summary>
+        /// Points the broadcaster camera at a named participant. This lives on the command line
+        /// rather than on the panel because the panel is a HUD element: it never takes the cursor,
+        /// so a button on it could be drawn but never clicked. The two hotkeys step through the
+        /// line-up; this is how you go straight to someone.
+        /// </summary>
+        public TextCommandResult FollowParticipant(TextCommandCallingArgs args)
+        {
+            var player = args.Caller.Player as IServerPlayer;
+            if (player == null) return TextCommandResult.Error("Players only.");
+
+            string name = args.Parsers[0].GetValue() as string;
+            if (string.IsNullOrWhiteSpace(name))
+                return TextCommandResult.Error(Lang.Get("canevents:spectate-follow-nobody"));
+
+            var net = sapi.ModLoader.GetModSystem<canevents>()?.ServerNetworkHandler;
+            if (net == null) return TextCommandResult.Error("Network handler not available.");
+
+            // By name, since that is what an admin reads off the panel - bots included, and a bot has
+            // no player object, so this cannot go through PlayerByUid.
+            string uid = ResolveParticipantUid(player, name);
+            if (uid == null) return TextCommandResult.Error(Lang.Get("canevents:spectate-follow-no-such", name));
+
+            var (ok, message) = net.FollowParticipant(player, uid);
+            return ok ? TextCommandResult.Success(message) : TextCommandResult.Error(message);
+        }
+
+        // Matches a name against the line-up of the match this player is watching. Case-insensitive:
+        // it is typed from a HUD panel, not copied.
+        private string ResolveParticipantUid(IServerPlayer observer, string name)
+        {
+            long eventId = canEventManager?.SpectatorManager?.SeatedEventId(observer.PlayerUID) ?? 0;
+            var re = eventId > 0 ? canEventManager.FindRunningEvent(eventId) : null;
+            if (re == null) return null;
+
+            foreach (var uid in re.ParticipantsBefore)
+                if (string.Equals(canEventManager.NameOf(uid), name, StringComparison.OrdinalIgnoreCase))
+                    return uid;
+            return null;
+        }
+
+        /// <summary>Challenge a player to a duel. The kind is optional and defaults to friendly.</summary>
+        public TextCommandResult DuelChallenge(TextCommandCallingArgs args)
+        {
+            var player = args.Caller.Player as IServerPlayer;
+            if (player == null) return TextCommandResult.Error("Players only.");
+
+            var duels = sapi.ModLoader.GetModSystem<canevents>()?.Duels;
+            if (duels == null) return TextCommandResult.Error(Lang.Get("canevents:duel-disabled"));
+
+            string targetName = args.Parsers[0].GetValue() as string;
+
+            // Kind is optional: the common case is "let's just fight", and typing a word for it every
+            // time would be friction on the path people actually use. A stake implies a wager, so
+            // "/canduel bob gear-rusty:2" needs no keyword.
+            string second = (args.Parsers[1].GetValue() as string)?.Trim();
+            bool isWager = !string.IsNullOrEmpty(second)
+                && !second.Equals("friendly", StringComparison.OrdinalIgnoreCase);
+
+            string wager = null;
+            if (isWager)
+                wager = second.Equals("wager", StringComparison.OrdinalIgnoreCase) ? null : second;
+
+            if (isWager && wager == null)
+                return TextCommandResult.Error(Lang.Get("canevents:duel-wager-needs-items"));
+
+            var (ok, message) = duels.Challenge(player, targetName,
+                isWager ? Duels.DuelKind.Wager : Duels.DuelKind.Friendly, wager);
+            return ok ? TextCommandResult.Success(message) : TextCommandResult.Error(message);
+        }
+
+        public TextCommandResult DuelAccept(TextCommandCallingArgs args)
+        {
+            var player = args.Caller.Player as IServerPlayer;
+            if (player == null) return TextCommandResult.Error("Players only.");
+
+            var duels = sapi.ModLoader.GetModSystem<canevents>()?.Duels;
+            if (duels == null) return TextCommandResult.Error(Lang.Get("canevents:duel-disabled"));
+
+            var (ok, message) = duels.Accept(player);
+            return ok ? TextCommandResult.Success(message) : TextCommandResult.Error(message);
+        }
+
+        public TextCommandResult DuelDecline(TextCommandCallingArgs args)
+        {
+            var player = args.Caller.Player as IServerPlayer;
+            if (player == null) return TextCommandResult.Error("Players only.");
+
+            var duels = sapi.ModLoader.GetModSystem<canevents>()?.Duels;
+            if (duels == null) return TextCommandResult.Error(Lang.Get("canevents:duel-disabled"));
+
+            var (ok, message) = duels.Decline(player);
+            return ok ? TextCommandResult.Success(message) : TextCommandResult.Error(message);
+        }
+
+        /// <summary>List the matches that can be watched right now, with the ids /canspectate takes.</summary>
+        public TextCommandResult ListWatchable(TextCommandCallingArgs args)
+        {
+            if (canEventManager == null) return TextCommandResult.Error("Event manager not available.");
+
+            var live = canEventManager.WatchableEvents();
+            if (live.Count == 0) return TextCommandResult.Success(Lang.Get("canevents:spectate-none-running"));
+
+            return TextCommandResult.Success(DescribeWatchable(live));
+        }
+
+        private static string DescribeWatchable(List<RunningEvent> live)
+        {
+            var sb = new System.Text.StringBuilder();
+            foreach (var re in live)
+            {
+                if (sb.Length > 0) sb.Append('\n');
+                sb.Append(Lang.Get("canevents:spectate-list-row",
+                    re.Id,
+                    re.Event?.Code ?? "?",
+                    re.Place?.Name ?? "-",
+                    re.ParticipantsStillInEvent.Count,
+                    re.ParticipantsBefore.Count));
+            }
+            return sb.ToString();
         }
 
         public TextCommandResult ShowStats(TextCommandCallingArgs args)
@@ -292,7 +443,8 @@ namespace canevents.src.commands
 
         public TextCommandResult AdminStopAll(TextCommandCallingArgs args)
         {
-            var toStop = canEventManager.CurrentlyRunningEvents.ToList();
+            // Snapshot: FinishEvent takes each match off the live list as it goes.
+            var toStop = canEventManager.RunningEventsSnapshot();
             foreach (var re in toStop)
             {
                 canEventManager.FinishEvent(re);

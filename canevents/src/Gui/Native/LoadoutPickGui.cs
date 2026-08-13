@@ -32,13 +32,17 @@ namespace canevents.src.Gui.Native
         private List<ItemStack>[] setStacks = new List<ItemStack>[0];
         private int selected;
 
-        // Sized so three cards fit: picking a class should not mean scrolling to see the options.
         private const double CardWidth = 470;
-        private const double ListViewportHeight = 280;
 
-        private ElementBounds clipBounds;
-        private double listTop;
-        private float setsScroll;
+        /// <summary>
+        /// Height the card list turned out to be, carried from one composition to the next. Starts at
+        /// a guess because nothing is measured yet; the first pass corrects it, and everything below
+        /// the list is positioned from it.
+        /// </summary>
+        private double measuredListHeight = 260;
+
+        // Guards the single recompose the measurement triggers, so it cannot recurse.
+        private bool measuring;
 
         public LoadoutPickGui(ICoreClientAPI capi, ClientNetworkHandler networkHandler) : base(capi)
         {
@@ -173,21 +177,25 @@ namespace canevents.src.Gui.Native
                 });
             }
 
-            // Fixed viewport with a scrollbar, not a box sized to a guessed row height: cards vary in
-            // height with how far their item list wraps.
-            listTop = y;
-            var listBounds = ElementBounds.Fixed(0, y, CardWidth, ListViewportHeight);
-            // Fixed coords of its own, not a copy of listBounds: ForkBoundingParent rearranges the
-            // child it takes, so a copy made after the fork starts at y=0 instead of the list's top.
-            var scrollbarBounds = ElementBounds.Fixed(
-                CardWidth + 12, y, 20, ListViewportHeight + 4);
-            clipBounds = listBounds.ForkBoundingParent();
+            // No clip and no scrollbar: the list shows every class and the dialog grows to fit.
+            //
+            // It used to be a fixed-height viewport, and that is what cut the last class in half -
+            // the clip edge fell wherever the constant put it, regardless of where cards ended. Three
+            // attempts to compute a better constant failed, because the height a card needs is not
+            // knowable before it is composed, and the snap-to-boundary trick copied from the browser
+            // turns out to be dead there too (it pins MinListHeight to MaxListHeight, so its own
+            // adjustment never fires).
+            //
+            // A class list is three to six entries. Sizing the dialog to them costs a taller window
+            // in the rare case of many classes; the alternative cost an invisible one every time.
+            // Height from the previous pass. FixedUnder and every y below read fixedHeight at the
+            // moment they are called, and the cell list only measures itself later, during Compose -
+            // so on the first pass everything under the list stacks on top of it. The measurement is
+            // taken afterwards and the dialog is composed once more with it (see MeasureList).
+            var listBounds = ElementBounds.Fixed(0, y, CardWidth, measuredListHeight);
 
-            composer
-                .BeginClip(clipBounds)
-                .AddCellList(listBounds, (row, bounds) => new EventTileRow(capi, row, bounds), cards, "sets")
-                .EndClip()
-                .AddVerticalScrollbar(OnSetsScroll, scrollbarBounds, "setscroll");
+            composer.AddCellList(listBounds,
+                (row, bounds) => new EventTileRow(capi, row, bounds), cards, "sets");
 
             // Cell padding has to be set before Compose(), when the list builds its cell bounds.
             var setList = composer.GetCellList<EventCardRow>("sets");
@@ -195,7 +203,7 @@ namespace canevents.src.Gui.Native
             setList.UnscaledCellVerPadding = 0;
             setList.UnscaledCellHorPadding = 4;
 
-            y += ListViewportHeight + 12;
+            y += measuredListHeight + 12;
 
             if (pickRequest != null)
             {
@@ -218,34 +226,31 @@ namespace canevents.src.Gui.Native
             // Restore the switch state - Compose() runs again on every selection change.
             if (pickRequest != null) SingleComposer.GetSwitch("alwaysuse")?.SetValue(alwaysUse);
 
-            SetupSetsScroll();
+            // Now that the cards have been measured, lay the dialog out again around their real
+            // height. Guarded, and settles immediately: the second pass measures the same cards.
+            if (!measuring && MeasureList())
+            {
+                measuring = true;
+                Compose();
+                measuring = false;
+            }
         }
 
-        // As in the browser's list: SetHeights fires the change callback on a fresh scrollbar sitting
-        // at zero, so the wanted offset has to be saved across it or every recompose scrolls to the top.
-        private void SetupSetsScroll()
+        /// <summary>
+        /// Records how tall the composed card list actually is. True when that differs from what this
+        /// pass was built with, meaning everything below the list is in the wrong place and the
+        /// dialog has to be composed again.
+        /// </summary>
+        private bool MeasureList()
         {
             var list = SingleComposer?.GetCellList<EventCardRow>("sets");
-            var scrollbar = SingleComposer?.GetScrollbar("setscroll");
-            if (list == null || scrollbar == null || clipBounds == null) return;
+            if (list == null) return false;
 
-            float wanted = setsScroll;
-            scrollbar.Bounds.CalcWorldBounds();
-            scrollbar.SetHeights((float)ListViewportHeight, (float)list.Bounds.fixedHeight);
+            double actual = list.Bounds.fixedHeight;
+            if (actual <= 0 || Math.Abs(actual - measuredListHeight) < 0.5) return false;
 
-            wanted = Math.Min(wanted, (float)Math.Max(0, list.Bounds.fixedHeight - ListViewportHeight));
-            setsScroll = wanted;
-            scrollbar.CurrentYPosition = wanted;
-            OnSetsScroll(wanted);
-        }
-
-        private void OnSetsScroll(float value)
-        {
-            setsScroll = value;
-            var list = SingleComposer?.GetCellList<EventCardRow>("sets");
-            if (list == null) return;
-            list.Bounds.fixedY = listTop - value;
-            list.Bounds.CalcWorldBounds();
+            measuredListHeight = actual;
+            return true;
         }
 
         private bool OnConfirm()
@@ -281,6 +286,17 @@ namespace canevents.src.Gui.Native
         /// <summary>Raised when a queue-time pick is dismissed without confirming. Wired to reopen
         /// the browser, which stepped aside for this dialog.</summary>
         public Action OnQueuePickCancelled;
+
+        /// <summary>
+        /// Re-runs the layout once the dialog is actually open. Compose() is called from the Open*
+        /// methods, before TryOpen, and a layout built then is not necessarily the one the open
+        /// dialog ends up with.
+        /// </summary>
+        public override void OnGuiOpened()
+        {
+            base.OnGuiOpened();
+            Compose();
+        }
 
         // The one funnel every way out goes through (Cancel, the cross, Escape, the countdown), which
         // is why dismissal logic lives here and not in OnClose - Escape never calls OnClose.

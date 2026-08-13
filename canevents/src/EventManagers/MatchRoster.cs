@@ -52,6 +52,11 @@ namespace canevents.src.EventManagers
             if (!string.IsNullOrEmpty(uid)) preStartDropouts.Add(uid);
         }
 
+        /// <summary>Has this player already dropped out before the start? Asked by the ready check,
+        /// which must tell "declined" apart from "has not answered yet".</summary>
+        public bool IsPreStartDropout(string uid)
+            => !string.IsNullOrEmpty(uid) && preStartDropouts.Contains(uid);
+
         /// <summary>
         /// Copies the starting line-up into the active one when the match starts. Groups are
         /// deep-copied (see the invariant above); pre-start dropouts are skipped and any group left

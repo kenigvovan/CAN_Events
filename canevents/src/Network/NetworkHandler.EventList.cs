@@ -123,12 +123,21 @@ namespace canevents.src.Network
                 bool isDisabled = !eventManager.IsEventEnabled(ev.Code);
                 int currentPlayers = 0;
                 bool isQueued = false;
+                // How long this player has been waiting, so the card can say it. Taken from their own
+                // registration rather than the oldest in the queue: "you have waited 12 minutes" is
+                // what decides whether to keep waiting, and someone else's wait says nothing about it.
+                double queuedSeconds = 0;
+
                 if (queueSnapshot.TryGetValue(ev, out var regs))
                 {
                     foreach (var r in regs)
                     {
                         currentPlayers += r.PlayersCount;
-                        if (r.PlayersGuids.Contains(playerUid)) isQueued = true;
+                        if (!r.PlayersGuids.Contains(playerUid)) continue;
+
+                        isQueued = true;
+                        queuedSeconds = Math.Max(0,
+                            (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - r.TimeStampCreated) / 1000.0);
                     }
                 }
 
@@ -190,6 +199,7 @@ namespace canevents.src.Network
                         State = 0,
                         EventId = 0,
                         IsQueued = isQueued,
+                        QueuedSeconds = queuedSeconds,
                         LoadoutSets = LoadoutSetInfoMsg.FromArrays(loadoutSetNames, loadoutSetItemCodes, loadoutSetDescriptions),
                         EntryFeeItems = entryFeeItems,
                         EntryFeeRakePercent = rake,

@@ -120,7 +120,25 @@ namespace canevents.src.Network
                 .RegisterMessageType<TournamentReadyResponseMsg>()
                 .RegisterMessageType<TournamentReadyClosedMsg>()
                 .RegisterMessageType<EventInviteMsg>()
-                .RegisterMessageType<EventInviteClosedMsg>();
+                .RegisterMessageType<EventInviteClosedMsg>()
+                .RegisterMessageType<SpectateRequestMsg>()
+                .RegisterMessageType<SpectateStateMsg>()
+                .RegisterMessageType<SpectateFollowMsg>()
+                .RegisterMessageType<SpectatorTelemetryMsg>()
+                .RegisterMessageType<SpectateCameraMsg>()
+                .RegisterMessageType<RequestPlayerAccessMsg>()
+                .RegisterMessageType<PlayerAccessListMsg>()
+                .RegisterMessageType<PlayerAccessEntryMsg>()
+                .RegisterMessageType<PlayerAccessActionMsg>()
+                .RegisterMessageType<DuelChallengeMsg>()
+                .RegisterMessageType<DuelPromptMsg>()
+                .RegisterMessageType<DuelResponseMsg>()
+                .RegisterMessageType<DuelClosedMsg>()
+                .RegisterMessageType<RequestDuelTargetsMsg>()
+                .RegisterMessageType<DuelTargetListMsg>()
+                .RegisterMessageType<MatchReadyRequestMsg>()
+                .RegisterMessageType<MatchReadyResponseMsg>()
+                .RegisterMessageType<MatchReadyClosedMsg>();
         }
     }
 }

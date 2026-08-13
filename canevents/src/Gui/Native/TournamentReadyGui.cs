@@ -31,11 +31,21 @@ namespace canevents.src.Gui.Native
         public void OpenFor(TournamentReadyRequestMsg msg)
         {
             if (msg == null) return;
+
+            // Rings for a match not already answered. The highest stakes of the three prompts -
+            // ignoring this one forfeits a bracket match - so silence here is the least affordable.
+            // Skipped on a reconnect re-send of a match already confirmed: nothing is being asked.
+            bool isNew = !msg.AlreadyReady
+                && (request == null || request.MatchId != msg.MatchId
+                    || request.TournamentId != msg.TournamentId);
+
             request = msg;
             answered = msg.AlreadyReady;
             shownAt = capi.ElapsedMilliseconds / 1000.0;
             Compose();
             TryOpen();
+
+            if (isNew) capi.Gui.PlaySound("effect/receptionbell");
         }
 
         /// <summary>Server says this prompt is over (answered elsewhere, expired, opponent forfeited).</summary>

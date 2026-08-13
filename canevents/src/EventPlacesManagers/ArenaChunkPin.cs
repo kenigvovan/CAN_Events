@@ -58,8 +58,14 @@ namespace canevents.src.EventPlacesManagers
         /// <summary>Re-check interval while somebody is still standing in the arena.</summary>
         private const int RetrySeconds = 30;
 
-        /// <summary>Give up waiting for the area to empty after this long and unload anyway.</summary>
-        private const int MaxWaitSeconds = 600;
+        /// <summary>
+        /// How far around a column somebody still counts as "there", in chunk columns. One column is
+        /// 32 blocks: checking only the exact column meant an admin looking at the arena from the
+        /// next one over did not register, and the ground vanished in front of them. Unloading is
+        /// unconditional (WorldAPI.UnloadChunkColumn drops the chunks whoever is standing on them),
+        /// so this check is the only thing protecting anyone nearby.
+        /// </summary>
+        private const int NearbyColumns = 2;
 
         /// <summary>
         /// Drops this match's claim. A column is let go only once the last claim is gone, the linger has
@@ -83,19 +89,23 @@ namespace canevents.src.EventPlacesManagers
                 }
             }
 
-            foreach (var c in expiring) ScheduleUnload(sapi, c, LingerSeconds, 0);
+            foreach (var c in expiring) ScheduleUnload(sapi, c, LingerSeconds);
         }
 
-        private static void ScheduleUnload(ICoreServerAPI sapi, Vec2i column, int delaySeconds, int waited)
+        private static void ScheduleUnload(ICoreServerAPI sapi, Vec2i column, int delaySeconds)
         {
             sapi.Event.RegisterCallback(_ =>
             {
                 // Re-pinned in the meantime - another match took this arena, leave it alone.
                 lock (pinCounts) if (pinCounts.ContainsKey(Key(column))) return;
 
-                if (waited < MaxWaitSeconds && SomeoneIn(sapi, column))
+                // Waits as long as it takes, with no deadline. There used to be one, after which the
+                // column went regardless - which is exactly the case that matters: an admin standing
+                // in the arena after a bot match, looking at it. Nothing is leaked by waiting: the
+                // moment they walk away, the next check unloads it.
+                if (SomeoneNear(sapi, column))
                 {
-                    ScheduleUnload(sapi, column, RetrySeconds, waited + RetrySeconds);
+                    ScheduleUnload(sapi, column, RetrySeconds);
                     return;
                 }
 
@@ -108,14 +118,22 @@ namespace canevents.src.EventPlacesManagers
             }, delaySeconds * 1000);
         }
 
-        private static bool SomeoneIn(ICoreServerAPI sapi, Vec2i column)
+        private static bool SomeoneNear(ICoreServerAPI sapi, Vec2i column)
         {
             int size = GlobalConstants.ChunkSize;
             foreach (var p in sapi.World.AllOnlinePlayers)
             {
-                var pos = p?.Entity?.ServerPos;
+                var pos = p?.Entity?.Pos;
                 if (pos == null) continue;
-                if ((int)pos.X / size == column.X && (int)pos.Z / size == column.Y) return true;
+
+                // Integer division, so a negative coordinate rounds towards zero rather than down -
+                // hence the floor. Getting this wrong puts the boundary in the wrong place west and
+                // north of the origin, where most test worlds are not, which is how it survives.
+                int px = (int)Math.Floor(pos.X / size);
+                int pz = (int)Math.Floor(pos.Z / size);
+
+                if (Math.Abs(px - column.X) <= NearbyColumns && Math.Abs(pz - column.Y) <= NearbyColumns)
+                    return true;
             }
             return false;
         }

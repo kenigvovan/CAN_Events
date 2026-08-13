@@ -245,11 +245,47 @@ namespace canevents.src.commands
                         .HandleWith(ci.LeaveQueue)
                         .WithDesc("Leave the event queue.");
 
+            // The root form (watch a match) needs the mod's spectate privilege; "off" does not, so a
+            // player whose privilege was revoked while seated can still get out.
             sapi.ChatCommands.Create("canspectate")
                 .RequiresPlayer().RequiresPrivilege(Privilege.chat)
                         .BeginSubCommand("off")
                             .HandleWith(ci.LeaveSpectator)
                             .WithDesc("Leave spectator mode after an event.")
+                        .EndSubCommand()
+                        .BeginSubCommand("list")
+                            .RequiresPrivilege(CanEventsPrivileges.Spectate)
+                            .HandleWith(ci.ListWatchable)
+                            .WithDesc("List the live matches you can watch, with their ids.")
+                        .EndSubCommand()
+                        .BeginSubCommand("watch")
+                            .RequiresPrivilege(CanEventsPrivileges.Spectate)
+                            .WithArgs(parsers.OptionalInt("eventId"))
+                            .HandleWith(ci.WatchEvent)
+                            .WithDesc("Watch a live match. No id = the only one running.")
+                        .EndSubCommand()
+                        .BeginSubCommand("follow")
+                            .RequiresPrivilege(CanEventsPrivileges.Spectate)
+                            .WithArgs(parsers.Word("player"))
+                            .HandleWith(ci.FollowParticipant)
+                            .WithDesc("Move the camera to a participant of the match you are watching.")
+                        .EndSubCommand();
+
+            // Duels need no privilege: challenging someone is ordinary play, and every request is
+            // validated server-side anyway.
+            sapi.ChatCommands.Create("canduel")
+                .RequiresPlayer().RequiresPrivilege(Privilege.chat)
+                        .WithArgs(parsers.Word("player"), parsers.OptionalWord("stake"))
+                        .HandleWith(ci.DuelChallenge)
+                        .WithDesc("Challenge a player. Usage: /canduel <player> [code:qty;code:qty] "
+                            + "- with a stake it becomes a wager, without one it is a friendly.")
+                        .BeginSubCommand("accept")
+                            .HandleWith(ci.DuelAccept)
+                            .WithDesc("Accept the duel you were challenged to.")
+                        .EndSubCommand()
+                        .BeginSubCommand("decline")
+                            .HandleWith(ci.DuelDecline)
+                            .WithDesc("Decline the pending duel, or take back the one you sent.")
                         .EndSubCommand();
 
             sapi.ChatCommands.Create("canstats")

@@ -19,7 +19,9 @@ namespace canevents.src.EventManagers.eventBehavior
     // to the survivor with most kills (ties -> draw). The zone shrinks over phases and damages
     // anyone outside; centre+initial radius come from the place, phases from event attributes so
     // one schedule works across arenas. Kill/death tallies and loadouts live in KillScoringEB.
-    public class HungerGamesEB : KillScoringEB, IStartCryProvider
+    // IDrawsOwnBoundary: the storm ring IS the edge here, and it moves. Outlining the map footprint
+    // as well would draw a border players are not being held to.
+    public class HungerGamesEB : KillScoringEB, IStartCryProvider, IDrawsOwnBoundary
     {
 
         private readonly ShrinkingZone zone = new ShrinkingZone();

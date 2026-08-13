@@ -51,6 +51,7 @@ namespace canevents.src.Gui.Native
             ComposeCards();
             ComposeRefreshButton(() => networkHandler.RequestEventList());
             ComposeSignupNotice();
+            ComposeQueueNotice();
         }
 
         private void AddEventCard(EventListEntryMsg ev)
@@ -84,6 +85,28 @@ namespace canevents.src.Gui.Native
                         networkHandler.SendJoinRequest(ev.GameModeCode);
                         networkHandler.RequestEventList();
                     }
+                };
+            }
+            else if (networkHandler.SpectatePrivileged && !networkHandler.IsObserving)
+            {
+                // A live match a broadcaster may drop into. The card is the shortest path there:
+                // it already knows the match id, which the chat command otherwise has to be told.
+                badge = Lang.Get("canevents:gui-watch");
+                accent = Palette.Live;
+                onClick = () =>
+                {
+                    networkHandler.SendSpectateRequest(ev.EventId);
+                    TryClose();          // the point is to look at the arena, not at this list
+                };
+            }
+            else if (networkHandler.IsObserving && networkHandler.ObservedEventId == ev.EventId)
+            {
+                badge = Lang.Get("canevents:gui-stop-watching");
+                accent = Palette.Stop;
+                onClick = () =>
+                {
+                    networkHandler.SendStopSpectating();
+                    networkHandler.RequestEventList();
                 };
             }
             else
@@ -232,6 +255,7 @@ namespace canevents.src.Gui.Native
                 EventState.LocationFound        => Lang.Get("canevents:gui-state-starting"),
                 EventState.Running              => Lang.Get("canevents:gui-state-running"),
                 EventState.Finished             => Lang.Get("canevents:gui-state-finished"),
+                EventState.AwaitingReady        => Lang.Get("canevents:gui-state-ready"),
                 _                               => Lang.Get("canevents:gui-state-queue")
             };
         }

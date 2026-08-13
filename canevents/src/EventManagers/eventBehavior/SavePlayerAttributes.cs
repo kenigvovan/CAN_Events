@@ -108,7 +108,13 @@ namespace canevents.src.EventManagers.eventBehavior
             {
                 // If this hit would kill, clear the inventory before EntityPlayer.Die() drops it.
                 // The saved backup is untouched and restored in OnEnd.
-                if (damage >= health.Health)
+                if (damage >= health.Health
+                    // ...unless a knock-down mod is about to swallow the blow. It hooks onDamaged
+                    // after us on every hit, so "lethal" here does not mean the player dies - and
+                    // emptying the inventory of someone who only got knocked down looks like theft.
+                    // A death that happens anyway is still covered by OnAnyEntityDeath, which runs
+                    // inside Die() ahead of the engine's drop.
+                    && !Compat.DownedCompat.WouldGoDownInsteadOfDying(player.Entity, dmgSource))
                 {
                     PlayerInventoryBackup.ClearInventory(player);
                 }

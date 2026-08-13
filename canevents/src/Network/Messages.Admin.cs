@@ -62,12 +62,34 @@ namespace canevents.src.Network
         ScheduleOn = 2,
         ScheduleOff = 3,
         ScheduleInterval = 4,
-        /// <summary>Testing: start an event right now with the caller plus IntValue bots.</summary>
+        /// <summary>Testing: start an event right now against bots. What the caller's own part in it
+        /// is comes from <see cref="AdminActionMsg.BotMode"/>.</summary>
         BotMatch = 5,
         /// <summary>Open a registration window for IntValue minutes (0 = until the admin starts it).</summary>
         OpenSignup = 6,
         /// <summary>Close an open registration window without starting anything.</summary>
         CancelSignup = 7
+    }
+
+    /// <summary>
+    /// What the admin who started a bot match does in it. Play is the default and matches the
+    /// original behaviour, so an older client sending nothing here still gets what it expected.
+    /// </summary>
+    public enum BotMatchMode
+    {
+        /// <summary>In the line-up, fighting the bots. The usual reason to press the button.</summary>
+        Play = 0,
+
+        /// <summary>Bots only, and the caller is seated as an observer once it has an arena. The
+        /// shortcut for looking at the spectator features immediately.</summary>
+        Watch = 1,
+
+        /// <summary>
+        /// Bots only, and the caller is left entirely alone - not in the line-up, not seated.
+        /// This is what you want to test the ordinary way in: the match is simply running, and you
+        /// join it afterwards from the browser or /canspectate like anyone else would.
+        /// </summary>
+        Unattended = 2
     }
 
     /// <summary>Admin panel actions. Sent as packets rather than chat commands so they answer with
@@ -78,6 +100,9 @@ namespace canevents.src.Network
         [ProtoMember(1)] public AdminAction Action;
         [ProtoMember(2)] public string EventCode;  // AnnounceEvent
         [ProtoMember(3)] public int IntValue;      // ScheduleInterval: minutes
+
+        /// <summary>BotMatch: what the caller's own part in it is. See <see cref="BotMatchMode"/>.</summary>
+        [ProtoMember(4)] public BotMatchMode BotMode;
     }
 
     [ProtoContract]

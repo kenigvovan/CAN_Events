@@ -41,6 +41,29 @@ namespace canevents.src.Network
         // Server-fed snapshots the GUI recomposes from. Each carries its own Changed event -
         // see ServerState<T> for why they are not property+event pairs.
         public readonly ServerState<EventListMsg> EventList = new ServerState<EventListMsg>();
+
+        /// <summary>Client clock when the event list last arrived. The list is pushed on changes, not
+        /// on a timer, so anything time-based in it has to be aged against this.</summary>
+        private long eventListReceivedMs;
+
+        /// <summary>Seconds since the event list arrived, for ageing the figures inside it.</summary>
+        public double SecondsSinceEventList()
+            => eventListReceivedMs == 0 ? 0 : (capi.ElapsedMilliseconds - eventListReceivedMs) / 1000.0;
+
+        /// <summary>The queue entry this player is standing in, or null. Only one at a time: joining a
+        /// second queue is refused server-side.</summary>
+        public EventListEntryMsg QueuedEntry()
+        {
+            var events = EventList.Value?.Events;
+            if (events == null) return null;
+
+            foreach (var e in events)
+                if (e.IsQueued && e.EventId == 0) return e;
+            return null;
+        }
+
+        /// <summary>Who may spectate and who is barred from the queue; admin panel only.</summary>
+        public readonly ServerState<PlayerAccessListMsg> PlayerAccess = new ServerState<PlayerAccessListMsg>();
         public readonly ServerState<TemplateListMsg> TemplateList = new ServerState<TemplateListMsg>();
         public readonly ServerState<LeaderboardMsg> Leaderboard = new ServerState<LeaderboardMsg>();
 
@@ -81,38 +104,82 @@ namespace canevents.src.Network
             clientChannel = capi.Network.RegisterChannel(ServerNetworkHandler.ChannelName);
             CanEventsProtocol.RegisterAll(clientChannel);
 
-            clientChannel.SetMessageHandler<ScheduleStateMsg>(ScheduleState.Set);
-            clientChannel.SetMessageHandler<ClientConfigSyncMsg>(OnClientConfigSync);
-            clientChannel.SetMessageHandler<EventRewardConfigMsg>(EventRewardConfig.Set);
-            clientChannel.SetMessageHandler<RewardLimitsMsg>(RewardLimits.Set);
-            clientChannel.SetMessageHandler<AdminEventListMsg>(AdminEventList.Set);
-            clientChannel.SetMessageHandler<LoadoutListMsg>(LoadoutList.Set);
-            clientChannel.SetMessageHandler<PlatformEditStateMsg>(PlatformEditState.Set);
-            clientChannel.SetMessageHandler<MatchHistoryMsg>(MatchHistoryData.Set);
-            clientChannel.SetMessageHandler<SchematicListMsg>(SchematicList.Set);
-            clientChannel.SetMessageHandler<CtfCarriersMsg>(OnCtfCarriers);
-            clientChannel.SetMessageHandler<HgZoneStateMsg>(m => { HgZone = m; HgZoneReceivedMs = capi.ElapsedMilliseconds; });
-            clientChannel.SetMessageHandler<HgSetupMsg>(HgSetup.Set);
-            clientChannel.SetMessageHandler<EventStateUpdateMsg>(OnStateUpdate);
-            clientChannel.SetMessageHandler<ScoreboardUpdateMsg>(OnScoreUpdate);
-            clientChannel.SetMessageHandler<KillFeedMsg>(OnKillFeed);
-            clientChannel.SetMessageHandler<EventResultMsg>(OnResult);
-            clientChannel.SetMessageHandler<EventListMsg>(EventList.Set);
-            clientChannel.SetMessageHandler<PlaceListMsg>(OnPlaceList);
-            clientChannel.SetMessageHandler<PlaceOperationResultMsg>(OnPlaceResult);
-            clientChannel.SetMessageHandler<TemplateListMsg>(TemplateList.Set);
-            clientChannel.SetMessageHandler<LeaderboardMsg>(Leaderboard.Set);
-            clientChannel.SetMessageHandler<TplSessionStateMsg>(TplSession.Set);
-            clientChannel.SetMessageHandler<PartyStateMsg>(PartyState.Set);
-            clientChannel.SetMessageHandler<PartyOperationResultMsg>(OnPartyResult);
-            clientChannel.SetMessageHandler<LoadoutPickRequestMsg>(OnLoadoutPickRequest);
-            clientChannel.SetMessageHandler<LoadoutDefaultsListMsg>(LoadoutDefaults.Set);
-            clientChannel.SetMessageHandler<TournamentListMsg>(TournamentList.Set);
-            clientChannel.SetMessageHandler<TournamentBracketMsg>(TournamentBracket.Set);
-            clientChannel.SetMessageHandler<TournamentReadyRequestMsg>(OnTournamentReadyRequest);
-            clientChannel.SetMessageHandler<TournamentReadyClosedMsg>(HandleTournamentReadyClosed);
-            clientChannel.SetMessageHandler<EventInviteMsg>(OnEventInvite);
-            clientChannel.SetMessageHandler<EventInviteClosedMsg>(HandleEventInviteClosed);
+            SetHandler<ScheduleStateMsg>(ScheduleState.Set);
+            SetHandler<ClientConfigSyncMsg>(OnClientConfigSync);
+            SetHandler<EventRewardConfigMsg>(EventRewardConfig.Set);
+            SetHandler<RewardLimitsMsg>(RewardLimits.Set);
+            SetHandler<AdminEventListMsg>(AdminEventList.Set);
+            SetHandler<LoadoutListMsg>(LoadoutList.Set);
+            SetHandler<PlatformEditStateMsg>(PlatformEditState.Set);
+            SetHandler<MatchHistoryMsg>(MatchHistoryData.Set);
+            SetHandler<SchematicListMsg>(SchematicList.Set);
+            SetHandler<CtfCarriersMsg>(OnCtfCarriers);
+            SetHandler<HgZoneStateMsg>(m => { HgZone = m; HgZoneReceivedMs = capi.ElapsedMilliseconds; });
+            SetHandler<HgSetupMsg>(HgSetup.Set);
+            SetHandler<EventStateUpdateMsg>(OnStateUpdate);
+            SetHandler<ScoreboardUpdateMsg>(OnScoreUpdate);
+            SetHandler<KillFeedMsg>(OnKillFeed);
+            SetHandler<EventResultMsg>(OnResult);
+            SetHandler<EventListMsg>(msg =>
+            {
+                eventListReceivedMs = capi.ElapsedMilliseconds;
+                EventList.Set(msg);
+            });
+            SetHandler<PlaceListMsg>(OnPlaceList);
+            SetHandler<PlaceOperationResultMsg>(OnPlaceResult);
+            SetHandler<TemplateListMsg>(TemplateList.Set);
+            SetHandler<LeaderboardMsg>(Leaderboard.Set);
+            SetHandler<TplSessionStateMsg>(TplSession.Set);
+            SetHandler<PartyStateMsg>(PartyState.Set);
+            SetHandler<PartyOperationResultMsg>(OnPartyResult);
+            SetHandler<LoadoutPickRequestMsg>(OnLoadoutPickRequest);
+            SetHandler<LoadoutDefaultsListMsg>(LoadoutDefaults.Set);
+            SetHandler<TournamentListMsg>(TournamentList.Set);
+            SetHandler<TournamentBracketMsg>(TournamentBracket.Set);
+            SetHandler<TournamentReadyRequestMsg>(OnTournamentReadyRequest);
+            SetHandler<TournamentReadyClosedMsg>(HandleTournamentReadyClosed);
+            SetHandler<EventInviteMsg>(OnEventInvite);
+            SetHandler<EventInviteClosedMsg>(HandleEventInviteClosed);
+            SetHandler<PlayerAccessListMsg>(PlayerAccess.Set);
+            RegisterSpectateHandlers();
+            RegisterDuelHandlers();
+            RegisterReadyHandlers();
+        }
+
+        /// <summary>
+        /// Registers a packet handler with its errors contained. Same reasoning as the server side:
+        /// the engine invokes handlers straight, so a throw here unwinds into the client's packet
+        /// loop. The data is trusted here - it comes from the server - but a version mismatch or a
+        /// half-populated snapshot should degrade one panel, not drop the player out of the game.
+        /// </summary>
+        private void SetHandler<T>(NetworkServerMessageHandler<T> handler)
+            => clientChannel.SetMessageHandler<T>(msg =>
+            {
+                try
+                {
+                    handler(msg);
+                }
+                catch (Exception e)
+                {
+                    LogHandlerFailure(typeof(T), e);
+                }
+            });
+
+        // Muted per packet type, so a server looping a packet the client cannot digest does not fill
+        // the log with the same stack trace.
+        private readonly Dictionary<Type, long> lastHandlerErrorMs = new Dictionary<Type, long>();
+
+        private const long HandlerErrorLogIntervalMs = 10000;
+
+        private void LogHandlerFailure(Type packetType, Exception e)
+        {
+            long now = capi.ElapsedMilliseconds;
+            if (lastHandlerErrorMs.TryGetValue(packetType, out long last)
+                && now - last < HandlerErrorLogIntervalMs) return;
+
+            lastHandlerErrorMs[packetType] = now;
+            capi.Logger.Error("[canevents] Handler for {0} failed; further reports are muted for {1}s: {2}",
+                packetType.Name, HandlerErrorLogIntervalMs / 1000, e);
         }
 
         /// <summary>Last admin-configured default key for the main dialog (null until received).</summary>
@@ -124,6 +191,9 @@ namespace canevents.src.Network
         {
             if (msg == null) return;
             MainDialogHotkey = msg.MainDialogHotkey;
+            // Known from join onward, so the browser can offer the Watch button before the player has
+            // ever asked to spectate. Refreshed by every spectate reply after that.
+            SpectatePrivileged = msg.MaySpectate;
             OnMainDialogHotkeyReceived?.Invoke(msg.MainDialogHotkey);
         }
 
@@ -236,9 +306,16 @@ namespace canevents.src.Network
             clientChannel.SendPacket(new RequestScheduleStateMsg());
         }
 
-        public void SendAdminAction(AdminAction action, string eventCode = null, int intValue = 0)
+        public void SendAdminAction(AdminAction action, string eventCode = null, int intValue = 0,
+            BotMatchMode botMode = BotMatchMode.Play)
         {
-            clientChannel.SendPacket(new AdminActionMsg { Action = action, EventCode = eventCode, IntValue = intValue });
+            clientChannel.SendPacket(new AdminActionMsg
+            {
+                Action = action,
+                EventCode = eventCode,
+                IntValue = intValue,
+                BotMode = botMode
+            });
         }
 
         public void RequestTemplateList()
@@ -370,6 +447,22 @@ namespace canevents.src.Network
         public void RequestLeaderboard(string eventCode = null)
         {
             clientChannel.SendPacket(new RequestLeaderboardMsg { EventCode = eventCode });
+        }
+
+        public void RequestPlayerAccess()
+        {
+            clientChannel.SendPacket(new RequestPlayerAccessMsg());
+        }
+
+        /// <summary>Change one player's access. Either a uid (a row in the list) or a typed name.</summary>
+        public void SendPlayerAccessAction(PlayerAccessAction action, string uid = null, string name = null)
+        {
+            clientChannel.SendPacket(new PlayerAccessActionMsg
+            {
+                Action = action,
+                PlayerUid = uid,
+                PlayerName = name
+            });
         }
     }
 }

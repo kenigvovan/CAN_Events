@@ -16,14 +16,11 @@ namespace canevents.src.EventManagers
     {
         public void AttemptFindLocationForEvent()
         {
-            // Snapshot first: keeps the lock brief and lets SchematicPlacer.Place() run outside it.
-            List<RunningEvent> searching;
-            lock (CurrentlyRunningEvents)
-            {
-                searching = CurrentlyRunningEvents
-                    .Where(re => re.EventState == EventState.SearchingForLocation)
-                    .ToList();
-            }
+            // Snapshot first: the loop below places schematics and finishes matches, both of which
+            // reach back into the live list.
+            var searching = RunningEventsSnapshot()
+                .Where(re => re.EventState == EventState.SearchingForLocation)
+                .ToList();
 
             // Tick interval, used to age the search timeout below.
             float intervalSeconds = Math.Max(1, config.attemptFindLocationForRunningEventEveryNSeconds);
@@ -105,10 +102,7 @@ namespace canevents.src.EventManagers
             log.Safely("OnMatchAborted observer for " + re.Event.Code,
                 () => OnMatchAborted?.Invoke(re, reason));
 
-            lock (CurrentlyRunningEvents)
-            {
-                CurrentlyRunningEvents.Remove(re);
-            }
+            RemoveRunningEvent(re);
             NetworkHandler?.BroadcastEventList();
         }
 
@@ -120,7 +114,7 @@ namespace canevents.src.EventManagers
             var runningEvent = FindRunningEvent(reGuid);
             if (runningEvent == null)
             {
-                sapi.World.Logger.Warning("eventLocationFound fired for event id {0} but RunningEvent is no longer in CurrentlyRunningEvents (likely cancelled or already finished)", reGuid);
+                sapi.World.Logger.Warning("eventLocationFound fired for event id {0} but RunningEvent is no longer in the live match list (likely cancelled or already finished)", reGuid);
                 return;
             }
 
@@ -157,7 +151,7 @@ namespace canevents.src.EventManagers
                     {
                         sapi.World.Logger.Error("ActuallyStartEvent for event {0}: {1}", runningEvent.Event.Code, ex);
                         // The salvage attempt is allowed to fail, but not silently: if it does, this
-                        // match stays in CurrentlyRunningEvents with its arena marked occupied and its
+                        // match stays in the live match list with its arena marked occupied and its
                         // players in the loadout, and the reason has to be in the log.
                         log.Safely("FinishEvent (salvage) for " + runningEvent.Event.Code,
                             () => FinishEvent(runningEvent));
@@ -213,7 +207,11 @@ namespace canevents.src.EventManagers
                 // Keep spectators near the arena. Isolated so a SpectatorManager bug
                 // can't stall ShouldFinish handling below.
                 log.Safely("EnforceSpectatorBounds for " + runningEvent.Event.Code,
-                    () => SpectatorManager?.EnforceSpectatorBounds());
+                    () => SpectatorManager?.EnforceSpectatorBounds(runningEvent));
+
+                // Broadcast telemetry for the observers, if any are watching this match.
+                log.Safely("SendSpectatorTelemetry for " + runningEvent.Event.Code,
+                    () => NetworkHandler?.SendSpectatorTelemetry(runningEvent));
 
                 if (runningEvent.ShouldFinish)
                 {
@@ -222,12 +220,37 @@ namespace canevents.src.EventManagers
             }, 500);
             runningEvent.RegisteredTickListeners.Add(finishCheckId);
 
+            // Arena outline, once a second: particles live 1.2s (see ZoneVisualizer.MakeProps), so
+            // the border never blinks between redraws. Its own listener rather than a branch in the
+            // 500 ms tick above, which would draw it twice as often as it lasts.
+            if (ShouldOutlineArena(runningEvent))
+            {
+                runningEvent.RegisterMatchTick(_ =>
+                    ZoneVisualizer.DrawBox(sapi, runningEvent.Place.BoundsMin, runningEvent.Place.BoundsMax,
+                        ZoneVisualizer.ArenaBorderColor), 1000);
+            }
+
             runningEvent.EventState = EventState.Running;
             BroadcastToParticipants(runningEvent, Lang.Get("canevents:event-started", runningEvent.Event.Code));
             sapi.World.Logger.Notification("Event {0} started", runningEvent.Event.Code);
 
+            // Isolated: an admin who cannot be seated must not take the match down with them.
+            log.Safely("AutoObserveOnStart for " + runningEvent.Event.Code,
+                () => AutoObserveOnStart(runningEvent));
+
             NetworkHandler?.SendStateUpdate(runningEvent);
             NetworkHandler?.BroadcastEventList();
+        }
+
+        // Does this match want its arena footprint outlined? Only when there is a footprint to draw
+        // and the mode is not already drawing an edge of its own (see IDrawsOwnBoundary).
+        private static bool ShouldOutlineArena(RunningEvent runningEvent)
+        {
+            var place = runningEvent.Place;
+            if (place == null || !place.HasBounds || place.BoundsMin == null || place.BoundsMax == null)
+                return false;
+
+            return runningEvent.GetBehavior<IDrawsOwnBoundary>() == null;
         }
 
         public void FinishEvent(RunningEvent runningEvent)
@@ -262,10 +285,10 @@ namespace canevents.src.EventManagers
             NetworkHandler?.SendStateUpdate(runningEvent);
             NetworkHandler?.BroadcastEventList();
 
-            lock (CurrentlyRunningEvents)
-            {
-                CurrentlyRunningEvents.Remove(runningEvent);
-            }
+            // Last, so the observers still received the result and the closing state packet above.
+            ReleaseObservers(runningEvent);
+
+            RemoveRunningEvent(runningEvent);
         }
 
         private void CleanupRunningEvent(RunningEvent runningEvent)
@@ -273,7 +296,13 @@ namespace canevents.src.EventManagers
             SpectatorManager?.RemoveAllSpectators(runningEvent);
 
             foreach (var pl in runningEvent.OnlineParticipants)
+            {
                 if (!pl.Entity.Alive) pl.Entity.Revive();
+                // A knock-down mod may have left someone crawling and immobilized. The match is over,
+                // so nothing will come along to lift that - and TPThereAndBack is about to send them
+                // home in whatever state they are in.
+                Compat.DownedCompat.Clear(pl);
+            }
 
             DispatchToBehaviors(runningEvent, "OnEnd", beh => beh.OnEnd());
 

@@ -91,11 +91,13 @@ namespace canevents.src.EventManagers
         /// </summary>
         // Namespaces spelled out: Vintagestory.API.Common declares a Func<> of its own and both
         // namespaces are in scope.
-        private void DropRegistrations(System.Predicate<Registration> predicate,
+        /// <returns>True when at least one registration was actually dropped, for callers that have
+        /// something to say about it (see <see cref="DropQueueRegistrationsToSpectate"/>).</returns>
+        private bool DropRegistrations(System.Predicate<Registration> predicate,
             System.Func<string, string> messageFor)
         {
             var dropped = _store.DropWhere(predicate);
-            if (dropped.Count == 0) return;
+            if (dropped.Count == 0) return false;
 
             foreach (var (reg, affected) in dropped)
             {
@@ -112,6 +114,7 @@ namespace canevents.src.EventManagers
             }
 
             NetworkHandler?.BroadcastEventList();
+            return true;
         }
 
         /// <summary>Drops every pending registration involving the player (on disconnect, so an offline
@@ -120,6 +123,15 @@ namespace canevents.src.EventManagers
             => DropRegistrations(reg => reg.PlayersGuids.Contains(playerUid),
                 // The player who left needs no message; the party members left behind do.
                 uid => uid == playerUid ? null : Lang.Get("canevents:queue-member-disconnected"));
+
+        /// <summary>
+        /// The same drop, for a player who chose to go watch a match instead. Separate only for the
+        /// message: their party members are owed the real reason, and "member disconnected" would
+        /// send them looking for a network problem that never happened.
+        /// </summary>
+        internal bool DropQueueRegistrationsToSpectate(string playerUid, string playerName)
+            => DropRegistrations(reg => reg.PlayersGuids.Contains(playerUid),
+                uid => uid == playerUid ? null : Lang.Get("canevents:queue-member-spectating", playerName));
 
         private void DropQueueRegistrationsFor(string code)
             => DropRegistrations(reg => reg.Event.CodeEquals(code),
@@ -245,8 +257,13 @@ namespace canevents.src.EventManagers
                 sapi.World.Logger.Notification("[bots] Filled event {0} with {1} bot(s)", canEvent.Code, bots);
 
             var re = new RunningEvent(sapi, canEvent, assembly, MatchServices);
-            lock (CurrentlyRunningEvents)
-                CurrentlyRunningEvents.Add(re);
+            AddRunningEvent(re);
+
+            // Ask the queue's players whether they are actually here, before an arena is tied up for
+            // them. Only the queue: a tournament runs its own ready check, a duel was just agreed to
+            // by both sides, and a debug bot match has nobody to ask.
+            if (source == MatchStartSource.Queue && config.queueReadyCheckSeconds > 0)
+                log.Safely("BeginReadyCheck for " + canEvent.Code, () => BeginReadyCheck(re));
 
             // The one place every start path passes through, so the one place observers are told.
             // Wrapped: a throwing observer must not take the match down with it.
@@ -257,7 +274,7 @@ namespace canevents.src.EventManagers
 
         public void AttemptToComposeTeams()
         {
-            int runningBefore = CurrentlyRunningEvents.Count;
+            int runningBefore = RunningEventCount;
             var snapshot      = _store.Snapshot();
             int regsBefore    = snapshot.Values.Sum(l => l.Count);
 
@@ -284,7 +301,7 @@ namespace canevents.src.EventManagers
             }
 
             int regsAfter = _store.Snapshot().Values.Sum(l => l.Count);
-            if (CurrentlyRunningEvents.Count != runningBefore || regsAfter != regsBefore)
+            if (RunningEventCount != runningBefore || regsAfter != regsBefore)
                 NetworkHandler?.BroadcastEventList();
         }
 

@@ -100,26 +100,43 @@ namespace canevents.src.Network
             SetAdminHandler<SaveHgConfigMsg>(OnSaveHgConfig);
 
             // Open to any player: each of these validates against server state instead.
-            serverChannel.SetMessageHandler<JoinEventRequestMsg>(OnJoinRequest);
-            serverChannel.SetMessageHandler<LeaveEventRequestMsg>(OnLeaveRequest);
-            serverChannel.SetMessageHandler<RequestEventListMsg>(OnEventListRequest);
-            serverChannel.SetMessageHandler<RequestMatchHistoryMsg>(OnRequestMatchHistory);
-            serverChannel.SetMessageHandler<RequestLeaderboardMsg>(OnLeaderboardRequest);
-            serverChannel.SetMessageHandler<PartyActionMsg>(OnPartyAction);
-            serverChannel.SetMessageHandler<LoadoutPickResponseMsg>(OnLoadoutPickResponse);
-            serverChannel.SetMessageHandler<ClearLoadoutDefaultMsg>(OnClearLoadoutDefault);
-            serverChannel.SetMessageHandler<RequestLoadoutDefaultsMsg>(OnRequestLoadoutDefaults);
-            serverChannel.SetMessageHandler<RequestTournamentListMsg>(OnRequestTournamentList);
-            serverChannel.SetMessageHandler<RequestTournamentBracketMsg>(OnRequestTournamentBracket);
-            serverChannel.SetMessageHandler<TournamentSignupMsg>(OnTournamentSignup);
-            serverChannel.SetMessageHandler<TournamentReadyResponseMsg>(OnTournamentReadyResponse);
+            SetHandler<JoinEventRequestMsg>(OnJoinRequest);
+            SetHandler<LeaveEventRequestMsg>(OnLeaveRequest);
+            SetHandler<RequestEventListMsg>(OnEventListRequest);
+            SetHandler<RequestMatchHistoryMsg>(OnRequestMatchHistory);
+            SetHandler<RequestLeaderboardMsg>(OnLeaderboardRequest);
+            SetHandler<PartyActionMsg>(OnPartyAction);
+            SetHandler<LoadoutPickResponseMsg>(OnLoadoutPickResponse);
+            SetHandler<ClearLoadoutDefaultMsg>(OnClearLoadoutDefault);
+            SetHandler<RequestLoadoutDefaultsMsg>(OnRequestLoadoutDefaults);
+            SetHandler<RequestTournamentListMsg>(OnRequestTournamentList);
+            SetHandler<RequestTournamentBracketMsg>(OnRequestTournamentBracket);
+            SetHandler<TournamentSignupMsg>(OnTournamentSignup);
+            SetHandler<TournamentReadyResponseMsg>(OnTournamentReadyResponse);
             SetAdminHandler<TournamentAdminActionMsg>(OnTournamentAdminAction);
+
+            // Gated on the mod's own spectate privilege rather than controlserver, so a moderator can
+            // be given the broadcaster role without the rest of the admin surface.
+            RegisterSpectateHandlers();
+
+            // Handing out that privilege, on the other hand, is admin-only.
+            RegisterAccessHandlers();
+
+            // Duels need no privilege at all: challenging someone is ordinary play.
+            RegisterDuelHandlers();
+
+            // Same for confirming your own queued match.
+            RegisterReadyHandlers();
         }
 
         private void OnPlayerNowPlaying(IServerPlayer player)
         {
             if (_partyManager != null) SendPartyState(player);
-            serverChannel.SendPacket(new ClientConfigSyncMsg { MainDialogHotkey = MainDialogHotkey }, player);
+            serverChannel.SendPacket(new ClientConfigSyncMsg
+            {
+                MainDialogHotkey = MainDialogHotkey,
+                MaySpectate = MaySpectate(player)
+            }, player);
         }
 
         /// <summary>
@@ -128,11 +145,54 @@ namespace canevents.src.Network
         /// Handlers keep their own redundant check as well.
         /// </summary>
         private void SetAdminHandler<T>(NetworkClientMessageHandler<T> handler)
-            => serverChannel.SetMessageHandler<T>((player, msg) =>
+            => SetHandler<T>((player, msg) =>
             {
                 if (!RequireAdmin(player)) return;
                 handler(player, msg);
             });
+
+        /// <summary>
+        /// Registers a packet handler with its errors contained.
+        ///
+        /// The engine does NOT catch these: <c>ServerNetworkChannel.OnPacket</c> invokes the handler
+        /// straight, so anything thrown here unwinds into the server's packet loop. Every handler in
+        /// this class reads data a client chose to send, which is exactly where a malformed value or
+        /// a stale id is most likely to blow up - and one client's bad packet must not be able to
+        /// disturb everyone else's.
+        ///
+        /// Registration is the place for it rather than each handler's body: a handler added later
+        /// gets the guard without its author having to remember.
+        /// </summary>
+        private void SetHandler<T>(NetworkClientMessageHandler<T> handler)
+            => serverChannel.SetMessageHandler<T>((player, msg) =>
+            {
+                try
+                {
+                    handler(player, msg);
+                }
+                catch (Exception e)
+                {
+                    LogHandlerFailure(typeof(T), player, e);
+                }
+            });
+
+        // Last time each packet type reported a failure, so a client looping a bad packet cannot turn
+        // the log file into the denial of service the try/catch just prevented.
+        private readonly Dictionary<Type, long> lastHandlerErrorMs = new Dictionary<Type, long>();
+
+        private const long HandlerErrorLogIntervalMs = 10000;
+
+        private void LogHandlerFailure(Type packetType, IServerPlayer player, Exception e)
+        {
+            long now = sapi.World.ElapsedMilliseconds;
+            if (lastHandlerErrorMs.TryGetValue(packetType, out long last)
+                && now - last < HandlerErrorLogIntervalMs) return;
+
+            lastHandlerErrorMs[packetType] = now;
+            sapi.World.Logger.Error("[canevents] Handler for {0} failed (from {1}); further reports of "
+                + "this packet are muted for {2}s: {3}",
+                packetType.Name, player?.PlayerName ?? "?", HandlerErrorLogIntervalMs / 1000, e);
+        }
 
         private void Reply(IServerPlayer player, bool success, string message, long placeId = 0)
         {

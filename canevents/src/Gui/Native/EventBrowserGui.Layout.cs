@@ -232,6 +232,49 @@ namespace canevents.src.Gui.Native
 
         private string lastSignupNotice;
 
+        /// <summary>
+        /// "In queue for 2X2 - waiting 4:12", or null when this player is not queued anywhere.
+        ///
+        /// A dynamic text next to Refresh rather than a line on the event's card, for the same reason
+        /// the sign-up countdown is: cards are baked into textures, so a number written into one would
+        /// sit frozen at whatever the last packet said. This is the number that decides whether to
+        /// keep waiting, so a frozen one is worse than none.
+        /// </summary>
+        protected void ComposeQueueNotice()
+        {
+            string text = QueueNoticeText();
+            if (text == null) return;
+
+            lastQueueNotice = text;
+            SingleComposer.AddDynamicText(text,
+                CairoFont.WhiteSmallText().WithColor(Palette.Info),
+                ElementBounds.Fixed(90, ControlsY + 19, DialogWidth - 100, 20), "queuenotice");
+        }
+
+        /// <summary>Ticks the wait forward between packets. Called per frame; writes only on change.</summary>
+        protected void UpdateQueueNotice()
+        {
+            string text = QueueNoticeText();
+            if (text == null || text == lastQueueNotice) return;
+            SingleComposer?.GetDynamicText("queuenotice")?.SetNewText(text);
+            lastQueueNotice = text;
+        }
+
+        private string lastQueueNotice;
+
+        private string QueueNoticeText()
+        {
+            var queued = networkHandler.QueuedEntry();
+            if (queued == null) return null;
+
+            // The server's figure plus what has elapsed on this client since it arrived: the packet
+            // comes on changes, not on a timer, so without this the number would stand still.
+            double waited = queued.QueuedSeconds + networkHandler.SecondsSinceEventList();
+
+            return Vintagestory.API.Config.Lang.Get("canevents:gui-queue-notice",
+                (queued.GameModeCode ?? "").ToUpperInvariant(), TimeText.Short((float)waited));
+        }
+
         /// <summary>"HUNGERGAMES - starts in 4:32", or null when nothing is taking sign-ups.</summary>
         private string SignupNoticeText()
         {

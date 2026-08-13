@@ -14,6 +14,14 @@ namespace canevents.src.Gui
     {
         private string dbgEventCode = "";
         private int dbgBotCount = 3;
+
+        // Index into BotModeLabels, and the value of BotMatchMode - Play first, because playing the
+        // mode is the usual reason to press the button.
+        private int dbgBotMode;
+
+        private static readonly string[] BotModeLabels = { "Play", "Watch", "Leave running" };
+        private static readonly string[] BotModeButtons =
+            { "Start now with bots", "Start and watch", "Start and leave it running" };
         private long dbgTournamentId;
         private int dbgTournamentBots = 7;
 
@@ -50,15 +58,28 @@ namespace canevents.src.Gui
             if (string.IsNullOrEmpty(dbgEventCode)) dbgEventCode = codes[index];
 
             IntField("Bots", ref dbgBotCount, 1, 32);
-            HelpMarker("You plus this many bot sides. Enough of them to satisfy the mode's minimum "
+            HelpMarker((dbgBotMode == 0 ? "You plus this many bot sides. " : "This many bot sides, without you. ")
+                + "Enough of them to satisfy the mode's minimum "
                 + "or it will end as soon as it starts.\n\n"
                 + "The match runs on a throwaway copy of the event: bots are grown into it, and rewards, "
                 + "the entry fee and rating are all off. The event's own config is untouched.");
 
-            if (GoButton("Start now with bots"))
+            ImGui.SetNextItemWidth(220);
+            ImGui.Combo("Your part##dbgmode", ref dbgBotMode, BotModeLabels, BotModeLabels.Length);
+            HelpMarker("Play: you are in the line-up, fighting the bots.\n\n"
+                + "Watch: bots only, and you are seated as an observer as soon as it has an arena - "
+                + "the quick way to look at the spectator HUD and the broadcast camera.\n\n"
+                + "Leave running: bots only and you are not touched at all. Use this to test joining "
+                + "the ordinary way afterwards, from the browser or /canspectate.\n\n"
+                + "The last two need at least two bots: with you out of the line-up, they are the "
+                + "only sides there are.");
+
+            if (GoButton(BotModeButtons[dbgBotMode]))
             {
-                networkHandler.SendAdminAction(AdminAction.BotMatch, dbgEventCode, dbgBotCount);
-                LogAction(true, "> bot match: " + dbgEventCode + " x" + dbgBotCount);
+                networkHandler.SendAdminAction(AdminAction.BotMatch, dbgEventCode, dbgBotCount,
+                    (BotMatchMode)dbgBotMode);
+                LogAction(true, "> bot match: " + dbgEventCode + " x" + dbgBotCount
+                    + " (" + BotModeLabels[dbgBotMode].ToLowerInvariant() + ")");
             }
 
             ImGui.SameLine();

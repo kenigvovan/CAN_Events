@@ -14,7 +14,7 @@ namespace canevents.src.EventManagers
     {
         public void OnDeath(IServerPlayer player, DamageSource source)
         {
-            foreach (var re in this.CurrentlyRunningEvents.ToList())
+            foreach (var re in RunningEventsSnapshot())
             {
                 if (re.EventState != EventState.Running) continue;
                 if (re.IsActive(player.PlayerUID))
@@ -37,7 +37,7 @@ namespace canevents.src.EventManagers
 
         public void OnRespawn(IServerPlayer player)
         {
-            foreach (var re in CurrentlyRunningEvents.ToList())
+            foreach (var re in RunningEventsSnapshot())
             {
                 if (re.EventState != EventState.Running) continue;
                 if (!re.IsParticipant(player.PlayerUID)) continue;
@@ -76,7 +76,7 @@ namespace canevents.src.EventManagers
             // Stop pushing bracket updates to a client that is gone.
             NetworkHandler?.DropBracketViewer(player.PlayerUID);
 
-            foreach (var re in CurrentlyRunningEvents.ToList())
+            foreach (var re in RunningEventsSnapshot())
             {
                 if (re.IsActive(player.PlayerUID))
                 {
@@ -113,6 +113,11 @@ namespace canevents.src.EventManagers
                 // work. ModData is saved; RestoreOnReconnect fixes the gamemode when they rejoin.
             }
 
+            // Stop feeding a match's HUD to an observer who is gone. No packet to send: the client is
+            // already disconnecting, and the gamemode is restored from ModData on their next login.
+            if (DropObserverFromMatches(player.PlayerUID))
+                NetworkHandler?.ForgetSpectator(player.PlayerUID);
+
             // Drop the in-memory spectator anchor so a mid-event reconnect goes through the
             // normal restore path instead of being treated as still-spectating.
             SpectatorManager?.OnSpectatorDisconnect(player.PlayerUID);
@@ -127,13 +132,17 @@ namespace canevents.src.EventManagers
 
             // Drop pending queue registrations so an offline player can't be matched.
             DropQueueRegistrationsForPlayer(player.PlayerUID);
+
+            // Same for an outstanding duel challenge: a side that just walked out cannot fight, and
+            // the other party deserves to hear why rather than wait out the timeout.
+            sapi.ModLoader.GetModSystem<canevents>()?.Duels?.OnDisconnect(player.PlayerUID);
         }
 
         public void OnReconnect(IServerPlayer player)
         {
             SpectatorManager?.RestoreOnReconnect(player);
 
-            foreach (var re in CurrentlyRunningEvents.ToList())
+            foreach (var re in RunningEventsSnapshot())
             {
                 if (re.IsParticipant(player.PlayerUID))
                     DispatchToBehaviors(re, "OnParticipantJoinedGame", beh => beh.OnParticipantJoinedGame());
@@ -225,7 +234,7 @@ namespace canevents.src.EventManagers
             {
                 var ev = FindEventByCode(code);
                 if (ev != null && _store.HasPlayerRegistration(uid, ev)) return;            // still queued for it
-                if (CurrentlyRunningEvents.ToList().Any(re => re.Event.CodeEquals(code)
+                if (RunningEventsSnapshot().Any(re => re.Event.CodeEquals(code)
                         && re.IsParticipant(uid))) return;                     // in its live match
             }
             RewardDistributor?.RefundEntryFeeEscrow(player);

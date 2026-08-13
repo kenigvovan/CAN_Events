@@ -182,6 +182,11 @@ namespace canevents.src.Network
         public int RewardsRemaining;
         [ProtoMember(21)]
         public double SecondsToNextReward;
+
+        /// <summary>How long the viewer has been in this queue. 0 when they are not in it. Their own
+        /// wait, not the queue's oldest: it is the number that decides whether to keep waiting.</summary>
+        [ProtoMember(22)]
+        public double QueuedSeconds;
     }
 
     [ProtoContract]
@@ -200,6 +205,12 @@ namespace canevents.src.Network
     {
         [ProtoMember(1)]
         public string MainDialogHotkey;
+
+        /// <summary>May this player watch live matches? Sent on join so the browser can show the
+        /// Watch button only to those it will work for. The server re-checks the request itself -
+        /// this is a display hint, not the gate.</summary>
+        [ProtoMember(2)]
+        public bool MaySpectate;
     }
 
     // Client → Server messages

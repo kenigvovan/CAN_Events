@@ -142,16 +142,28 @@ namespace canevents.src.Gui
         }
 
         /// <summary>
-        /// Empty skeleton of the planned size. Deliberately nameless: seeding happens at start, so
-        /// showing pairings now would invite path-picking and signup timing off fiction.
+        /// Empty skeleton of the bracket this turnout will produce. Deliberately nameless: seeding
+        /// happens at start, so showing pairings now would invite path-picking and signup timing off
+        /// fiction.
         /// </summary>
         private static void BuildPreview(BracketView view, bool thirdPlace, int maxEntrants, int arity,
             int advance)
         {
             if (arity < 2) arity = 2;
-            int planned = Math.Max(arity, maxEntrants > 0 ? maxEntrants : view.Entrants.Count);
 
-            // Placeholders fill every slot, so the skeleton has no byes: byes depend on turnout.
+            // Sized by who actually signed up, falling back to the tournament's capacity while it is
+            // still empty. Sizing by capacity throughout drew a twelve-slot bracket for seven
+            // entrants - a shape that will never be played, and one that reads as "five more are
+            // expected". The skeleton grows with each signup instead, which is the honest answer to
+            // "what happens if we start now".
+            int signedUp = view.Entrants.Count;
+            int planned = signedUp >= arity
+                ? signedUp
+                : Math.Max(arity, maxEntrants > 0 ? maxEntrants : arity);
+
+            // One placeholder per entrant, not per slot. The builder rounds the field up to a power of
+            // the arity, so an odd turnout leaves the surplus slots empty - and that is worth showing:
+            // seven entrants really do mean somebody walks the first round.
             var field = new List<Tournaments.Entrant>();
             for (int i = 0; i < planned; i++)
                 field.Add(new Tournaments.Entrant { Id = "slot" + i, DisplayName = "" });

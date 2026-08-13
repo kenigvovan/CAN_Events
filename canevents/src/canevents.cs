@@ -26,6 +26,11 @@ namespace canevents.src
         public EventScheduler eventScheduler;
         public EventManagers.SignupWindows signupWindows;
 
+        /// <summary>Harmony id for every patch this mod installs, on either side. Single-player runs
+        /// both sides in one process, so the two instances share it and each patch guards itself
+        /// against a double install.</summary>
+        private const string HarmonyId = "canevents.respawn";
+
         public Config config;
         public Dictionary<string, Type> CANEventBehaviors = new Dictionary<string, Type>();
         List<CANEventType> eventTypes = new List<CANEventType>();
@@ -33,9 +38,13 @@ namespace canevents.src
         List<CANEvent> Events;
         public CANEventManager CANEventManager { get; set; }
         private Harmony harmony;
+        private Harmony clientHarmony;
         private Bots.BotCleanup botCleanup;
         private Tournaments.TournamentStore tournamentStore;
         private Tournaments.TournamentManager tournamentManager;
+
+        /// <summary>Player-to-player challenges. Null while the server is starting.</summary>
+        public Duels.DuelManager Duels { get; private set; }
         private ICoreServerAPI _sapi;
         private PlayerDeathDelegate _onDeath;
         private PlayerDelegate _onRespawn;
@@ -63,6 +72,8 @@ namespace canevents.src
         public override void StartServerSide(ICoreServerAPI api)
         {
             LoadConfig(api);
+            // Before commands and network handlers: both gate on it.
+            CanEventsPrivileges.RegisterAll(api);
             // Party system lives in the canparty mod (hard dependency); we only consume it.
             partyManager = api.ModLoader.GetModSystem<canparty.canpartyModSystem>()?.Manager;
             if (partyManager == null)
@@ -140,6 +151,7 @@ namespace canevents.src
             var spectatorMgr    = new SpectatorManager(api);
             networkHandler.MatchHistory = matchHistory;
             this.CANEventManager.MatchHistory       = matchHistory;
+            this.CANEventManager.HeadToHead         = new Scoring.HeadToHeadStore(api);
             this.CANEventManager.RewardDistributor  = new Scoring.RewardDistributor(api, config);
             this.CANEventManager.ArenaTemplates      = arenaTemplates;
             var savedBlocksPath = System.IO.Path.Combine(Vintagestory.API.Config.GamePaths.ModConfig, "canevents", "savedBlocks");
@@ -204,11 +216,18 @@ namespace canevents.src
             api.Event.ServerRunPhase(EnumServerRunPhase.Shutdown,
                 () => EventPlacesManagers.ArenaChunkPin.Reset());
 
+            // Duels: after the manager and network handler exist, before commands that reach them.
+            Duels = new Duels.DuelManager(api, this.CANEventManager, config);
+            Duels.Start();
+            networkHandler.Duels = Duels;
+
             CommandsRegister.RegisterCommands(api);
 
             RespawnPatch.Mod = this;
-            harmony = new Harmony("canevents.respawn");
+            harmony = new Harmony(HarmonyId);
             RespawnPatch.Apply(harmony);
+            // Server side of the spectator body fix: it owns the collision box.
+            HarmonyPatches.SpectatorBodyMetricsPatch.Apply(harmony);
 
             _sapi = api;
             _onDeath      = (player, source) => this.CANEventManager.OnDeath(player, source);
@@ -357,6 +376,9 @@ namespace canevents.src
         private Action<Network.TournamentReadyRequestMsg> _onTournamentReady;
         private Action<Network.TournamentReadyClosedMsg> _onTournamentReadyClosed;
         private Gui.Native.EventInviteHud eventInviteHud;
+        private Gui.Native.SpectatorPanelGui spectatorPanel;
+        private Gui.Native.DuelPromptGui duelPrompt;
+        private Gui.Native.MatchReadyGui matchReadyGui;
         private Gui.AdminPanelDialog adminPanel;
         private Gui.CtfFlagRenderer ctfFlagRenderer;
         private Gui.HgZoneDomeRenderer hgZoneDomeRenderer;
@@ -364,6 +386,11 @@ namespace canevents.src
 
         public override void StartClientSide(ICoreClientAPI api)
         {
+            // Client side of the spectator body fix: it owns the camera height. Skipped in
+            // single-player, where StartServerSide already installed it on the same method.
+            clientHarmony = new Harmony(HarmonyId);
+            HarmonyPatches.SpectatorBodyMetricsPatch.Apply(clientHarmony);
+
             // The hotkey starts at a hardcoded default; the admin value arrives via ClientConfigSyncMsg
             // and is applied unless the player rebound it.
             ClientNetworkHandler = new Network.ClientNetworkHandler(api);
@@ -392,8 +419,31 @@ namespace canevents.src
             };
             // Cancelling a queue-time class pick returns to the browser it was opened from.
             loadoutPickGui.OnQueuePickCancelled = () => eventBrowserGui.TryOpen();
+            // Broadcaster panel. Opens itself off the spectate state packet and stays closed for
+            // everyone else, so registering it unconditionally costs nothing.
+            spectatorPanel = new Gui.Native.SpectatorPanelGui(api, ClientNetworkHandler);
+
+            // Duel invitation and queue ready check. Both open themselves off a server packet, like
+            // the tournament ready-check.
+            duelPrompt = new Gui.Native.DuelPromptGui(api, ClientNetworkHandler);
+            matchReadyGui = new Gui.Native.MatchReadyGui(api, ClientNetworkHandler);
+
             api.Gui.RegisterDialog(eventHudGui, eventBrowserGui, loadoutPickGui, hudLayoutEditor,
-                tournamentReadyGui, eventInviteHud);
+                tournamentReadyGui, eventInviteHud, spectatorPanel, duelPrompt, matchReadyGui);
+
+            // Step the broadcaster camera between fighters. Both return false while not spectating,
+            // which leaves the keys free for whatever else has them bound.
+            api.Input.RegisterHotKey(Gui.Native.SpectatorPanelGui.NextHotkeyCode,
+                Vintagestory.API.Config.Lang.Get("canevents:hotkey-spectate-next"), GlKeys.BracketRight,
+                HotkeyType.GUIOrOtherControls);
+            api.Input.SetHotKeyHandler(Gui.Native.SpectatorPanelGui.NextHotkeyCode,
+                _ => spectatorPanel.TryStep(1));
+
+            api.Input.RegisterHotKey(Gui.Native.SpectatorPanelGui.PrevHotkeyCode,
+                Vintagestory.API.Config.Lang.Get("canevents:hotkey-spectate-prev"), GlKeys.BracketLeft,
+                HotkeyType.GUIOrOtherControls);
+            api.Input.SetHotKeyHandler(Gui.Native.SpectatorPanelGui.PrevHotkeyCode,
+                _ => spectatorPanel.TryStep(-1));
 
             // Two keys answer the registration panel, so both joining and changing your mind cost no
             // clicks and no open windows. Ordinary hotkeys: they appear in Settings -> Controls and
@@ -510,6 +560,7 @@ namespace canevents.src
                 _sapi.Event.PlayerNowPlaying -= _onReconnect;
             }
             botCleanup?.Dispose();
+            Duels?.Dispose();
             // Before CANEventManager.Dispose: it unsubscribes from the manager's match events.
             tournamentManager?.Dispose();
             ServerNetworkHandler?.Dispose();
@@ -532,6 +583,9 @@ namespace canevents.src
             loadoutPickGui?.Dispose();
             tournamentReadyGui?.Dispose();
             eventInviteHud?.Dispose();
+            spectatorPanel?.Dispose();
+            duelPrompt?.Dispose();
+            matchReadyGui?.Dispose();
             hudLayoutEditor?.Dispose();
             eventHudGui?.Dispose();
             // Unregister before disposing, or the next frame draws meshes we just freed.
@@ -545,7 +599,9 @@ namespace canevents.src
                 clientApi?.Event.UnregisterRenderer(hgZoneDomeRenderer, EnumRenderStage.OIT);
                 hgZoneDomeRenderer.Dispose();   // frees the uploaded dome mesh
             }
-            try { harmony?.UnpatchAll("canevents.respawn"); } catch { }
+            try { harmony?.UnpatchAll(HarmonyId); } catch { }
+            try { clientHarmony?.UnpatchAll(HarmonyId); } catch { }
+            HarmonyPatches.SpectatorBodyMetricsPatch.Reset();
             RespawnPatch.Mod = null;
             base.Dispose();
         }

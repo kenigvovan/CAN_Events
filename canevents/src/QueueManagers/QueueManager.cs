@@ -8,7 +8,7 @@ namespace canevents.src.QueueManagers
     public abstract class QueueManager
     {
         // Injected by CANEventManager once services are ready; the delegate reads SpectatorManager
-        // and CurrentlyRunningEvents at call time, so post-constructor injection is safe.
+        // and the live match list at call time, so post-constructor injection is safe.
         private Func<string, bool> _isPlayerBusy;
 
         // (uid, eventCode) -> Elo rating. Only the ranked matchmakers read it.

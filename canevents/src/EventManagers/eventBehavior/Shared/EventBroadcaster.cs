@@ -6,9 +6,14 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
 {
     public static class EventBroadcaster
     {
+        /// <summary>
+        /// Says something to everyone following this match. HudAudience rather than OnlineParticipants:
+        /// an observer watching the fight needs the same running commentary the fighters get
+        /// ("player eliminated", the truce ending) - without it the HUD moves and nothing explains why.
+        /// </summary>
         public static void Broadcast(RunningEvent runningEvent, string message)
         {
-            foreach (var player in runningEvent.OnlineParticipants)
+            foreach (var player in runningEvent.HudAudience)
                 player.SendMessage(0, message, EnumChatType.Notification);
         }
 

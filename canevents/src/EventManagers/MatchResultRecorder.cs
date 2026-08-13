@@ -30,7 +30,33 @@ namespace canevents.src.EventManagers
             manager.RewardDistributor?.DistributeRewards(runningEvent, result);
 
             RecordStandings(runningEvent, result);
+            RecordHeadToHead(runningEvent, result);
             PublishResult(runningEvent, result);
+        }
+
+        // The lifetime score between two players, fed from every two-sided match - duels included,
+        // which is why this sits outside RecordStandings: a friendly duel moves no rating, but "we
+        // are 7-3" is exactly what it is supposed to count. Multi-side events (FFA, hunger games)
+        // are left out: with twenty sides every pairing is an accident, not a rivalry.
+        private void RecordHeadToHead(RunningEvent runningEvent, MatchResult result)
+        {
+            var headToHead = manager.HeadToHead;
+            var sides = runningEvent.ParticipantsByGroupsBefore;
+            if (headToHead == null || sides == null || sides.Count != 2) return;
+
+            foreach (var a in sides[0])
+            {
+                if (Bots.BotIdentity.IsBot(a)) continue;
+                foreach (var b in sides[1])
+                {
+                    if (Bots.BotIdentity.IsBot(b)) continue;
+
+                    bool aWon = result.Won(a);
+                    bool bWon = result.Won(b);
+                    if (aWon == bWon) headToHead.RecordDraw(a, b);
+                    else headToHead.RecordWin(aWon ? a : b, aWon ? b : a);
+                }
+            }
         }
 
         // Ranking counts on the RATED track only; unrated events are casual. Rewards are independent

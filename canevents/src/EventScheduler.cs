@@ -79,7 +79,7 @@ namespace canevents.src
             float intervalSeconds = config.scheduleIntervalMinutes * 60f;
             if (secondsSinceLastEvent < intervalSeconds) return;
 
-            if (eventManager.CurrentlyRunningEvents.Count >= config.maxConcurrentEvents) return;
+            if (eventManager.RunningEventCount >= config.maxConcurrentEvents) return;
 
             int onlinePlayers = sapi.World.AllOnlinePlayers.Length;
             if (onlinePlayers < config.minPlayersToStart)

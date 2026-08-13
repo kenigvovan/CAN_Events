@@ -98,6 +98,65 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
                 EnumParticleModel.Quad);
         }
 
+        /// <summary>Arena footprint: warm off-white, so it never reads as a team's claim or as the
+        /// cold storm border.</summary>
+        public static readonly int ArenaBorderColor = ColorUtil.ToRgba(120, 190, 215, 240);
+
+        /// <summary>
+        /// Outlines an arena's footprint - the edge of the playable area for every mode that has no
+        /// shrinking border of its own. Most matches drew nothing at all before this, so "how far can
+        /// I go" was something players learned by walking out of the fight.
+        ///
+        /// Particle budget matters more than density here: an arena can be hundreds of blocks across,
+        /// and one SpawnParticles call per particle redrawn every second will exhaust the client pool
+        /// (the same trap documented on <see cref="DrawDome"/>). The step is therefore derived from
+        /// the perimeter, never the other way round.
+        /// </summary>
+        public static void DrawBox(ICoreServerAPI sapi, BlockPos min, BlockPos max, int color,
+                                   int maxParticles = 48)
+        {
+            if (sapi == null || min == null || max == null || maxParticles < 4) return;
+
+            double x1 = Math.Min(min.X, max.X), x2 = Math.Max(min.X, max.X) + 1;
+            double z1 = Math.Min(min.Z, max.Z), z2 = Math.Max(min.Z, max.Z) + 1;
+            // Top of the footprint plus a little: at floor level the markers sink into the ground.
+            double y = Math.Max(min.Y, max.Y) + 1.2;
+
+            double width = x2 - x1, depth = z2 - z1;
+            if (width <= 0 || depth <= 0) return;
+
+            // Points are dealt to the two axes in proportion to their length, so a long thin arena
+            // does not end up with the same number on a 10-block side as on a 200-block one.
+            double perimeter = 2 * (width + depth);
+            double step = Math.Max(1.0, perimeter / maxParticles);
+
+            var props = MakeProps(color);
+
+            for (double x = x1; x < x2; x += step)
+            {
+                Spawn(sapi, props, x, y, z1);
+                Spawn(sapi, props, x, y, z2);
+            }
+            for (double z = z1; z < z2; z += step)
+            {
+                Spawn(sapi, props, x1, y, z);
+                Spawn(sapi, props, x2, y, z);
+            }
+
+            // The four corners always, whatever the step landed on: they are what tells you the shape.
+            Spawn(sapi, props, x1, y, z1);
+            Spawn(sapi, props, x2, y, z1);
+            Spawn(sapi, props, x1, y, z2);
+            Spawn(sapi, props, x2, y, z2);
+        }
+
+        private static void Spawn(ICoreServerAPI sapi, SimpleParticleProperties props,
+                                  double x, double y, double z)
+        {
+            props.MinPos = new Vec3d(x, y, z);
+            sapi.World.SpawnParticles(props);
+        }
+
         public static void DrawRing(ICoreServerAPI sapi, double cx, double cy, double cz,
                                     float radius, int segments, int color)
         {
