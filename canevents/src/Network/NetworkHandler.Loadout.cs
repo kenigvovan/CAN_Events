@@ -49,6 +49,10 @@ namespace canevents.src.Network
             var fight = ev.Behaviors.OfType<ILoadoutProvider>().FirstOrDefault();
             if (fight == null) return;
 
+            // No point prompting at queue time either when a mutator decides the kit.
+            if (ev.HasMutator(EventManagers.events.EventMutators.Loadout)
+                || ev.HasMutator(EventManagers.events.EventMutators.RandomLoadout)) return;
+
             GetLoadoutSets(fight, ev.Code, out var names, out var items, out var descs);
             if (names == null || names.Length <= 1) return;
 
@@ -89,6 +93,21 @@ namespace canevents.src.Network
 
             GetLoadoutSets(fight, ev.Code, out var names, out var items, out var descs);
             if (names == null || names.Length <= 1) return;
+
+            // A forced set leaves nothing to pick; Give() enforces it over any stored choice.
+            if (ev.HasMutator(EventManagers.events.EventMutators.Loadout)) return;
+
+            // Random loadout: the server rolls instead of asking - the roll IS the mutator. Written
+            // over any queue-time or saved choice, which the mutator overrides by design.
+            if (ev.HasMutator(EventManagers.events.EventMutators.RandomLoadout))
+            {
+                bool shared = "shared" == ev.MutatorValue(EventManagers.events.EventMutators.RandomLoadout);
+                var rand = sapi.World.Rand;
+                string sharedPick = names[rand.Next(names.Length)];
+                foreach (var uid in re.ParticipantsBefore)
+                    re.PlayerLoadoutChoices[uid] = shared ? sharedPick : names[rand.Next(names.Length)];
+                return;
+            }
 
             var prefs = eventManager.LoadoutPreferences;
             var pending = new HashSet<string>();

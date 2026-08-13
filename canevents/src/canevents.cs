@@ -131,6 +131,13 @@ namespace canevents.src
                 tmpEvent.Reward = it.Reward;
                 tmpEvent.EntryFee = it.EntryFee;
                 tmpEvent.Rated = it.Rated;
+                tmpEvent.Mutators = EventMutators.ParseAll(it.Mutators, out var badMutators);
+                foreach (var bad in badMutators)
+                    api.World.Logger.Warning("Event '{0}': unknown or malformed mutator '{1}' ignored.", it.Code, bad);
+                foreach (var disabled in EventMutators.Normalize(config.disabledMutators))
+                    if (tmpEvent.Mutators.Remove(disabled))
+                        api.World.Logger.Notification(
+                            "Event '{0}': mutator '{1}' removed - disabled in config.", it.Code, disabled);
                 Events.Add(tmpEvent);
             }
 
@@ -378,6 +385,7 @@ namespace canevents.src
         private Gui.Native.EventInviteHud eventInviteHud;
         private Gui.Native.SpectatorPanelGui spectatorPanel;
         private Gui.Native.DuelPromptGui duelPrompt;
+        private Gui.Native.DuelChallengeGui duelChallengeGui;
         private Gui.Native.MatchReadyGui matchReadyGui;
         private Gui.AdminPanelDialog adminPanel;
         private Gui.CtfFlagRenderer ctfFlagRenderer;
@@ -405,11 +413,15 @@ namespace canevents.src
                 eventInviteHud?.OnLayoutChanged();
             });
             loadoutPickGui = new Gui.Native.LoadoutPickGui(api, ClientNetworkHandler);
+            duelChallengeGui = new Gui.Native.DuelChallengeGui(api, ClientNetworkHandler);
             eventBrowserGui = new Gui.Native.EventBrowserGui(api, ClientNetworkHandler)
             {
                 LoadoutPick = loadoutPickGui,
+                DuelChallenge = duelChallengeGui,
                 OnEditHudLayout = () => hudLayoutEditor.TryOpen()
             };
+            // Backing out of a challenge returns to the list it was opened from.
+            duelChallengeGui.OnCancelled = () => eventBrowserGui.TryOpen();
             tournamentReadyGui = new Gui.Native.TournamentReadyGui(api, ClientNetworkHandler);
             // The signup invite is a HUD toast, not a dialog: it must stay readable for the whole
             // window without holding the mouse, and it subscribes to its own packets.
@@ -585,6 +597,7 @@ namespace canevents.src
             eventInviteHud?.Dispose();
             spectatorPanel?.Dispose();
             duelPrompt?.Dispose();
+            duelChallengeGui?.Dispose();
             matchReadyGui?.Dispose();
             hudLayoutEditor?.Dispose();
             eventHudGui?.Dispose();

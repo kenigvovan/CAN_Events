@@ -33,6 +33,11 @@ namespace canevents.src
         // Player UIDs banned from all event queues (/eventadmin blacklist). Runtime-toggled, persisted.
         public string[] queueBlacklistedUids = new string[0];
 
+        // Mutators this server does not allow, by key: e.g. ["friendlyfire", "speed"]. A disabled
+        // mutator is dropped from event JSONs at load (with a log line), refused in duel challenges,
+        // and its knob is hidden from the duel tab. See EventMutators.Known for the full list.
+        public string[] disabledMutators = new string[0];
+
         // Ranked matchmaking: Elo spread allowed within a match, starting at Base and widening per
         // second the oldest waiting side has queued, so nobody waits forever.
         public int rankedMmrBaseTolerance = 150;

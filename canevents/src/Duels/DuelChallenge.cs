@@ -52,6 +52,15 @@ namespace canevents.src.Duels
         /// prompt can name it. Re-resolved at accept time - the mode could be disabled in between.</summary>
         public string EventCode;
 
+        /// <summary>True when the challenger picked the mode themselves. Then the accept-time
+        /// re-resolve must find THAT mode or call the duel off - silently substituting another one
+        /// would start a match on terms nobody agreed to.</summary>
+        public bool ModePinned;
+
+        /// <summary>Match modifiers the challenger set, in wire form ("noarmor", "health:0.5").
+        /// Already validated at challenge time; applied to the event clone when the duel starts.</summary>
+        public List<string> Mutators = new List<string>();
+
         /// <summary>How many players per side. Both sides always match - a challenge with unequal
         /// sides is refused when it is created.</summary>
         public int SideSize => ChallengerSide.Count;

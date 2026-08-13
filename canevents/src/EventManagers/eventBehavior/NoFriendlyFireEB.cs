@@ -23,7 +23,7 @@ namespace canevents.src.EventManagers.eventBehavior
 
         public override void OnStart()
         {
-            if (runningEvent.Config != null && runningEvent.Config.allowFriendlyFire) return;
+            if (FriendlyFireAllowed) return;
 
             foreach (var plGuid in runningEvent.ParticipantsBefore)
             {
@@ -33,11 +33,18 @@ namespace canevents.src.EventManagers.eventBehavior
             }
         }
 
+        // Global config switch, or the per-match "friendlyfire" mutator (a duel term). Checked as a
+        // no-op here rather than by stripping the behavior from the event clone, so every start path
+        // (queue, tournament, duel) honors it identically.
+        private bool FriendlyFireAllowed
+            => (runningEvent.Config != null && runningEvent.Config.allowFriendlyFire)
+               || runningEvent.Event?.HasMutator(EventMutators.FriendlyFire) == true;
+
         // A mid-match reconnect spawns a fresh entity, leaving the hook on the dead one and silently
         // restoring friendly fire. Also hooks anyone who was offline at OnStart.
         public override void OnParticipantJoinedGame()
         {
-            if (runningEvent.Config != null && runningEvent.Config.allowFriendlyFire) return;
+            if (FriendlyFireAllowed) return;
 
             foreach (var plGuid in runningEvent.ParticipantsBefore)
             {

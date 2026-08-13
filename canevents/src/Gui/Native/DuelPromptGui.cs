@@ -1,5 +1,6 @@
 using System;
 using canevents.src.Duels;
+using canevents.src.EventManagers.events;
 using canevents.src.Network;
 using Vintagestory.API.Client;
 using Vintagestory.API.Config;
@@ -86,6 +87,17 @@ namespace canevents.src.Gui.Native
                     Lang.Get("canevents:gui-duel-headtohead", request.YourWinsVsChallenger,
                         request.ChallengerWinsVsYou, request.DrawsVsChallenger),
                     CairoFont.WhiteSmallishText().WithColor(Palette.Info),
+                    ElementBounds.Fixed(0, y, Width, 25));
+                y += 30;
+            }
+
+            // The challenger's terms, named in full: what the target accepts must be exactly what
+            // they read, or the first no-armor death feels like a scam.
+            string terms = EventMutators.Describe(request.Mutators);
+            if (terms != null)
+            {
+                composer.AddStaticText(Lang.Get("canevents:gui-duel-terms", terms),
+                    CairoFont.WhiteSmallishText().WithColor(Palette.Live),
                     ElementBounds.Fixed(0, y, Width, 25));
                 y += 30;
             }

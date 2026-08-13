@@ -35,6 +35,11 @@ namespace canevents.src.EventManagers.events
         [JsonProperty]
         public EntryFeeSpec EntryFee { get; set; }
 
+        // Optional match modifiers, e.g. ["noarmor", "health:0.5", "loadout:Archer"]. Validated
+        // against EventMutators on load; unknown entries are dropped with a log warning.
+        [JsonProperty]
+        public string[] Mutators { get; set; }
+
         [JsonProperty]
         public List<CANEventBehavioreType> Behaviors { get; set; }
 

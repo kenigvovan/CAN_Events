@@ -100,6 +100,7 @@ namespace canevents.src.EventManagers.eventBehavior.abstracts
             if (runningEvent.KeepOwnGear)
             {
                 EventBroadcaster.Heal(player);
+                EventBroadcaster.ApplyStatMutators(player, runningEvent.Event);
                 return;
             }
 
@@ -108,6 +109,9 @@ namespace canevents.src.EventManagers.eventBehavior.abstracts
             // left empty, so issued armour keeps its place.
             EventOutfit.Dress(player, runningEvent.sapi, outfits);
             EventBroadcaster.Heal(player);
+            // Strictly after the heal, which would otherwise undo a reduced start health. The match
+            // start applies these too (see ActuallyStartEvent); this call is what covers a respawn.
+            EventBroadcaster.ApplyStatMutators(player, runningEvent.Event);
         }
 
         /// <summary>Tally a death and credit a clean kill (no self-kill, no team-kill) to the killer

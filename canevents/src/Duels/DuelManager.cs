@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using canevents.src.EventManagers;
+using canevents.src.EventManagers.eventBehavior.Shared;
 using canevents.src.EventManagers.events;
 using Vintagestory.API.Common;
 using Vintagestory.API.Config;
@@ -37,7 +38,13 @@ namespace canevents.src.Duels
             this.manager = manager;
             this.config = config;
             this.log = Log.For(sapi?.World?.Logger, "duel");
+            DisabledMutators = new HashSet<string>(
+                EventMutators.Normalize(config?.disabledMutators), StringComparer.OrdinalIgnoreCase);
         }
+
+        /// <summary>Mutators the config forbids, canonical keys. Read by the target-list packet so
+        /// the duel tab hides those knobs instead of offering terms the server would bounce.</summary>
+        public IReadOnlyCollection<string> DisabledMutators { get; }
 
         public void Start()
         {
@@ -62,7 +69,7 @@ namespace canevents.src.Duels
         /// message either way, for the command and the packet handler to relay.
         /// </summary>
         public (bool ok, string message) Challenge(IServerPlayer challenger, string targetName,
-            DuelKind kind, string wagerPacked = null)
+            DuelKind kind, string wagerPacked = null, string eventCode = null, string[] mutators = null)
         {
             if (!config.duelsEnabled) return (false, Lang.Get("canevents:duel-disabled"));
             if (challenger == null) return (false, Lang.Get("canevents:duel-failed"));
@@ -97,9 +104,36 @@ namespace canevents.src.Duels
 
             // Refuse early rather than at accept time: an event that does not exist for this side
             // size means the challenge could never have been played.
-            var template = FindDuelEvent(challengerSide.Count);
+            bool modePinned = !string.IsNullOrWhiteSpace(eventCode);
+            var template = modePinned
+                ? FindDuelEventByCode(eventCode, challengerSide.Count)
+                : FindDuelEvent(challengerSide.Count);
             if (template == null)
-                return (false, Lang.Get("canevents:duel-no-event", challengerSide.Count));
+                return (false, modePinned
+                    ? Lang.Get("canevents:duel-bad-mode", eventCode, challengerSide.Count)
+                    : Lang.Get("canevents:duel-no-event", challengerSide.Count));
+
+            // Terms are validated where they are set, not where they fire: an unknown mutator or a
+            // loadout the mode does not have must bounce the challenge, never start a wrong match.
+            var parsedMutators = EventMutators.ParseAll(mutators, out var badMutators);
+            if (badMutators.Count > 0)
+                return (false, Lang.Get("canevents:duel-bad-mutator", badMutators[0]));
+
+            // Named by its key, not its pretty label: the key is what an admin would look for in
+            // disabledMutators, and a label like "start health 100%" for a value-less mention reads
+            // like a setting rather than a switch.
+            var offLimits = parsedMutators.Keys.FirstOrDefault(DisabledMutators.Contains);
+            if (offLimits != null)
+                return (false, Lang.Get("canevents:duel-mutator-disabled", offLimits));
+
+            if (parsedMutators.TryGetValue(EventMutators.Loadout, out var forcedSet))
+            {
+                var provider = template.Behaviors.OfType<ILoadoutProvider>().FirstOrDefault();
+                var setNames = provider?.GetLoadoutSetNames(template.Code, manager.LoadoutManager);
+                if (setNames == null
+                    || !setNames.Contains(forcedSet, StringComparer.OrdinalIgnoreCase))
+                    return (false, Lang.Get("canevents:duel-bad-loadout", forcedSet, template.Code));
+            }
 
             // Stake is settled before the challenge goes out: being told "you cannot afford this"
             // after the opponent already accepted wastes their time and looks like a bug.
@@ -125,6 +159,8 @@ namespace canevents.src.Duels
                 Kind = kind,
                 Wager = wager,
                 EventCode = template.Code,
+                ModePinned = modePinned,
+                Mutators = EventMutators.Pack(parsedMutators).ToList(),
                 ExpiresAtMs = NowMs + Math.Max(10, config.duelInviteTimeoutSeconds) * 1000L
             };
             pending[challenge.Id] = challenge;
@@ -192,7 +228,11 @@ namespace canevents.src.Duels
                 return (false, Lang.Get("canevents:duel-side-busy", busyName));
             }
 
-            var template = FindDuelEvent(challenge.SideSize);
+            // A pinned mode is re-resolved strictly: if it went away in the meantime, the duel is off
+            // rather than played as something else - these are the terms the target accepted.
+            var template = challenge.ModePinned
+                ? FindDuelEventByCode(challenge.EventCode, challenge.SideSize)
+                : FindDuelEvent(challenge.SideSize);
             if (template == null)
             {
                 NotifyBoth(challenge, Lang.Get("canevents:duel-no-event", challenge.SideSize));
@@ -242,6 +282,11 @@ namespace canevents.src.Duels
         {
             var ev = template.Clone();
             ev.Rated = false;
+
+            // The challenger's terms, on top of whatever the template already declared. Validated at
+            // challenge time; parsed again here only because the challenge stores the wire form.
+            foreach (var kv in EventMutators.ParseAll(challenge.Mutators, out _))
+                ev.Mutators[kv.Key] = kv.Value;
 
             if (challenge.Kind == DuelKind.Friendly)
             {
@@ -331,14 +376,12 @@ namespace canevents.src.Duels
         }
 
         /// <summary>
-        /// An event these sides can actually play: right side size, at least two sides, and unrated
-        /// by preference. Searched rather than hardcoded to "1x1"/"2x2" so adding a mode to the
-        /// config is enough to make it duellable.
+        /// Every event these sides could actually play: right side size, at least two sides, enabled.
+        /// Searched rather than hardcoded to "1x1"/"2x2" so adding a mode to the config is enough to
+        /// make it duellable. Also feeds the mode picker in the duel tab.
         /// </summary>
-        private CANEvent FindDuelEvent(int sideSize)
+        public IEnumerable<CANEvent> DuellableEvents(int sideSize)
         {
-            CANEvent ratedFallback = null;
-
             foreach (var ev in manager.Events)
             {
                 var assembling = ev?.AssemblingEB;
@@ -346,15 +389,26 @@ namespace canevents.src.Duels
                 if (assembling.MaxPartiesCount < 2) continue;
                 if (sideSize < assembling.MinPartySize || sideSize > assembling.MaxPartySize) continue;
                 if (!manager.IsEventEnabled(ev.Code)) continue;
+                yield return ev;
+            }
+        }
 
+        /// <summary>The default mode at this size, unrated by preference. A rated-only size still
+        /// duels - the rating is suppressed on the running match either way.</summary>
+        private CANEvent FindDuelEvent(int sideSize)
+        {
+            CANEvent ratedFallback = null;
+            foreach (var ev in DuellableEvents(sideSize))
+            {
                 if (!ev.Rated) return ev;
                 ratedFallback ??= ev;
             }
-
-            // Only a rated mode exists at this size. Borrow its shape; the rating is suppressed on
-            // the running match either way.
             return ratedFallback;
         }
+
+        /// <summary>The named event, if these sides can actually play it. Null bounces the challenge.</summary>
+        private CANEvent FindDuelEventByCode(string code, int sideSize)
+            => DuellableEvents(sideSize).FirstOrDefault(ev => ev.CodeEquals(code));
 
         // Sides
 

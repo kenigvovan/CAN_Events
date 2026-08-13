@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using canevents.src.Duels;
+using canevents.src.EventManagers.eventBehavior.Shared;
 using canevents.src.EventManagers.events;
 using Vintagestory.API.Common;
 using Vintagestory.API.Server;
@@ -25,7 +26,8 @@ namespace canevents.src.Network
         {
             if (Duels == null || msg == null) return;
 
-            var (_, message) = Duels.Challenge(player, msg.TargetName, msg.Kind, msg.WagerItems);
+            var (_, message) = Duels.Challenge(player, msg.TargetName, msg.Kind, msg.WagerItems,
+                msg.EventCode, msg.Mutators);
             player.SendMessage(0, message, EnumChatType.Notification);
         }
 
@@ -55,6 +57,7 @@ namespace canevents.src.Network
                     (challenge.ExpiresAtMs - sapi.World.ElapsedMilliseconds) / 1000f),
                 WagerItems = ItemSetUtil.Pack(challenge.Wager),
                 EventCode = challenge.EventCode,
+                Mutators = challenge.Mutators?.ToArray(),
                 YourWinsVsChallenger = wins,
                 ChallengerWinsVsYou = losses,
                 DrawsVsChallenger = draws
@@ -79,9 +82,13 @@ namespace canevents.src.Network
 
             var names = new List<string>();
             var sizes = new List<int>();
+            var wins = new List<int>();
+            var losses = new List<int>();
+            var draws = new List<int>();
 
             var ownParty = eventManager.PartyRosterOf(player, out _);
             var ownSet = ownParty != null ? new HashSet<string>(ownParty) : new HashSet<string>();
+            var headToHead = eventManager.HeadToHead;
 
             foreach (var other in sapi.World.AllOnlinePlayers.OfType<IServerPlayer>())
             {
@@ -91,13 +98,32 @@ namespace canevents.src.Network
 
                 names.Add(other.PlayerName);
                 sizes.Add(SideSizeOf(other));
+
+                var (w, l, d) = headToHead?.ScoreFor(player.PlayerUID, other.PlayerUID) ?? (0, 0, 0);
+                wins.Add(w); losses.Add(l); draws.Add(d);
             }
+
+            int yourSideSize = SideSizeOf(player);
+
+            // The mode picker's contents, computed by the same rules that will judge the challenge -
+            // a mode offered here can never bounce as "bad mode" later.
+            var modes = Duels.DuellableEvents(yourSideSize).Select(ev => new DuelModeMsg
+            {
+                Code = ev.Code,
+                LoadoutSetNames = ev.Behaviors.OfType<ILoadoutProvider>().FirstOrDefault()
+                    ?.GetLoadoutSetNames(ev.Code, eventManager.LoadoutManager)
+            }).ToArray();
 
             serverChannel.SendPacket(new DuelTargetListMsg
             {
                 PlayerNames = names.ToArray(),
                 SideSizes = sizes.ToArray(),
-                YourSideSize = SideSizeOf(player)
+                YourSideSize = yourSideSize,
+                Modes = modes,
+                DisabledMutators = Duels.DisabledMutators.ToArray(),
+                WinsVs = wins.ToArray(),
+                LossesVs = losses.ToArray(),
+                DrawsVs = draws.ToArray()
             }, player);
         }
 

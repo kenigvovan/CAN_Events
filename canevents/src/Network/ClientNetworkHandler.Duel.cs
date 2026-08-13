@@ -38,12 +38,15 @@ namespace canevents.src.Network
             OnDuelPromptChanged?.Invoke();
         }
 
-        public void SendDuelChallenge(string targetName, DuelKind kind, string wagerItems = null)
+        public void SendDuelChallenge(string targetName, DuelKind kind, string wagerItems = null,
+            string eventCode = null, string[] mutators = null)
             => clientChannel.SendPacket(new DuelChallengeMsg
             {
                 TargetName = targetName,
                 Kind = kind,
-                WagerItems = wagerItems
+                WagerItems = wagerItems,
+                EventCode = eventCode,
+                Mutators = mutators
             });
 
         public void SendDuelAnswer(bool accept)

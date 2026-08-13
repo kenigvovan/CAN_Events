@@ -164,6 +164,17 @@ namespace canevents.src.EventManagers
             NetworkHandler?.SendStateUpdate(runningEvent);
         }
 
+        /// <summary>Health/speed mutators for everyone actually in the arena. A pre-start dropout is
+        /// skipped: they never enter, and a speed stat left on them would outlive the match.</summary>
+        private void ApplyStatMutators(RunningEvent runningEvent)
+        {
+            foreach (var player in runningEvent.OnlineParticipants)
+            {
+                if (!runningEvent.IsActive(player.PlayerUID)) continue;
+                EventBroadcaster.ApplyStatMutators(player, runningEvent.Event);
+            }
+        }
+
         private void ActuallyStartEvent(RunningEvent runningEvent)
         {
             // Everyone disconnected during countdown → cancel.
@@ -177,6 +188,12 @@ namespace canevents.src.EventManagers
             // match end by RewardDistributor.
 
             DispatchToBehaviors(runningEvent, "OnStart", beh => beh.OnStart());
+
+            // Player-level mutators (health, speed) after every OnStart: a mode that heals its
+            // participants would otherwise wipe a reduced start health, and modes with no loadout
+            // at all (spleef, parkour) never pass through the kit path that would apply them.
+            log.Safely("ApplyStatMutators for " + runningEvent.Event.Code,
+                () => ApplyStatMutators(runningEvent));
 
             foreach (var beh in runningEvent.Behaviors)
             {
@@ -302,6 +319,10 @@ namespace canevents.src.EventManagers
                 // so nothing will come along to lift that - and TPThereAndBack is about to send them
                 // home in whatever state they are in.
                 Compat.DownedCompat.Clear(pl);
+                // The speed mutator, dropped here rather than in a behavior teardown: every mode
+                // passes through this loop, including the ones that hand out no kit at all. Someone
+                // offline by now needs nothing - the stat is non-persistent and dies with the entity.
+                EventBroadcaster.ClearSpeedMutator(pl);
             }
 
             DispatchToBehaviors(runningEvent, "OnEnd", beh => beh.OnEnd());

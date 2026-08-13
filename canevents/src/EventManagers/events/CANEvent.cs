@@ -21,6 +21,20 @@ namespace canevents.src.EventManagers.events
         public List<CANEventBehavior> Behaviors = new List<CANEventBehavior>();
         public PartyAssemblingEB AssemblingEB { get; set; }
         public HashSet<string> EventTypes { get; set; } = new HashSet<string>();
+
+        /// <summary>Active match modifiers, parsed key -> value (null for bare flags). Filled from the
+        /// event JSON's "mutators" array; a duel adds the challenger's picks onto its clone.</summary>
+        public Dictionary<string, string> Mutators = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        public bool HasMutator(string key) => Mutators.ContainsKey(key);
+
+        /// <summary>The mutator's value, or null when it is unset or a bare flag.</summary>
+        public string MutatorValue(string key)
+            => Mutators.TryGetValue(key, out var v) ? v : null;
+
+        public float MutatorFloat(string key, float fallback)
+            => EventMutators.FloatOf(Mutators, key, fallback);
+
         /// <summary>Is this the event with that code? Case-insensitive, like every other code compare
         /// in the mod: a code from stored data or a client field must still match its own event.</summary>
         public bool CodeEquals(string code)
@@ -42,6 +56,9 @@ namespace canevents.src.EventManagers.events
         public CANEvent Clone()
         {
             CANEvent clone = (CANEvent)this.MemberwiseClone();
+            // Own copy: a duel switches mutators on its clone, and those must never bleed into the
+            // queue's template of the same event.
+            clone.Mutators = new Dictionary<string, string>(Mutators, StringComparer.OrdinalIgnoreCase);
             clone.Behaviors = new List<CANEventBehavior>();
             foreach (var behavior in Behaviors)
             {

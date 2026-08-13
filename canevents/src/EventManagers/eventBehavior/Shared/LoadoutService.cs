@@ -92,22 +92,41 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
                 return string.Join(", ", itemNames);
             }).ToArray();
 
-        // Picks the player's chosen set (or first available) and equips it.
+        // Picks the player's chosen set (or first available) and equips it, mutators applied.
         public static void Give(IServerPlayer player, RunningEvent runningEvent, List<LoadoutSet> inlineFallback)
         {
+            var ev = runningEvent.Event;
             var sets = GetEffectiveSets(runningEvent, inlineFallback);
+
             LoadoutSet chosenSet = sets.FirstOrDefault();
             if (runningEvent.PlayerLoadoutChoices.TryGetValue(player.PlayerUID, out var chosenName))
             {
                 var found = sets.FirstOrDefault(s => s.Name == chosenName);
                 if (found != null) chosenSet = found;
             }
+
+            // A forced set overrides any choice. Checked here as well as at pick time: a stale
+            // queue-time choice or a saved default must not slip past the agreed duel terms.
+            string forcedName = ev?.MutatorValue(events.EventMutators.Loadout);
+            if (forcedName != null)
+            {
+                var forced = sets.FirstOrDefault(s
+                    => string.Equals(s.Name, forcedName, StringComparison.OrdinalIgnoreCase));
+                if (forced != null) chosenSet = forced;
+                else runningEvent.sapi.World.Logger.Warning(
+                    "Mutator loadout:{0} names no set of event {1}; falling back to the normal pick.",
+                    forcedName, ev.Code);
+            }
+
             if (chosenSet == null) return;
 
-            EquipSet(player, runningEvent.sapi, chosenSet);
+            EquipSet(player, runningEvent.sapi, chosenSet,
+                skipWearables: ev?.HasMutator(events.EventMutators.NoArmor) ?? false,
+                skipShields: ev?.HasMutator(events.EventMutators.NoShields) ?? false);
         }
 
-        private static void EquipSet(IServerPlayer player, ICoreServerAPI sapi, LoadoutSet chosenSet)
+        private static void EquipSet(IServerPlayer player, ICoreServerAPI sapi, LoadoutSet chosenSet,
+            bool skipWearables = false, bool skipShields = false)
         {
             var characterInv = player.InventoryManager.GetOwnInventory(GlobalConstants.characterInvClassName);
             var hotbarInv = player.InventoryManager.GetOwnInventory(GlobalConstants.hotBarInvClassName);
@@ -140,10 +159,16 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
                 stack.Attributes.SetBool("canevents_loadout", true);
                 stack.Attributes.SetString("canevents_issuedTo", player.PlayerName);
 
+                // A filtered entry is dropped, not given loose: handing "skipped" armor to the
+                // backpack would defeat the point of a no-armor match.
+                if (skipShields && stack.Collectible is Item shieldCheck
+                    && shieldCheck.Code.Path.StartsWith("shield")) continue;
+
                 // Wearable armor → character inventory. Vanilla routes by EnumCharacterDressType slot
                 // index; Combat Overhaul replaces it with ArmorInventory, so fall back to slot.CanHold.
                 string clothesCat = stack.Collectible.Attributes?["clothescategory"]?.AsString(null)
                     ?? stack.Collectible.Attributes?["clothesCategoryByType"]?.AsObject<Dictionary<string, string>>()?.Values.FirstOrDefault();
+                if (clothesCat != null && skipWearables) continue;
                 if (clothesCat != null && characterInv != null)
                 {
                     bool combatOverhaulActive = sapi.ModLoader.IsModEnabled("combatoverhaul");

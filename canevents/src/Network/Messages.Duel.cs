@@ -13,6 +13,14 @@ namespace canevents.src.Network
         /// <summary>Stake, packed "code:qty;code:qty" - the same shape the event list uses for fees
         /// and prizes. Ignored unless <see cref="Kind"/> is Wager.</summary>
         [ProtoMember(3)] public string WagerItems;
+
+        /// <summary>The mode the challenger picked, or null for "whatever fits". Validated
+        /// server-side against the duellable list.</summary>
+        [ProtoMember(4)] public string EventCode;
+
+        /// <summary>Match modifiers, wire form ("noarmor", "health:0.5"). Validated server-side
+        /// against <see cref="EventManagers.events.EventMutators"/>.</summary>
+        [ProtoMember(5)] public string[] Mutators;
     }
 
     /// <summary>Server -> challenged player: someone wants to fight, decide before the clock runs out.</summary>
@@ -39,6 +47,10 @@ namespace canevents.src.Network
         [ProtoMember(8)] public int YourWinsVsChallenger;
         [ProtoMember(9)] public int ChallengerWinsVsYou;
         [ProtoMember(10)] public int DrawsVsChallenger;
+
+        /// <summary>The challenger's match modifiers, wire form - the prompt names them so the target
+        /// knows exactly what they are accepting.</summary>
+        [ProtoMember(11)] public string[] Mutators;
     }
 
     /// <summary>Client -> server: answer the outstanding challenge.</summary>
@@ -75,5 +87,27 @@ namespace canevents.src.Network
 
         /// <summary>The viewer's own side size, to compare the rows against.</summary>
         [ProtoMember(3)] public int YourSideSize;
+
+        /// <summary>Modes the viewer's side could play, for the mode picker. Loadout set names ride
+        /// along so the "loadout:X" term can offer a real list instead of a free-text field.</summary>
+        [ProtoMember(4)] public DuelModeMsg[] Modes;
+
+        /// <summary>Mutator keys the server's config forbids; the tab hides those knobs.</summary>
+        [ProtoMember(5)] public string[] DisabledMutators;
+
+        /// <summary>Lifetime score against each listed player, from the viewer's point of view -
+        /// parallel to <see cref="PlayerNames"/>, like <see cref="SideSizes"/>. All zero for someone
+        /// they have never fought.</summary>
+        [ProtoMember(6)] public int[] WinsVs;
+        [ProtoMember(7)] public int[] LossesVs;
+        [ProtoMember(8)] public int[] DrawsVs;
+    }
+
+    /// <summary>One duellable mode for the picker in the duels tab.</summary>
+    [ProtoContract]
+    public class DuelModeMsg
+    {
+        [ProtoMember(1)] public string Code;
+        [ProtoMember(2)] public string[] LoadoutSetNames;
     }
 }
