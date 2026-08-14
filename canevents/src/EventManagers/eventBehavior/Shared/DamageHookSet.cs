@@ -21,16 +21,28 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
         /// there is no health behavior.
         /// </summary>
         public void Hook(IServerPlayer player, OnDamagedDelegate hook)
-        {
-            if (player == null || hook == null) return;
-            if (hooks.ContainsKey(player.PlayerUID)) return;
+            => Hook(player?.PlayerUID, player?.Entity, hook);
 
-            var health = player.Entity?.GetBehavior<EntityBehaviorHealth>();
+        /// <summary>
+        /// Hooks any body, bots included. A bot has no player object, so a rule enforced only on
+        /// IServerPlayer victims (no friendly fire, no fighting) simply does not apply to hitting
+        /// a bot - and a lobby topped up with bots is the normal case, not an edge one.
+        /// </summary>
+        public void Hook(string uid, Vintagestory.API.Common.Entities.Entity body, OnDamagedDelegate hook)
+        {
+            if (uid == null || body == null || hook == null) return;
+            if (hooks.ContainsKey(uid)) return;
+
+            var health = body.GetBehavior<EntityBehaviorHealth>();
             if (health == null) return;
 
             health.onDamaged += hook;
-            hooks[player.PlayerUID] = (health, hook);
+            hooks[uid] = (health, hook);
         }
+
+        /// <summary>Is this uid already hooked? For a late body (a bot whose chunk had not arrived
+        /// at match start) that has to be picked up on a later tick.</summary>
+        public bool IsHooked(string uid) => uid != null && hooks.ContainsKey(uid);
 
         /// <summary>
         /// Re-attaches the hook after a reconnect: rejoining spawns a FRESH entity, so the stored

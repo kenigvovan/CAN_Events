@@ -18,10 +18,15 @@ namespace canevents.src.Scoring
         private readonly EntryFeeForfeitStore forfeitStore;
         private readonly EntryFeeSettlement entryFees;
 
-        public RewardDistributor(ICoreServerAPI sapi, Config config)
+        /// <summary>Where a payout goes when its owner is not online. Rewards land at the very end of
+        /// a match, which is exactly when a beaten player has often already quit.</summary>
+        public PayoutQueue Payouts { get; }
+
+        public RewardDistributor(ICoreServerAPI sapi, Config config, PayoutQueue payouts = null)
         {
             this.sapi = sapi;
             this.config = config;
+            Payouts = payouts ?? new PayoutQueue(sapi);
             // Anti-farm rate-cap: instantiated only when enabled, so disabled servers create no state file.
             if (config.rewardRateCapBurst > 0)
                 rateLimiter = new RewardRateLimiter(sapi, config.rewardRateCapBurst, config.rewardRateCapRefillHours);
@@ -159,7 +164,12 @@ namespace canevents.src.Scoring
             foreach (var winnerUid in winners)
             {
                 var player = sapi.World.PlayerByUid(winnerUid) as IServerPlayer;
-                if (player == null) continue;
+                if (player == null)
+                {
+                    // Offline: the win is theirs whether or not they stayed to watch the results.
+                    Payouts.Queue(winnerUid, winnerItems, "reward", ev.Code);
+                    continue;
+                }
                 PayWinner(player, winnerUid, capKey, winnerItems, rateCapOn, now, "canevents:reward-won");
             }
             return rewarded;
@@ -180,7 +190,12 @@ namespace canevents.src.Scoring
                 foreach (var uid in ranking[i])
                 {
                     var player = sapi.World.PlayerByUid(uid) as IServerPlayer;
-                    if (player == null) continue;
+                    if (player == null)
+                    {
+                        Payouts.Queue(uid, items, "placement", capKey);
+                        rewarded.Add(uid);   // paid (later) counts as paid: no participation on top
+                        continue;
+                    }
                     if (PayWinner(player, uid, capKey, items, capThisBracket, now, "canevents:reward-placement", i + 1))
                         rewarded.Add(uid);
                 }
@@ -221,7 +236,13 @@ namespace canevents.src.Scoring
             {
                 if (alreadyRewarded.Contains(plGuid)) continue; // already got a winner/placement reward
                 var player = sapi.World.PlayerByUid(plGuid) as IServerPlayer;
-                if (player == null) continue;
+                if (player == null)
+                {
+                    // Not rate-capped on the way into the queue: the cap is a live-play throttle, and
+                    // charging it here would spend the allowance of someone who is not even playing.
+                    Payouts.Queue(plGuid, items, "participation", capKey);
+                    continue;
+                }
                 if (rateCapOn && !rateLimiter.TryConsume(plGuid, bucket, now))
                 {
                     player.SendMessage(0, Lang.Get("canevents:reward-rate-capped"), EnumChatType.Notification);

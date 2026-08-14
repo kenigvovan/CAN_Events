@@ -95,6 +95,11 @@ namespace canevents.src.Network
             Dictionary<string, int> deathCounts, int[] teamScores = null, int zoneOwnerTeam = -1,
             int teamScoreLimit = 0)
         {
+            // Hidden-role modes (Murder Mystery): a kill count is a role, so the tallies are blanked
+            // for everyone. Here rather than in the mode's PushScoreboard, because a spectator who
+            // starts watching mid-match gets their board from SendScoreboardTo, which skips it.
+            bool hideScores = re.Scorer?.HidesIndividualScores == true;
+
             var entries = new List<ScoreEntryMsg>();
             foreach (var plGuid in re.ParticipantsBefore)
             {
@@ -119,8 +124,8 @@ namespace canevents.src.Network
                 {
                     PlayerName = name,
                     TeamId = teamId,
-                    Kills = killCounts != null && killCounts.ContainsKey(plGuid) ? killCounts[plGuid] : 0,
-                    Deaths = deathCounts != null && deathCounts.ContainsKey(plGuid) ? deathCounts[plGuid] : 0,
+                    Kills = !hideScores && killCounts != null && killCounts.ContainsKey(plGuid) ? killCounts[plGuid] : 0,
+                    Deaths = !hideScores && deathCounts != null && deathCounts.ContainsKey(plGuid) ? deathCounts[plGuid] : 0,
                     Alive = re.IsActive(plGuid)
                 });
             }

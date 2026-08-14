@@ -14,5 +14,20 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
         // Per-player kill / death tallies, or null if this mode doesn't track them.
         Dictionary<string, int> GetFinalKillCounts();
         Dictionary<string, int> GetFinalDeathCounts();
+
+        /// <summary>
+        /// Blanks the per-player kills/deaths in the live scoreboard. For hidden-role modes, where
+        /// a kill count is a role: the first player with a kill is the murderer. Honored in
+        /// ServerNetworkHandler.BuildScoreboard, which every scoreboard packet goes through.
+        /// The end-of-match results table is unaffected - by then the roles are public.
+        /// </summary>
+        bool HidesIndividualScores => false;
+
+        /// <summary>
+        /// Nobody is named as a killer in the kill feed or the death announcements. Asked by every
+        /// path that announces a death - including the bot one, which builds its own message and
+        /// would otherwise name the murderer the first time they cut down a bot.
+        /// </summary>
+        bool HidesKillerIdentity => false;
     }
 }

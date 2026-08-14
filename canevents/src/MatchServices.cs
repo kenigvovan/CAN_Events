@@ -13,6 +13,7 @@ namespace canevents.src
         public ServerNetworkHandler NetworkHandler { get; init; }
         public LeaderboardData      Leaderboard    { get; init; }
         public LoadoutManager       LoadoutManager { get; init; }
+        public LoadoutManager       OutfitManager  { get; init; }
         public SpectatorManager     Spectator      { get; init; }
         public Config               Config         { get; init; }
     }

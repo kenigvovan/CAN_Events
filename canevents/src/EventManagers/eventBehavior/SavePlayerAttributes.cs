@@ -32,10 +32,28 @@ namespace canevents.src.EventManagers.eventBehavior
         /// </summary>
         public bool KeepOwnGear { get; private set; }
 
+        /// <summary>
+        /// This event's own answer to "what happens to issued kit thrown on the ground", or null to
+        /// inherit the server default. Lives on this behavior because it already owns the match's
+        /// inventory: the same place that decides what is handed out and what is kept.
+        /// </summary>
+        public Shared.IssuedGearDrop? IssuedGearDropOverride { get; private set; }
+
+        /// <summary>
+        /// An eliminated player takes the spectator seat and watches the rest of the match. Turn it
+        /// off (`spectateOnElimination: false`) to send them straight home with their own gear
+        /// instead - in a long one-life mode, being made to watch for ten minutes is a punishment
+        /// nobody asked for.
+        /// </summary>
+        public bool SpectateOnElimination { get; private set; } = true;
+
         public override void Initialize()
         {
             base.Initialize();
             KeepOwnGear = Config.Bool("keepOwnGear", false);
+            // Before WarnUnknown, or the key it just read would be reported as unread.
+            IssuedGearDropOverride = Shared.IssuedGear.ParseOverride(Config.String("issuedGearDrop"), log);
+            SpectateOnElimination = Config.Bool("spectateOnElimination", true);
             Config.WarnUnknown();
         }
 
@@ -94,6 +112,7 @@ namespace canevents.src.EventManagers.eventBehavior
             // Own gear is supposed to drop; only issued gear is swept up before the body does.
             if (KeepOwnGear) return;
 
+            PlayerInventoryBackup.DropDeathDrops(player, runningEvent.sapi);
             PlayerInventoryBackup.ClearInventory(player);
         }
 
@@ -116,6 +135,8 @@ namespace canevents.src.EventManagers.eventBehavior
                     // inside Die() ahead of the engine's drop.
                     && !Compat.DownedCompat.WouldGoDownInsteadOfDying(player.Entity, dmgSource))
                 {
+                    // Anything the mode wants lootable hits the ground first; the rest is swept up.
+                    PlayerInventoryBackup.DropDeathDrops(player, runningEvent.sapi);
                     PlayerInventoryBackup.ClearInventory(player);
                 }
                 return damage;

@@ -2,16 +2,25 @@ using ProtoBuf;
 
 namespace canevents.src.Network
 {
-    // Loadout management messages
+    // Item-set management messages. One set of packets serves every kind of store (loadouts,
+    // outfits - see ItemSetKinds); `Kind` picks it, and an absent Kind means loadouts, which is
+    // exactly what an older client sends.
 
     [ProtoContract]
-    public class RequestLoadoutListMsg { }
+    public class RequestLoadoutListMsg
+    {
+        [ProtoMember(9)]
+        public string Kind;
+    }
 
     [ProtoContract]
     public class LoadoutListMsg
     {
         [ProtoMember(1)]
         public LoadoutEventMsg[] Events;
+
+        [ProtoMember(9)]
+        public string Kind;
     }
 
     [ProtoContract]
@@ -45,6 +54,9 @@ namespace canevents.src.Network
 
         [ProtoMember(2)]
         public string SetName;
+
+        [ProtoMember(9)]
+        public string Kind;
     }
 
     [ProtoContract]
@@ -61,6 +73,9 @@ namespace canevents.src.Network
 
         [ProtoMember(4)]
         public int[] ItemQuantities;
+
+        [ProtoMember(9)]
+        public string Kind;
     }
 
     [ProtoContract]
@@ -71,6 +86,9 @@ namespace canevents.src.Network
 
         [ProtoMember(2)]
         public string SetName;
+
+        [ProtoMember(9)]
+        public string Kind;
     }
 
     [ProtoContract]
@@ -78,6 +96,9 @@ namespace canevents.src.Network
     {
         [ProtoMember(1)]
         public string EventCode;
+
+        [ProtoMember(9)]
+        public string Kind;
     }
 
     // Match-start loadout pick messages

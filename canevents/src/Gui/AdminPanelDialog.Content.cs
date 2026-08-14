@@ -245,27 +245,49 @@ namespace canevents.src.Gui
             }
         }
 
-        // Loadouts
+        // Item sets: loadouts (gear) and outfits (clothes). Same store shape, same packets, so one
+        // editor with the differences named rather than two that drift apart.
 
         private void DrawLoadoutsTab()
+            => DrawItemSetsTab(loadoutEditor, EventManagers.ItemSetKinds.Loadout);
+
+        private void DrawOutfitsTab()
+            => DrawItemSetsTab(outfitEditor, EventManagers.ItemSetKinds.Outfit);
+
+        private void DrawItemSetsTab(ItemSetEditorState st, string kind)
         {
-            var list = networkHandler.LoadoutList.Value;
+            // Outfits are worn one of each, so there is no quantity to edit and no point pulling in
+            // a hotbar; the wardrobe is built by putting the clothes on and hitting "+ Armor".
+            bool isOutfit = kind == EventManagers.ItemSetKinds.Outfit;
+            string idSuffix = isOutfit ? "of" : "lo";
+
+            var list = networkHandler.ItemSetList(kind).Value;
             int setCount = list?.Events?.Sum(e => e.Sets?.Length ?? 0) ?? 0;
 
-            ImGui.TextColored(ColAccent, "Loadout Sets");
+            ImGui.TextColored(ColAccent, isOutfit ? "Outfit Sets" : "Loadout Sets");
             ImGui.SameLine();
-            if (ImGui.SmallButton("Refresh##lo")) networkHandler.RequestLoadoutList();
-            ImGui.TextDisabled("Gear handed to players at match start. Sets edited here override the ones in event JSON.");
-            ImGui.TextDisabled("Several sets on one event become a choice players make before the match.");
+            if (ImGui.SmallButton("Refresh##" + idSuffix)) networkHandler.RequestLoadoutList(kind);
+            if (isOutfit)
+            {
+                ImGui.TextDisabled("Plain clothes worn over the loadout, so players can be told apart");
+                ImGui.TextDisabled("and described. One set = one outfit; each player gets a different one.");
+            }
+            else
+            {
+                ImGui.TextDisabled("Gear handed to players at match start. Sets edited here override the ones in event JSON.");
+                ImGui.TextDisabled("Several sets on one event become a choice players make before the match.");
+            }
             ImGui.Spacing();
 
             if (setCount == 0)
             {
-                ImGui.TextColored(ColMuted, "No managed loadout sets yet.");
+                ImGui.TextColored(ColMuted, isOutfit
+                    ? "No managed outfits yet."
+                    : "No managed loadout sets yet.");
                 ImGui.TextDisabled("Build one below, or use 'Import from JSON' to copy an event's inline sets");
                 ImGui.TextDisabled("into editable ones.");
             }
-            else if (ImGui.BeginTable("##LoadoutsTable", 3,
+            else if (ImGui.BeginTable("##ItemSetsTable" + idSuffix, 3,
                 ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY | ImGuiTableFlags.SizingFixedFit,
                 new Vector2(ImGui.GetContentRegionAvail().X, System.Math.Min(setCount * 22f + 26f, 160f))))
             {
@@ -283,12 +305,12 @@ namespace canevents.src.Gui
                         ImGui.TableNextRow();
                         ImGui.TableSetColumnIndex(0);
 
-                        bool isSelected = selectedLoadoutEvent == ev.EventCode && selectedLoadoutSet == set.Name;
+                        bool isSelected = st.SelectedEvent == ev.EventCode && st.SelectedSet == set.Name;
                         ImGui.PushID(ev.EventCode + "/" + set.Name);
                         if (ImGui.Selectable(ev.EventCode, isSelected, ImGuiSelectableFlags.SpanAllColumns))
                         {
-                            selectedLoadoutEvent = ev.EventCode;
-                            selectedLoadoutSet = set.Name;
+                            st.SelectedEvent = ev.EventCode;
+                            st.SelectedSet = set.Name;
                         }
                         ImGui.PopID();
 
@@ -305,10 +327,10 @@ namespace canevents.src.Gui
 
             // Detail panel for selected set
             LoadoutSetMsg selSet = null;
-            if (!string.IsNullOrEmpty(selectedLoadoutEvent) && list?.Events != null)
+            if (!string.IsNullOrEmpty(st.SelectedEvent) && list?.Events != null)
             {
-                var selEv = System.Array.Find(list.Events, e => e.EventCode == selectedLoadoutEvent);
-                selSet = selEv?.Sets != null ? System.Array.Find(selEv.Sets, s => s.Name == selectedLoadoutSet) : null;
+                var selEv = System.Array.Find(list.Events, e => e.EventCode == st.SelectedEvent);
+                selSet = selEv?.Sets != null ? System.Array.Find(selEv.Sets, s => s.Name == st.SelectedSet) : null;
             }
 
             if (selSet != null)
@@ -316,21 +338,21 @@ namespace canevents.src.Gui
                 ImGui.Spacing();
                 ImGui.Separator();
                 ImGui.TextColored(ColAccent,
-                    selectedLoadoutEvent + " / " + selSet.Name);
+                    st.SelectedEvent + " / " + selSet.Name);
                 ImGui.Spacing();
 
                 if (ImGui.Button("Load into editor"))
                 {
-                    loadoutEventCode = selectedLoadoutEvent;
-                    loadoutSetName = selSet.Name;
-                    pendingLoadoutItems.Clear();
+                    st.EventCode = st.SelectedEvent;
+                    st.SetName = selSet.Name;
+                    st.Pending.Clear();
                     if (selSet.ItemCodes != null)
                     {
                         for (int i = 0; i < selSet.ItemCodes.Length; i++)
                         {
                             int qty = selSet.ItemQuantities != null && i < selSet.ItemQuantities.Length
                                 ? selSet.ItemQuantities[i] : 1;
-                            pendingLoadoutItems.Add((selSet.ItemCodes[i], qty));
+                            st.Pending.Add((selSet.ItemCodes[i], qty));
                         }
                     }
                 }
@@ -348,13 +370,13 @@ namespace canevents.src.Gui
                 if (ImGui.BeginPopupModal("##ConfirmDeleteSet", ref deleteSetModalOpen,
                     ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoTitleBar))
                 {
-                    ImGui.TextColored(ColBad, "Delete loadout set?");
-                    ImGui.Text(selSet.Name + "  (" + selectedLoadoutEvent + ")");
+                    ImGui.TextColored(ColBad, isOutfit ? "Delete outfit?" : "Delete loadout set?");
+                    ImGui.Text(selSet.Name + "  (" + st.SelectedEvent + ")");
                     ImGui.Spacing();
                     if (ImGui.Button("Yes, delete", new Vector2(100, 0)))
                     {
-                        networkHandler.SendDeleteLoadoutSet(selectedLoadoutEvent, selSet.Name);
-                        selectedLoadoutSet = "";
+                        networkHandler.SendDeleteLoadoutSet(st.SelectedEvent, selSet.Name, kind);
+                        st.SelectedSet = "";
                         ImGui.CloseCurrentPopup();
                     }
                     ImGui.SameLine();
@@ -364,12 +386,13 @@ namespace canevents.src.Gui
 
                 ImGui.Spacing();
                 if (selSet.ItemCodes != null && selSet.ItemCodes.Length > 0
-                    && ImGui.BeginTable("##SetItems", 3,
+                    && ImGui.BeginTable("##SetItems" + idSuffix, isOutfit ? 2 : 3,
                         ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingFixedFit))
                 {
                     ImGui.TableSetupColumn("",         ImGuiTableColumnFlags.WidthFixed, 32f);
                     ImGui.TableSetupColumn("Item",     ImGuiTableColumnFlags.WidthStretch);
-                    ImGui.TableSetupColumn("Qty",      ImGuiTableColumnFlags.WidthFixed, 35f);
+                    if (!isOutfit)
+                        ImGui.TableSetupColumn("Qty",  ImGuiTableColumnFlags.WidthFixed, 35f);
                     ImGui.TableHeadersRow();
 
                     for (int i = 0; i < selSet.ItemCodes.Length; i++)
@@ -380,7 +403,7 @@ namespace canevents.src.Gui
                         ImGui.TableNextRow(ImGuiTableRowFlags.None, 32f);
                         ImGui.TableSetColumnIndex(0); DrawItemIcon(code, 28f);
                         ImGui.TableSetColumnIndex(1); ImGui.Text(code);
-                        ImGui.TableSetColumnIndex(2); ImGui.Text(qty.ToString());
+                        if (!isOutfit) { ImGui.TableSetColumnIndex(2); ImGui.Text(qty.ToString()); }
                     }
                     ImGui.EndTable();
                 }
@@ -390,109 +413,132 @@ namespace canevents.src.Gui
             ImGui.Spacing();
             ImGui.Separator();
             ImGui.TextColored(ColAccent,
-                pendingLoadoutItems.Count > 0 ? "Set editor" : "Create set");
-            ImGui.TextDisabled("Equip the gear you want, then pull it in from your own inventory.");
+                st.Pending.Count > 0 ? "Set editor" : (isOutfit ? "Create outfit" : "Create set"));
+            ImGui.TextDisabled(isOutfit
+                ? "Put the clothes on, then pull them in from what you are wearing."
+                : "Equip the gear you want, then pull it in from your own inventory.");
             ImGui.Spacing();
 
-            if (ImGui.Button("+ Hotbar"))
-                AddInventoryToPending(Vintagestory.API.Config.GlobalConstants.hotBarInvClassName);
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Adds everything in your hotbar to the list below.");
-            ImGui.SameLine();
+            if (!isOutfit)
+            {
+                if (ImGui.Button("+ Hotbar"))
+                    AddInventoryToPending(st, Vintagestory.API.Config.GlobalConstants.hotBarInvClassName);
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("Adds everything in your hotbar to the list below.");
+                ImGui.SameLine();
+            }
             if (ImGui.Button("+ Armor"))
-                AddInventoryToPending(Vintagestory.API.Config.GlobalConstants.characterInvClassName);
+                AddInventoryToPending(st, Vintagestory.API.Config.GlobalConstants.characterInvClassName);
             if (ImGui.IsItemHovered()) ImGui.SetTooltip("Adds what you are currently wearing.");
             ImGui.SameLine();
-            if (ImGui.SmallButton("Clear list")) pendingLoadoutItems.Clear();
-
-            if (pendingLoadoutItems.Count > 0)
+            if (isOutfit)
             {
-                float pendingHeight = System.Math.Min(pendingLoadoutItems.Count * 34f + 26f, 180f);
-                if (ImGui.BeginTable("##PendingItems", 4,
+                // One piece at a time, for building an outfit out of things you are not wearing.
+                if (ImGui.Button("+ Held item")) AddHeldItemToPending(st);
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip("Adds the item in your hand.");
+                ImGui.SameLine();
+            }
+            if (ImGui.SmallButton("Clear list")) st.Pending.Clear();
+
+            if (st.Pending.Count > 0)
+            {
+                float pendingHeight = System.Math.Min(st.Pending.Count * 34f + 26f, 180f);
+                if (ImGui.BeginTable("##PendingItems" + idSuffix, isOutfit ? 3 : 4,
                     ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY | ImGuiTableFlags.SizingFixedFit,
                     new Vector2(ImGui.GetContentRegionAvail().X, pendingHeight)))
                 {
                     ImGui.TableSetupColumn("",      ImGuiTableColumnFlags.WidthFixed, 32f);
                     ImGui.TableSetupColumn("Item",  ImGuiTableColumnFlags.WidthStretch);
-                    ImGui.TableSetupColumn("Qty",   ImGuiTableColumnFlags.WidthFixed, 70f);
+                    if (!isOutfit)
+                        ImGui.TableSetupColumn("Qty", ImGuiTableColumnFlags.WidthFixed, 70f);
                     ImGui.TableSetupColumn("",      ImGuiTableColumnFlags.WidthFixed, 22f);
                     ImGui.TableHeadersRow();
 
                     int removeAt = -1;
-                    for (int i = 0; i < pendingLoadoutItems.Count; i++)
+                    for (int i = 0; i < st.Pending.Count; i++)
                     {
-                        var (code, qty) = pendingLoadoutItems[i];
+                        var (code, qty) = st.Pending[i];
                         ImGui.TableNextRow(ImGuiTableRowFlags.None, 32f);
                         ImGui.TableSetColumnIndex(0); DrawItemIcon(code, 28f);
                         ImGui.TableSetColumnIndex(1); ImGui.Text(code);
 
-                        // Editable: hotbar stack sizes rarely match what you want to hand out.
-                        ImGui.TableSetColumnIndex(2);
-                        ImGui.PushID("qty_" + i);
-                        int edited = qty;
-                        ImGui.SetNextItemWidth(-1);
-                        if (ImGui.InputInt("##q", ref edited, 0))
-                            pendingLoadoutItems[i] = (code, System.Math.Max(1, edited));
-                        ImGui.PopID();
+                        if (!isOutfit)
+                        {
+                            // Editable: hotbar stack sizes rarely match what you want to hand out.
+                            ImGui.TableSetColumnIndex(2);
+                            ImGui.PushID("qty_" + i);
+                            int edited = qty;
+                            ImGui.SetNextItemWidth(-1);
+                            if (ImGui.InputInt("##q", ref edited, 0))
+                                st.Pending[i] = (code, System.Math.Max(1, edited));
+                            ImGui.PopID();
+                        }
 
-                        ImGui.TableSetColumnIndex(3);
+                        ImGui.TableSetColumnIndex(isOutfit ? 2 : 3);
                         ImGui.PushID("rm_" + i);
                         if (ImGui.SmallButton("x")) removeAt = i;
                         ImGui.PopID();
                     }
-                    if (removeAt >= 0) pendingLoadoutItems.RemoveAt(removeAt);
+                    if (removeAt >= 0) st.Pending.RemoveAt(removeAt);
 
                     ImGui.EndTable();
                 }
             }
             else
             {
-                ImGui.TextColored(ColMuted, "List is empty. Use + Hotbar / + Armor.");
+                ImGui.TextColored(ColMuted, isOutfit
+                    ? "List is empty. Wear the clothes and use + Armor."
+                    : "List is empty. Use + Hotbar / + Armor.");
             }
 
             ImGui.Spacing();
             var eventCodes = list?.Events != null
                 ? list.Events.Select(e => e.EventCode).ToArray()
                 : new string[0];
-            int ecIdx = System.Array.IndexOf(eventCodes, loadoutEventCode);
+            int ecIdx = System.Array.IndexOf(eventCodes, st.EventCode);
             if (ecIdx < 0) ecIdx = 0;
-            if (eventCodes.Length > 0 && string.IsNullOrEmpty(loadoutEventCode))
-                loadoutEventCode = eventCodes[0];
+            if (eventCodes.Length > 0 && string.IsNullOrEmpty(st.EventCode))
+                st.EventCode = eventCodes[0];
             ImGui.SetNextItemWidth(160);
-            if (eventCodes.Length > 0 && ImGui.Combo("Event##lec", ref ecIdx, eventCodes, eventCodes.Length))
-                loadoutEventCode = eventCodes[ecIdx];
+            if (eventCodes.Length > 0 && ImGui.Combo("Event##ec" + idSuffix, ref ecIdx, eventCodes, eventCodes.Length))
+                st.EventCode = eventCodes[ecIdx];
             else if (eventCodes.Length == 0)
-                ImGui.InputText("Event##lec", ref loadoutEventCode, 32);
+                ImGui.InputText("Event##ec" + idSuffix, ref st.EventCode, 32);
             ImGui.SameLine();
-            ImGui.SetNextItemWidth(190); ImGui.InputText("Set name##lsn", ref loadoutSetName, 64);
+            ImGui.SetNextItemWidth(190); ImGui.InputText("Set name##sn" + idSuffix, ref st.SetName, 64);
             ImGui.Spacing();
 
-            bool canSave = pendingLoadoutItems.Count > 0
-                && !string.IsNullOrWhiteSpace(loadoutEventCode)
-                && !string.IsNullOrWhiteSpace(loadoutSetName);
+            bool canSave = st.Pending.Count > 0
+                && !string.IsNullOrWhiteSpace(st.EventCode)
+                && !string.IsNullOrWhiteSpace(st.SetName);
             if (!canSave) ImGui.BeginDisabled();
             if (GoButton("Save set"))
             {
                 networkHandler.SendSaveLoadout(
-                    loadoutEventCode.Trim(),
-                    loadoutSetName.Trim(),
-                    pendingLoadoutItems.Select(x => x.code).ToArray(),
-                    pendingLoadoutItems.Select(x => x.qty).ToArray());
-                loadoutSetName = "";
-                pendingLoadoutItems.Clear();
+                    st.EventCode.Trim(),
+                    st.SetName.Trim(),
+                    st.Pending.Select(x => x.code).ToArray(),
+                    // An outfit is worn one of each; the server ignores these, they are sent so the
+                    // packet stays the same shape for both kinds.
+                    st.Pending.Select(x => isOutfit ? 1 : x.qty).ToArray(),
+                    kind);
+                st.SetName = "";
+                st.Pending.Clear();
             }
             if (!canSave) ImGui.EndDisabled();
             ImGui.SameLine();
-            bool canImport = !string.IsNullOrWhiteSpace(loadoutEventCode);
+            bool canImport = !string.IsNullOrWhiteSpace(st.EventCode);
             if (!canImport) ImGui.BeginDisabled();
             if (ImGui.Button("Import from JSON"))
             {
-                networkHandler.SendImportInlineSets(loadoutEventCode.Trim());
+                networkHandler.SendImportInlineSets(st.EventCode.Trim(), kind);
             }
             if (!canImport) ImGui.EndDisabled();
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("Copies the loadout sets defined in this event's JSON into editable ones,\nso you can tweak them here instead of editing files.");
+                ImGui.SetTooltip(isOutfit
+                    ? "Copies the outfits defined in this event's JSON into editable ones,\nso you can tweak them here instead of editing files."
+                    : "Copies the loadout sets defined in this event's JSON into editable ones,\nso you can tweak them here instead of editing files.");
 
-            if (!canSave && pendingLoadoutItems.Count > 0)
+            if (!canSave && st.Pending.Count > 0)
                 ImGui.TextDisabled("Pick an event and type a set name to save.");
         }
 
@@ -500,14 +546,24 @@ namespace canevents.src.Gui
         /// Pulls one of the player's own inventories into the pending set, merging stacks of
         /// the same item.
         /// </summary>
-        private void AddInventoryToPending(string inventoryClassName)
+        private void AddInventoryToPending(ItemSetEditorState st, string inventoryClassName)
         {
             foreach (var (code, qty) in GuiItemUtil.ReadInventory(capi, inventoryClassName))
             {
-                int idx = pendingLoadoutItems.FindIndex(x => x.code == code);
-                if (idx >= 0) pendingLoadoutItems[idx] = (code, pendingLoadoutItems[idx].qty + qty);
-                else pendingLoadoutItems.Add((code, qty));
+                int idx = st.Pending.FindIndex(x => x.code == code);
+                if (idx >= 0) st.Pending[idx] = (code, st.Pending[idx].qty + qty);
+                else st.Pending.Add((code, qty));
             }
+        }
+
+        /// <summary>Adds whatever is in the player's active hand slot, once.</summary>
+        private void AddHeldItemToPending(ItemSetEditorState st)
+        {
+            string code = capi?.World?.Player?.InventoryManager?.ActiveHotbarSlot
+                ?.Itemstack?.Collectible?.Code?.ToString();
+            if (string.IsNullOrEmpty(code)) return;
+            if (st.Pending.Any(x => x.code == code)) return;
+            st.Pending.Add((code, 1));
         }
     }
 }

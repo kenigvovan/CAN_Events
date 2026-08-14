@@ -126,6 +126,36 @@ namespace canevents.src.EventManagers
 
         /// <summary>Wipe every non-creative inventory slot. Used before handing out a loadout, on
         /// respawn / lethal hit (so default items don't reappear), and inside Restore().</summary>
+        /// <summary>
+        /// Drops the pieces of kit that are meant to outlive their owner (see
+        /// IssuedGear.DropOnDeathKey) before the rest is swept up. Call from the death path, ahead of
+        /// <see cref="ClearInventory"/>: by the time the engine would drop anything, the inventory is
+        /// already empty, so a weapon that is supposed to be lootable has to be put on the ground here.
+        /// </summary>
+        public static int DropDeathDrops(IServerPlayer player, ICoreServerAPI sapi)
+        {
+            if (player?.Entity == null || sapi == null) return 0;
+
+            int dropped = 0;
+            foreach (var inv in player.InventoryManager.Inventories.Values.ToArray())
+            {
+                if (inv.ClassName == "creative") continue;
+                for (int i = 0; i < inv.Count; i++)
+                {
+                    var slot = inv[i];
+                    var stack = slot?.Itemstack;
+                    if (stack == null || IsBagContent(slot)) continue;
+                    if (!eventBehavior.Shared.IssuedGear.DropsOnDeath(stack)) continue;
+
+                    slot.Itemstack = null;
+                    slot.MarkDirty();
+                    sapi.World.SpawnItemEntity(stack, player.Entity.Pos.XYZ);
+                    dropped++;
+                }
+            }
+            return dropped;
+        }
+
         public static void ClearInventory(IServerPlayer player)
         {
             // Emptied silently first, notified second - the split is load-bearing, not tidiness.

@@ -23,12 +23,13 @@ namespace canevents.src.EventPlacesManagers.Places
         public const string Koth = "KOTH";
         public const string HungerGames = "HUNGERGAMES";
         public const string Ctf = "CTF";
+        public const string MurderMystery = "MURDERMYSTERY";
 
         // Appended, never reordered: LegacyOrdinals below maps old numeric tags by position.
         public static readonly string[] Known =
         {
             Arena1x1, Arena2x2, Arena3x3, Arena5x5, Ffa,
-            Spleef, Parkour, Deathmatch, Koth, HungerGames, Ctf
+            Spleef, Parkour, Deathmatch, Koth, HungerGames, Ctf, MurderMystery
         };
 
         public static string Normalize(string tag) => tag?.Trim().ToUpperInvariant();

@@ -66,6 +66,20 @@ namespace canevents.src
         // Overridable per event via RewardSpec.SeparateRewardCap.
         public bool rewardRateCapPerEvent = false;
 
+        // Issued gear
+        // What happens when a player throws match-issued kit on the ground. Death never drops it
+        // (the inventory is emptied before the body is), so this is about the drop key alone -
+        // without which a thrown sword lies on the arena for good and the match mints it.
+        //   "cleanup" - dropping works as before, marked items are swept off the arena when the
+        //               match ends. Needs a place with marked bounds.
+        //   "return"  - handed straight back to whoever dropped it
+        //   "remove"  - destroyed on the spot
+        //   "allow"   - left alone
+        // Overridable per event via the SavePlayerAttributes behavior's "issuedGearDrop" attribute.
+        // Only ever touches issued kit and outfits: an item the SERVER dropped for a player (their
+        // inventory was full) is never touched, or a reward landing at their feet would vanish.
+        public string issuedGearDrop = "cleanup";
+
         // Entry fee / wager
         // On a void fee match (draw or under the contribution-gate), refund a disconnector's stake
         // (true) or burn it (false). On a real result a disconnect always forfeits it (anti-dodge).

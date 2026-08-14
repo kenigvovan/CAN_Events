@@ -98,8 +98,25 @@ namespace canevents.src.EventManagers
         public List<ArenaTemplate> ArenaTemplates { get; set; } = new List<ArenaTemplate>();
         public SchematicPlacer SchematicPlacer { get; set; }
         public TemplateEditor TemplateEditor { get; set; }
-        public LoadoutManager LoadoutManager { get; set; }
+        /// <summary>Every item-set store by kind - see <see cref="ItemSetKinds"/>.</summary>
+        public IReadOnlyDictionary<string, LoadoutManager> ItemSetStores { get; private set; }
+            = new Dictionary<string, LoadoutManager>();
+
+        /// <summary>The store for one kind, or null when the kind is unknown. Callers that took a
+        /// kind off the wire must handle the null rather than falling back to loadouts.</summary>
+        public LoadoutManager Store(string kind)
+            => ItemSetStores.TryGetValue(ItemSetKinds.Normalize(kind), out var s) ? s : null;
+
+        /// <summary>The loadout store. Kept as a named property because most of the mod only ever
+        /// wants this one.</summary>
+        public LoadoutManager LoadoutManager => Store(ItemSetKinds.Loadout);
+
         public LoadoutPreferences LoadoutPreferences { get; set; }
+
+        /// <summary>Server-wide default for issued gear thrown on the ground; an event may override
+        /// it. Read from config once in <see cref="Start"/>.</summary>
+        public eventBehavior.Shared.IssuedGearDrop IssuedGearDefault { get; private set; }
+            = eventBehavior.Shared.IssuedGear.DefaultPolicy;
 
         /// <summary>Services bundle passed to every RunningEvent at creation. Set by canevents.cs
         /// before calling Start().</summary>
@@ -129,6 +146,10 @@ namespace canevents.src.EventManagers
         /// </summary>
         public void Start()
         {
+            // Parsed once, not per dropped item: a misspelt value would otherwise log a line every
+            // time anyone throws anything.
+            IssuedGearDefault = eventBehavior.Shared.IssuedGear.ParseDefault(config.issuedGearDrop, log);
+
             foreach (var qm in QueueManagers.Values.Distinct())
             {
                 qm.SetPlayerBusyCheck(IsPlayerBusy);
@@ -269,6 +290,28 @@ namespace canevents.src.EventManagers
             return null;
         }
 
+        /// <summary>
+        /// The live match this player is on the roster of, or null. Deliberately blind to the match
+        /// state: a match stays theirs until it leaves the live list, so gear dropped during the
+        /// finishing sequence is still judged by that match's own rules.
+        /// </summary>
+        public RunningEvent FindLiveEventOf(string uid)
+        {
+            if (uid == null) return null;
+            lock (runningEvents)
+            {
+                foreach (var re in runningEvents)
+                    if (re.IsParticipant(uid)) return re;
+            }
+            return null;
+        }
+
+        /// <summary>What this match does with issued gear thrown on the ground: its own setting if
+        /// it has one, else the server default. A null match means "no match", i.e. the default.</summary>
+        public eventBehavior.Shared.IssuedGearDrop PolicyOf(RunningEvent re)
+            => re?.GetBehavior<eventBehavior.SavePlayerAttributes>()?.IssuedGearDropOverride
+               ?? IssuedGearDefault;
+
         /// <summary>Is this player on the roster of a match that is still going? Crash-recovery paths
         /// ask this first: undoing anything is only safe once no live match owns them.</summary>
         internal bool IsInLiveEvent(string uid)
@@ -325,8 +368,15 @@ namespace canevents.src.EventManagers
             eventPlacesManager.LoadEventPlaces();
             placeConfig = new PlaceConfigService(eventPlacesManager);
 
-            LoadoutManager = new LoadoutManager(folderPath, sapi.Logger);
-            LoadoutManager.Load(events.Select(e => e.Code));
+            var eventCodes = events.Select(e => e.Code).ToList();
+            var stores = new Dictionary<string, LoadoutManager>();
+            foreach (var kvp in ItemSetKinds.Folders)
+            {
+                var store = new LoadoutManager(folderPath, sapi.Logger, kvp.Value);
+                store.Load(eventCodes);
+                stores[kvp.Key] = store;
+            }
+            ItemSetStores = stores;
             LoadoutPreferences = new LoadoutPreferences(sapi);
 
             // The busy-player predicate is wired after services are ready (see Start()).

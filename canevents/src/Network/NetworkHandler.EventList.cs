@@ -145,21 +145,9 @@ namespace canevents.src.Network
                 int maxPlayers = capacity?.GetMaxPlayers() ?? 0;
                 int minPlayers = capacity?.GetMinPlayers() ?? 0;
 
-                string[] loadoutSetNames = null;
-                string[] loadoutSetDescriptions = null;
-                string[] loadoutSetItemCodes = null;
-                var loadoutProvider = ev.GetBehavior<ILoadoutProvider>();
-                if (loadoutProvider != null)
-                {
-                    var lm = eventManager.LoadoutManager;
-                    var names = loadoutProvider.GetLoadoutSetNames(ev.Code, lm);
-                    if (names.Length > 1)
-                    {
-                        loadoutSetNames = names;
-                        loadoutSetDescriptions = loadoutProvider.GetLoadoutSetDescriptions(ev.Code, lm);
-                        loadoutSetItemCodes = loadoutProvider.GetLoadoutSetItemCodes(ev.Code, lm);
-                    }
-                }
+                // A hidden-role mode publishes nothing here: its set names are the roles.
+                TryGetSelectableSets(ev, out var loadoutSetNames, out var loadoutSetItemCodes,
+                    out var loadoutSetDescriptions);
 
                 string category = string.IsNullOrWhiteSpace(ev.Category) ? "Other" : ev.Category;
 

@@ -184,6 +184,26 @@
 						animationSpeed: 1
 					},
 					{
+						// Runs from whoever the mode says is a threat to this bot - in practice a
+						// murderer closing on unarmed townsfolk. Outside a mode with roles nothing
+						// is ever a threat, so this task simply never starts and fighting bots keep
+						// standing their ground. Above seek on purpose: a bot that cannot fight
+						// back has nothing better to do than get away.
+						code: "caneventsbotflee",
+						entityCodes: ["player", "arenabot"],
+						priority: 1.8,
+						// SLOWER than the seek task above (0.025), deliberately. Prey that outruns its
+						// hunter never gets caught, and a match nobody can finish hangs until the
+						// clock runs out - fleeing is meant to buy the townsfolk time, not immunity.
+						movespeed: 0.02,
+						seekingRange: 10,
+						fleeingDistance: 12,
+						minDayLight: -1,
+						cancelOnHurt: false,
+						animation: "sprint",
+						animationSpeed: 1.2
+					},
+					{
 						// Keeps a bot with nobody to fight moving instead of standing on its pedestal.
 						code: "wander",
 						priority: 1,

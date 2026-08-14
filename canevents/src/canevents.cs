@@ -40,6 +40,7 @@ namespace canevents.src
         private Harmony harmony;
         private Harmony clientHarmony;
         private Bots.BotCleanup botCleanup;
+        private EventManagers.IssuedGearDropWatcher issuedGearWatcher;
         private Tournaments.TournamentStore tournamentStore;
         private Tournaments.TournamentManager tournamentManager;
 
@@ -67,6 +68,7 @@ namespace canevents.src
             api.RegisterEntity("ArenaBot", typeof(Bots.EntityArenaBot));
             Vintagestory.GameContent.AiTaskRegistry.Register<Bots.AiTaskArenaBotSeek>("caneventsbotseek");
             Vintagestory.GameContent.AiTaskRegistry.Register<Bots.AiTaskArenaBotMelee>("caneventsbotmelee");
+            Vintagestory.GameContent.AiTaskRegistry.Register<Bots.AiTaskArenaBotFlee>("caneventsbotflee");
         }
 
         public override void StartServerSide(ICoreServerAPI api)
@@ -97,6 +99,7 @@ namespace canevents.src
             RegisterEventBehavior(typeof(HungerGamesEB), "HungerGames");
             RegisterEventBehavior(typeof(JuggernautEB), "Juggernaut");
             RegisterEventBehavior(typeof(CaptureTheFlagEB), "CaptureTheFlag");
+            RegisterEventBehavior(typeof(MurderMysteryEB), "MurderMystery");
             RegisterEventBehavior(typeof(ArenaBotsEB), "ArenaBots");
             Events = new List<CANEvent>();
             foreach (var it in eventTypes)
@@ -146,6 +149,10 @@ namespace canevents.src
             // Sweeps bot bodies whose match is gone (crash mid-match, chunk unloaded while it ran).
             botCleanup = new Bots.BotCleanup(api, this.CANEventManager);
 
+            // Enforces the issuedGearDrop policy on kit thrown on the ground - the one way match
+            // gear could otherwise leave a match and stay in the world for good.
+            issuedGearWatcher = new EventManagers.IssuedGearDropWatcher(api, this.CANEventManager);
+
             // Initialize network
             ServerNetworkHandler = new Network.ServerNetworkHandler(api, this.CANEventManager);
             var networkHandler = ServerNetworkHandler;
@@ -191,6 +198,7 @@ namespace canevents.src
                 NetworkHandler = networkHandler,
                 Leaderboard    = leaderboard,
                 LoadoutManager = this.CANEventManager.LoadoutManager,
+                OutfitManager  = this.CANEventManager.Store(EventManagers.ItemSetKinds.Outfit),
                 Spectator      = spectatorMgr,
                 Config         = config
             };
@@ -572,6 +580,7 @@ namespace canevents.src
                 _sapi.Event.PlayerNowPlaying -= _onReconnect;
             }
             botCleanup?.Dispose();
+            issuedGearWatcher?.Dispose();
             Duels?.Dispose();
             // Before CANEventManager.Dispose: it unsubscribes from the manager's match events.
             tournamentManager?.Dispose();

@@ -70,10 +70,36 @@ namespace canevents.src.Bots
             // An eliminated player still standing in the arena is no longer a target.
             if (!match.IsActive(myUid) || !match.IsActive(theirUid)) return false;
 
+            // A mode with hidden roles decides for itself: in a free-for-all everyone is their own
+            // team, so the team rule alone would send the townsfolk charging at each other.
+            var roles = match.GetBehavior<EventManagers.eventBehavior.Shared.IBotCombatRoles>();
+            if (roles != null) return roles.MayAttack(myUid, theirUid);
+
             // Free-for-all gives every side its own team index, so this also covers solo modes.
             int myTeam = match.TeamIndexOf(myUid);
             int theirTeam = match.TeamIndexOf(theirUid);
             return myTeam < 0 || theirTeam < 0 || myTeam != theirTeam;
+        }
+
+        /// <summary>Does this bot have reason to run from that entity? Only a mode with roles has an
+        /// opinion; everywhere else bots stand their ground, as they always did.</summary>
+        public static bool ShouldFlee(Entity self, Entity threat)
+        {
+            if (self == null || threat == null || threat == self) return false;
+            if (!threat.Alive) return false;
+
+            var match = MatchOf(self);
+            if (match == null || match.CombatSuspended) return false;
+
+            var roles = match.GetBehavior<EventManagers.eventBehavior.Shared.IBotCombatRoles>();
+            if (roles == null) return false;
+
+            string myUid = UidOf(self);
+            string theirUid = UidOf(threat);
+            if (myUid == null || theirUid == null || myUid == theirUid) return false;
+            if (!match.IsActive(myUid) || !match.IsActive(theirUid)) return false;
+
+            return roles.ShouldFlee(myUid, theirUid);
         }
     }
 }

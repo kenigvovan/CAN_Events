@@ -331,6 +331,7 @@ namespace canevents.src.EventManagers
         public Network.ServerNetworkHandler  NetworkHandler => Services?.NetworkHandler;
         public Scoring.LeaderboardData       Leaderboard    => Services?.Leaderboard;
         public LoadoutManager                LoadoutManager => Services?.LoadoutManager;
+        public LoadoutManager                OutfitManager  => Services?.OutfitManager;
         public SpectatorManager              Spectator      => Services?.Spectator;
         public Config                        Config         => Services?.Config;
         /// <summary>True when the match runs on the players' own gear. Modes MUST check it before

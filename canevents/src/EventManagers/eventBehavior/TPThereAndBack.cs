@@ -105,6 +105,16 @@ namespace canevents.src.EventManagers.eventBehavior
             }
         }
 
+        /// <summary>
+        /// Forgets a player's return position, for someone who already went home by themselves -
+        /// an eliminated player leaving the spectator seat early. Without this OnEnd would drag them
+        /// back to where they stood before the match, from wherever they had walked off to since.
+        /// </summary>
+        public void ForgetReturnPos(string playerUid)
+        {
+            if (playerUid != null) SavedPlayerPos.Remove(playerUid);
+        }
+
         public override void OnEnd()
         {
             foreach (var plGuid in runningEvent.ParticipantsBefore)

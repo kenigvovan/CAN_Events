@@ -34,6 +34,10 @@ namespace canevents.src.EventManagers.eventBehavior
         // Same attribute name and wardrobe the players get - see EventOutfit.
         private List<string[]> outfits = new List<string[]>();
 
+        /// <summary>The mode's wardrobe when it has one; then it, not this behavior, decides what
+        /// each bot wears. Null when the event has no outfit-owning mode.</summary>
+        private EventManagers.eventBehavior.Shared.IOutfitWardrobe wardrobe;
+
         private Bots.ArenaBotManager botManager;
         private EntityDeathDelegate deathHandler;
 
@@ -70,6 +74,18 @@ namespace canevents.src.EventManagers.eventBehavior
         {
             botManager = runningEvent.Bots;
 
+            // Bots wear what the players wear. When the mode owns a wardrobe, its deal covers the
+            // bots too (they are on the roster), so take both the outfits and the per-uid pick from
+            // it: dressing bots separately can put one in the same clothes as a player, which in a
+            // hidden-role mode is a false clue. Only when no mode owns one do we dress on our own.
+            wardrobe = runningEvent.GetBehavior<EventManagers.eventBehavior.Shared.IOutfitWardrobe>();
+            if (wardrobe?.Wardrobe == null || wardrobe.Wardrobe.Count == 0)
+            {
+                wardrobe = null;
+                outfits = EventManagers.eventBehavior.Shared.EventOutfit.GetEffectiveOutfits(
+                    runningEvent.Event?.Code, runningEvent.OutfitManager, outfits);
+            }
+
             // No per-match death hook exists for non-players, so the global one is filtered down to
             // this match's bots. Detached in OnEnd or it keeps eliminating into a finished match.
             deathHandler = OnAnyEntityDeath;
@@ -102,7 +118,10 @@ namespace canevents.src.EventManagers.eventBehavior
                     if (weapons.Count > 0)
                         botManager.GiveWeapon(botUid, weapons[world.Rand.Next(weapons.Count)]);
                     EventManagers.eventBehavior.Shared.EventOutfit.Dress(
-                        body, runningEvent.sapi, outfits, botUid);
+                        body, runningEvent.sapi,
+                        wardrobe?.Wardrobe ?? outfits,
+                        botUid,
+                        wardrobe?.OutfitIndexOf(botUid) ?? -1);
                 });
 
                 // No entity type: the match still runs, it just runs without this bot.
@@ -237,6 +256,11 @@ namespace canevents.src.EventManagers.eventBehavior
 
         private string ResolveKillerName(DamageSource source)
         {
+            // A hidden-role mode names nobody: this path builds its own feed and chat line, so
+            // without asking, the first bot the murderer cuts down announces who they are.
+            if (runningEvent.Scorer?.HidesKillerIdentity == true)
+                return Lang.Get("canevents:killer-someone");
+
             var cause = source?.GetCauseEntity();
             if (cause == null) return Lang.Get("canevents:killer-the-arena");
 

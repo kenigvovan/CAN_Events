@@ -28,13 +28,20 @@ namespace canevents.src.Gui
         private bool isOpen = false;
         private int selectedTab = 0;
 
-        // Loadouts tab state
-        private string loadoutEventCode = "";
-        private string loadoutSetName = "";
-        private string selectedLoadoutEvent = "";
-        private string selectedLoadoutSet = "";
-        private System.Collections.Generic.List<(string code, int qty)> pendingLoadoutItems
-            = new System.Collections.Generic.List<(string, int)>();
+        /// <summary>Everything one item-set editor remembers. One instance per kind (loadouts,
+        /// outfits), so switching sub-tabs does not drag the other editor's half-built set along.</summary>
+        private sealed class ItemSetEditorState
+        {
+            public string EventCode = "";
+            public string SetName = "";
+            public string SelectedEvent = "";
+            public string SelectedSet = "";
+            public readonly System.Collections.Generic.List<(string code, int qty)> Pending
+                = new System.Collections.Generic.List<(string, int)>();
+        }
+
+        private readonly ItemSetEditorState loadoutEditor = new ItemSetEditorState();
+        private readonly ItemSetEditorState outfitEditor = new ItemSetEditorState();
         private ItemIconAtlas _atlas;
 
         // Held so Dispose can detach them.
@@ -191,11 +198,11 @@ namespace canevents.src.Gui
 
             _onLoadoutListReceived = () =>
             {
-                if (string.IsNullOrEmpty(loadoutEventCode))
+                if (string.IsNullOrEmpty(loadoutEditor.EventCode))
                 {
                     var list = networkHandler.LoadoutList.Value;
                     if (list?.Events != null && list.Events.Length > 0)
-                        loadoutEventCode = list.Events[0].EventCode;
+                        loadoutEditor.EventCode = list.Events[0].EventCode;
                 }
             };
 
@@ -1004,19 +1011,33 @@ namespace canevents.src.Gui
             {
                 if (ImGui.BeginTabItem("Loadouts"))
                 {
-                    if (contentSubTab != 0) { contentSubTab = 0; networkHandler.RequestLoadoutList(); }
+                    if (contentSubTab != 0)
+                    {
+                        contentSubTab = 0;
+                        networkHandler.RequestLoadoutList(EventManagers.ItemSetKinds.Loadout);
+                    }
                     DrawLoadoutsTab();
+                    ImGui.EndTabItem();
+                }
+                if (ImGui.BeginTabItem("Outfits"))
+                {
+                    if (contentSubTab != 1)
+                    {
+                        contentSubTab = 1;
+                        networkHandler.RequestLoadoutList(EventManagers.ItemSetKinds.Outfit);
+                    }
+                    DrawOutfitsTab();
                     ImGui.EndTabItem();
                 }
                 if (ImGui.BeginTabItem("Templates"))
                 {
-                    if (contentSubTab != 1) { contentSubTab = 1; networkHandler.RequestTemplateList(); }
+                    if (contentSubTab != 2) { contentSubTab = 2; networkHandler.RequestTemplateList(); }
                     DrawTemplatesTab();
                     ImGui.EndTabItem();
                 }
                 if (ImGui.BeginTabItem("Schematics"))
                 {
-                    if (contentSubTab != 2) { contentSubTab = 2; networkHandler.RequestSchematicList(); }
+                    if (contentSubTab != 3) { contentSubTab = 3; networkHandler.RequestSchematicList(); }
                     DrawSchematicsTab();
                     ImGui.EndTabItem();
                 }

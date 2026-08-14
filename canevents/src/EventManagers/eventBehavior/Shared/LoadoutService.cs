@@ -107,7 +107,11 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
 
             // A forced set overrides any choice. Checked here as well as at pick time: a stale
             // queue-time choice or a saved default must not slip past the agreed duel terms.
-            string forcedName = ev?.MutatorValue(events.EventMutators.Loadout);
+            // Not when the mode assigns the sets itself, though: a "loadout:Murderer" mutator would
+            // otherwise hand every player the murderer's kit and end the mode's whole point.
+            bool modeAssigns = runningEvent.Behaviors
+                .OfType<ILoadoutProvider>().FirstOrDefault()?.OffersPlayerChoice == false;
+            string forcedName = modeAssigns ? null : ev?.MutatorValue(events.EventMutators.Loadout);
             if (forcedName != null)
             {
                 var forced = sets.FirstOrDefault(s
@@ -156,8 +160,9 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
                     continue;
                 }
 
-                stack.Attributes.SetBool("canevents_loadout", true);
-                stack.Attributes.SetString("canevents_issuedTo", player.PlayerName);
+                // The mark is what tells issued kit apart from a player's own belongings for the
+                // rest of its life - see IssuedGear and the issuedGearDrop policy.
+                IssuedGear.Mark(stack, player.PlayerName);
 
                 // A filtered entry is dropped, not given loose: handing "skipped" armor to the
                 // backpack would defeat the point of a no-armor match.

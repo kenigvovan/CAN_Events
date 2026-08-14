@@ -327,6 +327,15 @@ namespace canevents.src.EventManagers
 
             DispatchToBehaviors(runningEvent, "OnEnd", beh => beh.OnEnd());
 
+            // Issued kit left on the floor outlives the match otherwise. Placed exactly here on
+            // purpose: after OnEnd, so inventories are restored and the players already teleported
+            // home; before the chunk pin is released below, because a released chunk can unload and
+            // the search would find nothing; and before RecordMatchResult, whose reward drops land
+            // at the players' feet at home and must never be swept.
+            if (PolicyOf(runningEvent) != eventBehavior.Shared.IssuedGearDrop.Allow)
+                log.Safely("issued gear sweep", () =>
+                    eventBehavior.Shared.IssuedGearSweep.Sweep(sapi, runningEvent.Place, log));
+
             foreach (var id in runningEvent.RegisteredTickListeners)
                 sapi.Event.UnregisterGameTickListener(id);
             runningEvent.RegisteredTickListeners.Clear();

@@ -1,0 +1,100 @@
+{
+    "code": "murdermystery",
+    "rated": false,
+    "EventType": "MurderMystery",
+    "Category": "MurderMystery",
+    "EventPlaceTypes": [ "MURDERMYSTERY" ],
+    "reward": {
+        "winnerItems": [
+            { "code": "game:gear-rusty", "quantity": 1 }
+        ]
+    },
+    "behaviors": [
+        {
+            "name": "FullPartyRequired",
+            "attributes": {
+                "maxPartiesCount": 12,
+                "minPartiesCount": 6,
+                "maxPartySize": 1,
+                "minPartySize": 1
+            },
+            "RegisterGameTickListener": false
+        },
+        {
+            "name": "SavePlayerAttributes",
+            "attributes": {
+                "issuedGearDrop": "return"
+            },
+            "RegisterGameTickListener": false
+        },
+        {
+            "name": "TPThereAndBack",
+            "attributes": {},
+            "RegisterGameTickListener": false
+        },
+        {
+            "name": "MurderMystery",
+            "attributes": {
+                "timeLimitSeconds": 600,
+                "murdererCount": 1,
+                "sheriffCount": 1,
+                "extraMurdererPerPlayers": 0,
+                "innocentsCanFight": false,
+                "sheriffPenalty": "death",
+                "sheriffDisarmSeconds": 20,
+                "sheriffDisarmSlowness": 0.6,
+                "murdererSpeed": 1.1,
+                "sheriffDropsWeapon": true,
+                "murdererDropsWeapon": false,
+                "stalemateSeconds": 90,
+                "stalemateGraceSeconds": 60,
+                "announceDeaths": false,
+                "concealWeapons": true,
+                "lockOutfit": true,
+                "distinctOutfits": true,
+                "loadoutSets": [
+                    {
+                        "name": "Murderer",
+                        "items": [
+                            { "code": "game:knife-generic-blackbronze", "quantity": 1 },
+                            { "code": "game:bread-spelt-perfect", "quantity": 4 }
+                        ]
+                    },
+                    {
+                        "name": "Sheriff",
+                        "items": [
+                            { "code": "game:bow-simple", "quantity": 1 },
+                            { "code": "game:arrow-copper", "quantity": 8 },
+                            { "code": "game:bread-spelt-perfect", "quantity": 4 }
+                        ]
+                    },
+                    {
+                        "name": "Innocent",
+                        "items": [
+                            { "code": "game:bread-spelt-perfect", "quantity": 4 }
+                        ]
+                    }
+                ],
+                "outfits": [
+                    [ "game:clothes-upperbody-kirtlered", "game:clothes-head-liripipered", "game:clothes-lowerbody-braiesplain", "game:clothes-foot-worn-leather-boots" ],
+                    [ "game:clothes-upperbody-kirtleblue", "game:clothes-head-liripipeblue", "game:clothes-lowerbody-braiesplain", "game:clothes-foot-worn-leather-boots" ],
+                    [ "game:clothes-upperbody-kirtlegreen", "game:clothes-head-liripipegreen", "game:clothes-lowerbody-braiesplain", "game:clothes-foot-worn-leather-boots" ],
+                    [ "game:clothes-upperbody-kirtleyellow", "game:clothes-head-liripipeyellow", "game:clothes-lowerbody-braiesplain", "game:clothes-foot-worn-leather-boots" ],
+                    [ "game:clothes-upperbody-kirtlepurple", "game:clothes-head-liripipepurple", "game:clothes-lowerbody-braiesplain", "game:clothes-foot-worn-leather-boots" ],
+                    [ "game:clothes-upperbody-kirtleorange", "game:clothes-head-liripipeorange", "game:clothes-lowerbody-braiesplain", "game:clothes-foot-worn-leather-boots" ],
+                    [ "game:clothes-upperbody-kirtlepink", "game:clothes-head-liripipepink", "game:clothes-lowerbody-braiesplain", "game:clothes-foot-worn-leather-boots" ],
+                    [ "game:clothes-upperbody-kirtlewhite", "game:clothes-head-liripipewhite", "game:clothes-lowerbody-braiesplain", "game:clothes-foot-worn-leather-boots" ],
+                    [ "game:clothes-upperbody-kirtlebrown", "game:clothes-head-liripipebrown", "game:clothes-lowerbody-braiesplain", "game:clothes-foot-worn-leather-boots" ],
+                    [ "game:clothes-upperbody-kirtlegray", "game:clothes-head-liripipegray", "game:clothes-lowerbody-braiesplain", "game:clothes-foot-worn-leather-boots" ],
+                    [ "game:clothes-upperbody-kirtleblack", "game:clothes-head-liripipeblack", "game:clothes-lowerbody-braiesplain", "game:clothes-foot-worn-leather-boots" ],
+                    [ "game:clothes-upperbody-kirtlered", "game:clothes-head-liripipeblack", "game:clothes-shoulder-apronblack", "game:clothes-lowerbody-braiesplain", "game:clothes-foot-worn-leather-boots" ],
+                    [ "game:clothes-upperbody-kirtleblue", "game:clothes-head-liripipeyellow", "game:clothes-shoulder-apronyellow", "game:clothes-lowerbody-braiesplain", "game:clothes-foot-worn-leather-boots" ],
+                    [ "game:clothes-upperbody-kirtlegreen", "game:clothes-head-liripipewhite", "game:clothes-shoulder-apronwhite", "game:clothes-lowerbody-braiesplain", "game:clothes-foot-worn-leather-boots" ],
+                    [ "game:clothes-upperbody-kirtlepurple", "game:clothes-head-liripipeorange", "game:clothes-shoulder-apronorange", "game:clothes-lowerbody-braiesplain", "game:clothes-foot-worn-leather-boots" ],
+                    [ "game:clothes-upperbody-kirtlebrown", "game:clothes-head-liripipepink", "game:clothes-shoulder-apronpink", "game:clothes-lowerbody-braiesplain", "game:clothes-foot-worn-leather-boots" ]
+                ]
+            },
+            "RegisterGameTickListener": true
+        }
+    ]
+}

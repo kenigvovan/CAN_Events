@@ -109,7 +109,7 @@ namespace canevents.src.Network
             SetHandler<EventRewardConfigMsg>(EventRewardConfig.Set);
             SetHandler<RewardLimitsMsg>(RewardLimits.Set);
             SetHandler<AdminEventListMsg>(AdminEventList.Set);
-            SetHandler<LoadoutListMsg>(LoadoutList.Set);
+            SetHandler<LoadoutListMsg>(msg => ItemSetList(msg?.Kind).Set(msg));
             SetHandler<PlatformEditStateMsg>(PlatformEditState.Set);
             SetHandler<MatchHistoryMsg>(MatchHistoryData.Set);
             SetHandler<SchematicListMsg>(SchematicList.Set);
@@ -335,36 +335,61 @@ namespace canevents.src.Network
             clientChannel.SendPacket(new RequestMatchHistoryMsg());
         }
 
-        public readonly ServerState<LoadoutListMsg> LoadoutList = new ServerState<LoadoutListMsg>();
+        // One list per item-set kind (loadouts, outfits - see ItemSetKinds), each its own
+        // ServerState so the admin panel's two editors never overwrite each other's list.
+        private readonly Dictionary<string, ServerState<LoadoutListMsg>> itemSetLists
+            = new Dictionary<string, ServerState<LoadoutListMsg>>();
 
-        public void RequestLoadoutList()
+        public ServerState<LoadoutListMsg> ItemSetList(string kind = null)
         {
-            clientChannel.SendPacket(new RequestLoadoutListMsg());
+            kind = EventManagers.ItemSetKinds.Normalize(kind);
+            if (!itemSetLists.TryGetValue(kind, out var state))
+            {
+                state = new ServerState<LoadoutListMsg>();
+                itemSetLists[kind] = state;
+            }
+            return state;
         }
 
-        public void SendSaveLoadoutFromInv(string eventCode, string setName)
+        /// <summary>The loadout list, for the many call sites that only ever want that one.</summary>
+        public ServerState<LoadoutListMsg> LoadoutList => ItemSetList(EventManagers.ItemSetKinds.Loadout);
+
+        public void RequestLoadoutList(string kind = null)
         {
-            clientChannel.SendPacket(new SaveLoadoutFromInvMsg { EventCode = eventCode, SetName = setName });
+            clientChannel.SendPacket(new RequestLoadoutListMsg { Kind = kind });
         }
 
-        public void SendDeleteLoadoutSet(string eventCode, string setName)
+        public void SendSaveLoadoutFromInv(string eventCode, string setName, string kind = null)
         {
-            clientChannel.SendPacket(new DeleteLoadoutSetMsg { EventCode = eventCode, SetName = setName });
+            clientChannel.SendPacket(new SaveLoadoutFromInvMsg
+            {
+                EventCode = eventCode, SetName = setName, Kind = kind
+            });
         }
 
-        public void SendImportInlineSets(string eventCode)
+        public void SendDeleteLoadoutSet(string eventCode, string setName, string kind = null)
         {
-            clientChannel.SendPacket(new ImportInlineSetsMsg { EventCode = eventCode });
+            clientChannel.SendPacket(new DeleteLoadoutSetMsg
+            {
+                EventCode = eventCode, SetName = setName, Kind = kind
+            });
         }
 
-        public void SendSaveLoadout(string eventCode, string setName, string[] codes, int[] quantities)
+        public void SendImportInlineSets(string eventCode, string kind = null)
+        {
+            clientChannel.SendPacket(new ImportInlineSetsMsg { EventCode = eventCode, Kind = kind });
+        }
+
+        public void SendSaveLoadout(string eventCode, string setName, string[] codes, int[] quantities,
+            string kind = null)
         {
             clientChannel.SendPacket(new SaveLoadoutMsg
             {
                 EventCode = eventCode,
                 SetName = setName,
                 ItemCodes = codes,
-                ItemQuantities = quantities
+                ItemQuantities = quantities,
+                Kind = kind
             });
         }
 

@@ -39,6 +39,36 @@ namespace canevents.src.Network
             descs = fight.GetLoadoutSetDescriptions(code, lm);
         }
 
+        /// <summary>
+        /// The sets this event may show a player, or false when there is nothing to offer: no
+        /// loadout-aware behavior, only one set (nothing to choose), or a mode that assigns the sets
+        /// itself. The last case is the one that matters for secrecy - in a hidden-role mode the set
+        /// names ARE the roles, so they must not reach a client anywhere. Every place that would
+        /// show or ask goes through here, so that stays true in all of them.
+        /// </summary>
+        public bool TryGetSelectableSets(EventManagers.events.CANEvent ev,
+            out string[] names, out string[] items, out string[] descs)
+            => TryGetSelectableSets(ev?.Behaviors, ev?.Code, out names, out items, out descs);
+
+        /// <summary>As above, from a running match's own (cloned) behaviors.</summary>
+        public bool TryGetSelectableSets(IEnumerable<EventManagers.events.CANEventBehavior> behaviors,
+            string eventCode, out string[] names, out string[] items, out string[] descs)
+        {
+            names = items = descs = null;
+            if (behaviors == null || eventCode == null) return false;
+
+            var fight = behaviors.OfType<ILoadoutProvider>().FirstOrDefault();
+            if (fight == null || !fight.OffersPlayerChoice) return false;
+
+            GetLoadoutSets(fight, eventCode, out names, out items, out descs);
+            if (names == null || names.Length <= 1)
+            {
+                names = items = descs = null;
+                return false;
+            }
+            return true;
+        }
+
         /// <summary>At queue-time, pops a loadout pick on every non-leader party member. Responses are
         /// stored on the Registration and later copied into RunningEvent.PlayerLoadoutChoices.</summary>
         public void RequestQueueLoadoutPicks(EventManagers.Registration reg)
@@ -46,15 +76,11 @@ namespace canevents.src.Network
             if (reg == null || reg.Event == null) return;
             var ev = reg.Event;
 
-            var fight = ev.Behaviors.OfType<ILoadoutProvider>().FirstOrDefault();
-            if (fight == null) return;
-
             // No point prompting at queue time either when a mutator decides the kit.
             if (ev.HasMutator(EventManagers.events.EventMutators.Loadout)
                 || ev.HasMutator(EventManagers.events.EventMutators.RandomLoadout)) return;
 
-            GetLoadoutSets(fight, ev.Code, out var names, out var items, out var descs);
-            if (names == null || names.Length <= 1) return;
+            if (!TryGetSelectableSets(ev, out var names, out var items, out var descs)) return;
 
             var prefs = eventManager.LoadoutPreferences;
             foreach (var uid in reg.PlayersGuids)
@@ -88,11 +114,7 @@ namespace canevents.src.Network
             var ev = re.Event;
             if (ev == null) return;
 
-            var fight = re.Behaviors.OfType<ILoadoutProvider>().FirstOrDefault();
-            if (fight == null) return;
-
-            GetLoadoutSets(fight, ev.Code, out var names, out var items, out var descs);
-            if (names == null || names.Length <= 1) return;
+            if (!TryGetSelectableSets(re.Behaviors, ev.Code, out var names, out var items, out var descs)) return;
 
             // A forced set leaves nothing to pick; Give() enforces it over any stored choice.
             if (ev.HasMutator(EventManagers.events.EventMutators.Loadout)) return;
@@ -226,17 +248,27 @@ namespace canevents.src.Network
             SendLoadoutDefaultsTo(player);
         }
 
-        // Admin loadout editor
+        // Admin item-set editor: one code path for every kind of store, picked by msg.Kind.
+
+        /// <summary>The store this packet is about, or null (already answered) for a kind this
+        /// server does not have. Never falls back to loadouts on a bad kind: a save meant for the
+        /// wardrobe must not land in the gear players fight with.</summary>
+        private LoadoutManager StoreFor(IServerPlayer player, string kind)
+        {
+            var store = eventManager.Store(kind);
+            if (store == null) ReplyFail(player, Lang.Get("canevents:itemset-unknown-kind", kind ?? ""));
+            return store;
+        }
 
         private void OnRequestLoadoutList(IServerPlayer player, RequestLoadoutListMsg msg)
         {
             if (!RequireAdmin(player)) return;
-            SendLoadoutList(player);
+            SendLoadoutList(player, msg?.Kind);
         }
 
-        private void SendLoadoutList(IServerPlayer player)
+        private void SendLoadoutList(IServerPlayer player, string kind)
         {
-            var lm = eventManager.LoadoutManager;
+            var lm = eventManager.Store(kind);
             if (lm == null) return;
             var all = lm.GetAll();
             var events = all.Select(kvp => new LoadoutEventMsg
@@ -249,7 +281,11 @@ namespace canevents.src.Network
                     ItemQuantities = s.Items.Select(i => i.Quantity).ToArray()
                 }).ToArray()
             }).ToArray();
-            serverChannel.SendPacket(new LoadoutListMsg { Events = events }, player);
+            serverChannel.SendPacket(new LoadoutListMsg
+            {
+                Events = events,
+                Kind = EventManagers.ItemSetKinds.Normalize(kind)
+            }, player);
         }
 
         private void OnSaveLoadoutFromInv(IServerPlayer player, SaveLoadoutFromInvMsg msg)
@@ -265,7 +301,7 @@ namespace canevents.src.Network
                 ReplyFail(player, Lang.Get("canevents:loadout-invalid-code-name"));
                 return;
             }
-            var lm = eventManager.LoadoutManager;
+            var lm = StoreFor(player, msg.Kind);
             if (lm == null) return;
 
             var set = lm.BuildFromInventory(player);
@@ -283,7 +319,7 @@ namespace canevents.src.Network
 
             lm.AddSet(msg.EventCode, set);
             ReplyOk(player, Lang.Get("canevents:loadout-saved-from-inv", msg.SetName, msg.EventCode, set.Items.Count));
-            SendLoadoutList(player);
+            SendLoadoutList(player, msg.Kind);
         }
 
         private void OnSaveLoadout(IServerPlayer player, SaveLoadoutMsg msg)
@@ -301,7 +337,7 @@ namespace canevents.src.Network
                 ReplyFail(player, Lang.Get("canevents:loadout-invalid-input", MaxLoadoutItems));
                 return;
             }
-            var lm = eventManager.LoadoutManager;
+            var lm = StoreFor(player, msg.Kind);
             if (lm == null) return;
 
             var items = msg.ItemCodes.Select((c, i) =>
@@ -316,7 +352,7 @@ namespace canevents.src.Network
 
             lm.AddSet(msg.EventCode, new LoadoutManager.LoadoutSet { Name = msg.SetName, Items = items });
             ReplyOk(player, Lang.Get("canevents:loadout-saved", msg.SetName, msg.EventCode, items.Count));
-            SendLoadoutList(player);
+            SendLoadoutList(player, msg.Kind);
         }
 
         private void OnDeleteLoadoutSet(IServerPlayer player, DeleteLoadoutSetMsg msg)
@@ -329,14 +365,14 @@ namespace canevents.src.Network
                 ReplyFail(player, Lang.Get("canevents:loadout-invalid-code-name"));
                 return;
             }
-            var lm = eventManager.LoadoutManager;
+            var lm = StoreFor(player, msg.Kind);
             if (lm == null) return;
 
             bool ok = lm.DeleteSet(msg.EventCode, msg.SetName);
             Reply(player, ok, ok
                 ? Lang.Get("canevents:loadout-deleted", msg.SetName, msg.EventCode)
                 : Lang.Get("canevents:loadout-not-found", msg.SetName, msg.EventCode));
-            if (ok) SendLoadoutList(player);
+            if (ok) SendLoadoutList(player, msg.Kind);
         }
 
         private void OnImportInlineSets(IServerPlayer player, ImportInlineSetsMsg msg)
@@ -347,26 +383,57 @@ namespace canevents.src.Network
                 ReplyFail(player, Lang.Get("canevents:loadout-invalid-code"));
                 return;
             }
-            var lm = eventManager.LoadoutManager;
+            var lm = StoreFor(player, msg.Kind);
             if (lm == null) return;
 
             var ev = eventManager.FindEventByCode(msg.EventCode);
-            var loadoutProvider = ev?.GetBehavior<ILoadoutProvider>();
-            if (loadoutProvider == null)
+            if (ev == null)
             {
                 ReplyFail(player, Lang.Get("canevents:loadout-no-provider"));
                 return;
             }
 
-            var sets = loadoutProvider.GetInlineLoadoutSets().Select(t => new LoadoutManager.LoadoutSet
+            IEnumerable<LoadoutManager.LoadoutSet> sets;
+            if (EventManagers.ItemSetKinds.Normalize(msg.Kind) == EventManagers.ItemSetKinds.Outfit)
             {
-                Name = t.name,
-                Items = t.items.Select(i => new LoadoutManager.LoadoutEntry { Code = i.Code, Quantity = i.Quantity }).ToList()
-            });
+                // The wardrobe lives in the mode's `outfits` attribute, not in its loadout sets.
+                // Named Outfit 1..N: the JSON form is a bare list of code lists, with no names.
+                // Only an explicitly configured wardrobe: EventOutfit.Parse answers with the
+                // built-in defaults when the attribute is absent, and importing those would fill
+                // the store with clothes nobody asked for.
+                var wardrobe = ev.Behaviors
+                    .Where(b => b.Attributes?["outfits"]?.Exists == true)
+                    .Select(b => EventManagers.eventBehavior.Shared.EventOutfit.Parse(b.Attributes))
+                    .FirstOrDefault(w => w != null && w.Count > 0);
+                if (wardrobe == null)
+                {
+                    ReplyFail(player, Lang.Get("canevents:loadout-no-provider"));
+                    return;
+                }
+                sets = wardrobe.Select((codes, i) => new LoadoutManager.LoadoutSet
+                {
+                    Name = "Outfit " + (i + 1),
+                    Items = codes.Select(c => new LoadoutManager.LoadoutEntry { Code = c, Quantity = 1 }).ToList()
+                });
+            }
+            else
+            {
+                var loadoutProvider = ev.GetBehavior<ILoadoutProvider>();
+                if (loadoutProvider == null)
+                {
+                    ReplyFail(player, Lang.Get("canevents:loadout-no-provider"));
+                    return;
+                }
+                sets = loadoutProvider.GetInlineLoadoutSets().Select(t => new LoadoutManager.LoadoutSet
+                {
+                    Name = t.name,
+                    Items = t.items.Select(i => new LoadoutManager.LoadoutEntry { Code = i.Code, Quantity = i.Quantity }).ToList()
+                });
+            }
             int imported = lm.AddSets(msg.EventCode, sets);
 
             ReplyOk(player, Lang.Get("canevents:loadout-imported", imported, msg.EventCode));
-            SendLoadoutList(player);
+            SendLoadoutList(player, msg.Kind);
         }
     }
 }

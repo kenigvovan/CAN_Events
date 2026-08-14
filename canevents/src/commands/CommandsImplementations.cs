@@ -175,6 +175,12 @@ namespace canevents.src.commands
             var player = args.Caller.Player as IServerPlayer;
             if (player == null) return TextCommandResult.Error("Players only.");
 
+            // Out of the match already? Then let them go: their gear and position are restored on
+            // the spot, and only the seat is given up. Sitting through the rest of a one-life match
+            // should be an offer, not a sentence.
+            if (canEventManager != null && canEventManager.TryReleaseEliminated(player))
+                return TextCommandResult.Success(Lang.Get("canevents:spectator-left"));
+
             if (canEventManager != null && canEventManager.IsInLiveEvent(player.PlayerUID))
                 return TextCommandResult.Error(Lang.Get("canevents:spectator-still-playing"));
 

@@ -28,13 +28,21 @@ namespace canevents.src.EventManagers
         }
 
         private readonly string folder;
+        private readonly string subFolder;
         private readonly Dictionary<string, List<LoadoutSet>> loadouts = new Dictionary<string, List<LoadoutSet>>();
         private readonly object lockObj = new object();
         private readonly Vintagestory.API.Common.ILogger logger;
 
-        public LoadoutManager(string modConfigBase, Vintagestory.API.Common.ILogger logger = null)
+        /// <summary>
+        /// One store, one folder under ModConfig/canevents/. The folder is a parameter because the
+        /// same "named sets of item codes per event" shape serves more than loadouts - outfits are
+        /// the same thing with every quantity at 1 (see ItemSetKinds).
+        /// </summary>
+        public LoadoutManager(string modConfigBase, Vintagestory.API.Common.ILogger logger = null,
+            string subFolder = "loadouts")
         {
-            folder = Path.Combine(modConfigBase, "loadouts");
+            this.subFolder = subFolder;
+            folder = Path.Combine(modConfigBase, subFolder);
             Directory.CreateDirectory(folder);
             this.logger = logger;
         }
@@ -193,7 +201,7 @@ namespace canevents.src.EventManagers
         {
             var file = Path.Combine(folder, eventCode + ".json");
             var data = new LoadoutFile { Sets = loadouts.TryGetValue(eventCode, out var s) ? s : new List<LoadoutSet>() };
-            Scoring.JsonStore.WriteAtomic(file, data, logger, "loadouts/" + eventCode + ".json");
+            Scoring.JsonStore.WriteAtomic(file, data, logger, subFolder + "/" + eventCode + ".json");
         }
 
     }

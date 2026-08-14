@@ -8,5 +8,13 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
         string[] GetLoadoutSetItemCodes(string eventCode = null, LoadoutManager lm = null);
         string[] GetLoadoutSetDescriptions(string eventCode = null, LoadoutManager lm = null);
         (string name, LoadoutEntry[] items)[] GetInlineLoadoutSets();
+
+        /// <summary>
+        /// Whether the player picks their own set. False when the mode assigns them (hidden-role
+        /// modes such as Murder Mystery): then the set names are never offered at register time,
+        /// never popped up at match start, and never published in the event list - the names alone
+        /// would give the roles away.
+        /// </summary>
+        bool OffersPlayerChoice => true;
     }
 }

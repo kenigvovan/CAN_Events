@@ -24,7 +24,8 @@ namespace canevents.src.EventManagers
                     // If player was eliminated, make them spectator
                     if (!re.IsActive(player.PlayerUID))
                     {
-                        SpectatorManager?.MakeSpectator(player, re);
+                        if (SpectatesOnElimination(re)) SpectatorManager?.MakeSpectator(player, re);
+                        else ReleaseOnElimination(player, re);
 
                         // Rated track only, never for an exhibition match or a bot - same guards as the
                         // kill side, so standings can't be seeded from unrated play or bot rows.
@@ -46,7 +47,10 @@ namespace canevents.src.EventManagers
                 // while the event is still running → redirect to spectator
                 if (!re.IsActive(player.PlayerUID))
                 {
-                    SpectatorManager?.ApplySpectatorState(player, re);
+                    if (SpectatesOnElimination(re)) SpectatorManager?.ApplySpectatorState(player, re);
+                    // Not seated by this event: clicking Respawn is their way out, so hand their own
+                    // gear back and put them where they came from rather than at the world spawn.
+                    else TryReleaseEliminated(player);
                 }
 
                 // Opt this revive out of vanilla satiety handling: EntityBehaviorHunger halves
@@ -164,6 +168,13 @@ namespace canevents.src.EventManagers
             RewardDistributor?.RefundForfeitIfStale(player,
                 mid => FindRunningEvent(mid) != null);
 
+            // Anything a match owed them while they were offline. Rewards are handed out after the
+            // last teleport of a match, so the player who just lost and closed the game is precisely
+            // the one who misses them.
+            int paid = RewardDistributor?.Payouts?.Deliver(player, "reward") ?? 0;
+            if (paid > 0)
+                player.SendMessage(0, Lang.Get("canevents:payout-delivered"), EnumChatType.Notification);
+
             // Send them back to their pre-event position if a crash stranded them in an arena
             // (TPThereAndBack.OnEnd never ran).
             RestoreOrphanedReturnPosition(player);
@@ -211,6 +222,91 @@ namespace canevents.src.EventManagers
                 pl.RemoveModdata(eventBehavior.TPThereAndBack.ReturnPosModDataKey);
             }, 300);
             sapi.World.Logger.Notification("Returning {0} to pre-event position after orphaned event (crash recovery)", player.PlayerName);
+        }
+
+        /// <summary>Does this match sit its eliminated players in the spectator seat? Set per event
+        /// on SavePlayerAttributes; an event without that behavior keeps the historic behavior.</summary>
+        private bool SpectatesOnElimination(RunningEvent re)
+            => re?.GetBehavior<eventBehavior.SavePlayerAttributes>()?.SpectateOnElimination ?? true;
+
+        /// <summary>
+        /// Sends a just-eliminated player home instead of seating them, for an event that would
+        /// rather not make people watch.
+        /// </summary>
+        private void ReleaseOnElimination(IServerPlayer player, RunningEvent re)
+        {
+            string uid = player.PlayerUID;
+            // Delayed for the same reason MakeSpectator is: this runs inside TriggerPlayerDeath, and
+            // reviving before the engine has finished announcing the death leaves them half-dead.
+            sapi.Event.RegisterCallback(_ =>
+            {
+                // The match ending first has already restored and teleported everyone.
+                if (re.EventState == EventState.Finished) return;
+
+                var pl = sapi.World.PlayerByUid(uid) as IServerPlayer;
+                if (pl?.Entity == null) return;
+                if (!pl.Entity.Alive) pl.Entity.Revive();
+
+                TryReleaseEliminated(pl);
+            }, 100);
+        }
+
+        /// <summary>
+        /// Releases a player who is already out of the match: their own inventory comes back, they
+        /// go home and the spectator seat is freed, without waiting for the match to end. They stay
+        /// on the roster, so rewards and the results table still count them.
+        ///
+        /// Watching the rest of the match is a thing to offer, not to impose - a one-life mode can
+        /// leave someone sitting there for the better part of ten minutes.
+        ///
+        /// False when they are still in play: that is a live match, and walking out of one would be
+        /// a free escape from a fight going badly.
+        /// </summary>
+        public bool TryReleaseEliminated(IServerPlayer player)
+        {
+            if (player == null) return false;
+            string uid = player.PlayerUID;
+
+            var re = FindLiveEventOf(uid);
+            if (re == null || re.IsActive(uid)) return false;
+
+            // Their real belongings first: everything else can be redone, this cannot.
+            RestoreEventBackup(player);
+
+            // Home, and only once - the match's own teleport must not drag them back later.
+            re.GetBehavior<eventBehavior.TPThereAndBack>()?.ForgetReturnPos(uid);
+            if (TryReadReturnPos(player, out double x, out double y, out double z))
+            {
+                player.Entity?.TeleportToDouble(x, y, z);
+                player.RemoveModdata(eventBehavior.TPThereAndBack.ReturnPosModDataKey);
+            }
+
+            SpectatorManager?.RemoveSpectator(player);
+            return true;
+        }
+
+        /// <summary>The pre-event position mirrored to ModData at teleport-in, if it is still there.</summary>
+        private bool TryReadReturnPos(IServerPlayer player, out double x, out double y, out double z)
+        {
+            x = y = z = 0;
+            byte[] data = player?.GetModdata(eventBehavior.TPThereAndBack.ReturnPosModDataKey);
+            if (data == null || data.Length == 0) return false;
+
+            try
+            {
+                var tree = new TreeAttribute();
+                tree.FromBytes(data);
+                x = tree.GetInt("x") + 0.5;
+                y = tree.GetInt("y") + 0.5;
+                z = tree.GetInt("z") + 0.5;
+                return true;
+            }
+            catch (Exception e)
+            {
+                sapi.World.Logger.Warning("Return position for {0} is unreadable: {1}", player.PlayerName, e.Message);
+                player.RemoveModdata(eventBehavior.TPThereAndBack.ReturnPosModDataKey);
+                return false;
+            }
         }
 
         // Crash recovery for inventory + health. Shares PlayerInventoryBackup.Restore with the normal
