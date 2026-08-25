@@ -54,6 +54,10 @@ namespace canevents.src.EventManagers.eventBehavior
         // match (chests open by interaction, so looting is unaffected).
         private bool blockEditsHooked = false;
 
+        /// <summary>Undone in OnEnd - see Unsubscribers. Not the first line here, deliberately: the
+        /// loot rollback above it matters more, and it carries its own explanation.</summary>
+        private readonly Unsubscribers subscriptions = new Unsubscribers();
+
         // Pedestal freeze: the spawn-ring teleport happens at OnStart (TPThereAndBack runs first),
         // so the hold covers the first startFreezeSeconds of the match; strays are snapped back.
         private float startFreezeSeconds = 5f;
@@ -116,8 +120,7 @@ namespace canevents.src.EventManagers.eventBehavior
 
         public override void OnBeforeStart()
         {
-            runningEvent.SetDuration(timeLimitSeconds);
-            InitScores();
+            BeginMatch();
             survival.Clear();
             damageDealt.Clear();
 
@@ -129,6 +132,11 @@ namespace canevents.src.EventManagers.eventBehavior
             {
                 blockEditsHooked = true;
                 runningEvent.sapi.Event.CanPlaceOrBreakBlock += OnCanPlaceOrBreak;
+                subscriptions.Add(() =>
+                {
+                    blockEditsHooked = false;
+                    runningEvent.sapi.Event.CanPlaceOrBreakBlock -= OnCanPlaceOrBreak;
+                });
             }
         }
 
@@ -600,11 +608,7 @@ namespace canevents.src.EventManagers.eventBehavior
             graceHooks.UnhookAll();
             damageHooks.UnhookAll();
             EndStartFreeze();   // safety: a match cancelled mid-countdown must not leak the listener
-            if (blockEditsHooked)
-            {
-                blockEditsHooked = false;
-                runningEvent.sapi.Event.CanPlaceOrBreakBlock -= OnCanPlaceOrBreak;
-            }
+            subscriptions.UnhookAll();
             // Clear the dome from every client, or the last radius stays painted forever.
             SendZoneState(false);
             EventBroadcaster.Broadcast(runningEvent, Lang.Get("canevents:hg-ended"));

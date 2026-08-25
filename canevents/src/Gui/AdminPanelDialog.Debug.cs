@@ -25,29 +25,34 @@ namespace canevents.src.Gui
         private long dbgTournamentId;
         private int dbgTournamentBots = 7;
 
+        /// <summary>Second click confirms "stop all". One click used to end every live match on the
+        /// server, and the button sits right next to the one that starts a test match.</summary>
+        private bool dbgStopArmed;
+
         private void DrawDebugTab()
         {
-            ImGui.TextColored(ColWarn, "Testing tools. Bot matches never touch Elo or the leaderboard.");
+            // The state line first: every button below is judged against "is anything running".
+            DrawDebugState();
             ImGui.Separator();
 
             DrawDebugMatches();
             ImGui.Separator();
             DrawDebugTournaments();
             ImGui.Separator();
-            DrawDebugState();
+            DrawActionLog();
         }
 
         // Matches
 
         private void DrawDebugMatches()
         {
-            Heading("Try an event against bots");
+            SectionHeader("Try an event against bots", "dbgevents",
+                () => networkHandler.RequestAdminEventList());
 
             var events = networkHandler.AdminEventList.Value?.Events;
             if (events == null || events.Length == 0)
             {
-                ImGui.TextDisabled("Event list not loaded.");
-                if (ImGui.SmallButton("Load")) networkHandler.RequestAdminEventList();
+                EmptyState("Event list not loaded.", "Press Refresh above.");
                 return;
             }
 
@@ -57,14 +62,16 @@ namespace canevents.src.Gui
             if (ImGui.Combo("Event##dbg", ref index, codes, codes.Length)) dbgEventCode = codes[index];
             if (string.IsNullOrEmpty(dbgEventCode)) dbgEventCode = codes[index];
 
-            IntField("Bots", ref dbgBotCount, 1, 32);
+            // Bots and role on one line: they are read together ("me plus three" / "three, watching").
+            IntField("Bots", ref dbgBotCount, 1, 32, width: 80f);
             HelpMarker((dbgBotMode == 0 ? "You plus this many bot sides. " : "This many bot sides, without you. ")
                 + "Enough of them to satisfy the mode's minimum "
                 + "or it will end as soon as it starts.\n\n"
                 + "The match runs on a throwaway copy of the event: bots are grown into it, and rewards, "
                 + "the entry fee and rating are all off. The event's own config is untouched.");
 
-            ImGui.SetNextItemWidth(220);
+            ImGui.SameLine();
+            ImGui.SetNextItemWidth(150);
             ImGui.Combo("Your part##dbgmode", ref dbgBotMode, BotModeLabels, BotModeLabels.Length);
             HelpMarker("Play: you are in the line-up, fighting the bots.\n\n"
                 + "Watch: bots only, and you are seated as an observer as soon as it has an arena - "
@@ -74,12 +81,27 @@ namespace canevents.src.Gui
                 + "The last two need at least two bots: with you out of the line-up, they are the "
                 + "only sides there are.");
 
+            // Says what will happen before it happens - the mode changes what the button means.
+            ImGui.TextDisabled(dbgBotMode == 0
+                ? "You and " + dbgBotCount + " bot(s) on '" + dbgEventCode + "'."
+                : dbgBotCount + " bot(s) on '" + dbgEventCode + "', you "
+                  + (dbgBotMode == 1 ? "watching." : "not involved."));
+
+            // Watch and Leave-running need two sides; one bot alone ends the moment it starts.
+            bool tooFewBots = dbgBotMode != 0 && dbgBotCount < 2;
+            ImGui.BeginDisabled(tooFewBots);
             if (GoButton(BotModeButtons[dbgBotMode]))
             {
                 networkHandler.SendAdminAction(AdminAction.BotMatch, dbgEventCode, dbgBotCount,
                     (BotMatchMode)dbgBotMode);
                 LogAction(true, "> bot match: " + dbgEventCode + " x" + dbgBotCount
                     + " (" + BotModeLabels[dbgBotMode].ToLowerInvariant() + ")");
+            }
+            ImGui.EndDisabled();
+            if (tooFewBots)
+            {
+                ImGui.SameLine();
+                ImGui.TextColored(ColWarn, "needs at least 2 bots without you");
             }
 
             ImGui.SameLine();
@@ -88,26 +110,24 @@ namespace canevents.src.Gui
                 networkHandler.SendAdminAction(AdminAction.AnnounceEvent, dbgEventCode);
                 LogAction(true, "> force start: " + dbgEventCode);
             }
-
-            ImGui.SameLine();
-            if (StopButton("Stop all matches"))
-            {
-                networkHandler.SendAdminAction(AdminAction.StopAll);
-                LogAction(true, "> stop all matches");
-            }
+            HelpMarker("Starts this event from whoever is queued for it right now, ignoring the "
+                + "minimum. Nothing to do with bots.");
         }
 
         // Tournaments
 
         private void DrawDebugTournaments()
         {
-            Heading("Tournaments");
+            SectionHeader("Tournaments", "dbgtour", () =>
+            {
+                networkHandler.RequestTournamentList();
+                if (dbgTournamentId > 0) networkHandler.RequestTournamentBracket(dbgTournamentId);
+            });
 
             var list = networkHandler.TournamentList.Value;
             if (list == null || list.Count == 0)
             {
-                ImGui.TextDisabled("No tournaments. Create one on the Tournaments tab.");
-                if (ImGui.SmallButton("Refresh##dbgtour")) networkHandler.RequestTournamentList();
+                EmptyState("No tournaments yet.", "Create one on the Tournaments tab.");
                 return;
             }
 
@@ -124,10 +144,14 @@ namespace canevents.src.Gui
 
             var state = (TournamentState)list.StateAt(index);
 
-            IntField("Bot entrants", ref dbgTournamentBots, 1, 64);
+            IntField("Bot entrants", ref dbgTournamentBots, 1, 64, width: 80f);
+            HelpMarker("Bots cannot pay an entry fee, so a tournament with one configured will refuse them.");
 
+            // Both actions on one line, each greyed out when this tournament's state forbids it -
+            // and the reason spelled out next to it, instead of a button that silently does nothing.
             bool canAddBots = state == TournamentState.Draft || state == TournamentState.Signup
                            || state == TournamentState.Seeded;
+            ImGui.SameLine();
             ImGui.BeginDisabled(!canAddBots);
             if (GoButton("Fill with bots"))
             {
@@ -135,9 +159,8 @@ namespace canevents.src.Gui
                 LogAction(true, "> tournament #" + dbgTournamentId + ": +" + dbgTournamentBots + " bots");
             }
             ImGui.EndDisabled();
-            if (!canAddBots) { ImGui.SameLine(); ImGui.TextDisabled("(only before the bracket starts)"); }
-            HelpMarker("Bots cannot pay an entry fee, so a tournament with one configured will refuse them.");
 
+            ImGui.SameLine();
             ImGui.BeginDisabled(state != TournamentState.Running);
             if (ImGui.Button("Call next match now"))
             {
@@ -148,12 +171,10 @@ namespace canevents.src.Gui
             HelpMarker("Ignores the parallel-match limit. If nothing can be called it says why - "
                 + "someone offline, no free arena.");
 
-            ImGui.SameLine();
-            if (ImGui.Button("Refresh##dbgtour2"))
-            {
-                networkHandler.RequestTournamentList();
-                networkHandler.RequestTournamentBracket(dbgTournamentId);
-            }
+            if (!canAddBots)
+                ImGui.TextDisabled("Bots can only be added before the bracket starts.");
+            if (state != TournamentState.Running)
+                ImGui.TextDisabled("Matches can only be called while the bracket is running.");
         }
 
         private void SendTourDebug(string action, int intArg)
@@ -171,25 +192,48 @@ namespace canevents.src.Gui
 
         private void DrawDebugState()
         {
-            Heading("Server state");
+            SectionHeader("Server state", "dbgstate", () => networkHandler.RequestScheduleState(),
+                "Testing tools. Bot matches never touch Elo or the leaderboard.");
 
             var s = networkHandler.ScheduleState.Value;
             if (s == null)
             {
-                ImGui.TextDisabled("Schedule state not loaded.");
-                if (ImGui.SmallButton("Load##dbgstate")) networkHandler.RequestScheduleState();
+                EmptyState("Schedule state not loaded.", "Press Refresh above.");
                 return;
             }
 
-            ImGui.Text(string.Format("Running matches: {0} / {1}", s.RunningEvents, s.MaxConcurrentEvents));
-            ImGui.Text(string.Format("Auto-scheduler: {0}, every {1} min", s.Enabled ? "on" : "off", s.IntervalMinutes));
-            ImGui.TextDisabled("A running tournament pauses the auto-scheduler when configured to.");
+            // Live count in colour: at a glance, is the server busy or idle?
+            ImGui.Text("Running matches:");
+            ImGui.SameLine();
+            ImGui.TextColored(s.RunningEvents > 0 ? ColOk : ColMuted,
+                s.RunningEvents + " / " + s.MaxConcurrentEvents);
+
+            ImGui.SameLine();
+            ImGui.TextDisabled("   |   Auto-scheduler:");
+            ImGui.SameLine();
+            ImGui.TextColored(s.Enabled ? ColOk : ColMuted,
+                s.Enabled ? "on, every " + s.IntervalMinutes + " min" : "off");
 
             if (ImGui.SmallButton(s.Enabled ? "Pause scheduler" : "Resume scheduler"))
             {
                 networkHandler.SendAdminAction(s.Enabled ? AdminAction.ScheduleOff : AdminAction.ScheduleOn);
                 networkHandler.RequestScheduleState();
+                LogAction(true, s.Enabled ? "> scheduler paused" : "> scheduler resumed");
             }
+            ImGui.SameLine();
+            HelpMarkerInline("A running tournament pauses the auto-scheduler when configured to.");
+
+            // Nothing to stop, nothing to arm: the button is only dangerous while matches are live.
+            ImGui.SameLine();
+            ImGui.BeginDisabled(s.RunningEvents == 0);
+            if (ArmedButton(ref dbgStopArmed, "Stop all matches",
+                "Really stop " + s.RunningEvents + "?"))
+            {
+                networkHandler.SendAdminAction(AdminAction.StopAll);
+                networkHandler.RequestScheduleState();
+                LogAction(true, "> stop all matches");
+            }
+            ImGui.EndDisabled();
         }
     }
 }

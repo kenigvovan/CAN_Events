@@ -116,6 +116,7 @@ namespace canevents.src.Network
             SetHandler<CtfCarriersMsg>(OnCtfCarriers);
             SetHandler<HgZoneStateMsg>(m => { HgZone = m; HgZoneReceivedMs = capi.ElapsedMilliseconds; });
             SetHandler<HgSetupMsg>(HgSetup.Set);
+            SetHandler<MmConfigMsg>(MmConfig.Set);
             SetHandler<EventStateUpdateMsg>(OnStateUpdate);
             SetHandler<ScoreboardUpdateMsg>(OnScoreUpdate);
             SetHandler<KillFeedMsg>(OnKillFeed);
@@ -204,6 +205,9 @@ namespace canevents.src.Network
 
         // Latest HG setup snapshot for the place the panel last asked about (tiers, overview, spots).
         public readonly ServerState<HgSetupMsg> HgSetup = new ServerState<HgSetupMsg>();
+
+        // Latest Murder Mystery settings for the place the panel last asked about.
+        public readonly ServerState<MmConfigMsg> MmConfig = new ServerState<MmConfigMsg>();
 
         public void SendRequestEventRewardConfig(string eventCode)
             => clientChannel.SendPacket(new RequestEventRewardConfigMsg { EventCode = eventCode });

@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using ImGuiNET;
+using canevents.src.EventPlacesManagers.Places;
 using canevents.src.Network;
 using Vintagestory.API.MathTools;
 
@@ -20,8 +21,10 @@ namespace canevents.src.Gui
         private static bool PositionInsideBounds(PlaceListEntryMsg place, int x, int z)
         {
             if (place == null || !place.HasBounds) return true; // nothing to be outside of
-            return x >= place.BoundsMinX && x <= place.BoundsMaxX
-                && z >= place.BoundsMinZ && z <= place.BoundsMaxZ;
+            // Same X/Z-only rule as the server, from the one place that defines it - the client
+            // works off a DTO rather than an EventPlace, so it passes the numbers directly.
+            return PlaceBounds.Contains(place.BoundsMinX, place.BoundsMaxX,
+                place.BoundsMinZ, place.BoundsMaxZ, x, z);
         }
 
         /// <summary>
@@ -40,9 +43,13 @@ namespace canevents.src.Gui
         private const int HighlightSlotBounds = 4180;
         private const int HighlightSlotSpawns = 4181;
         private const int HighlightSlotMarks = 4182;
+        private const int HighlightSlotMmPickups = 4183;
         private const int HighlightMaxBlocks = 4000;
 
         private long highlightedPlaceId = -1;
+        /// <summary>Fingerprint of what the outline was last drawn from, so an edit to the selected
+        /// place redraws it (see UpdatePlaceHighlight).</summary>
+        private int highlightedRevision = -1;
         // Sticky on purpose: closing the GUI must not clear the outline, since walking the
         // arena to judge its size is the point.
         private bool highlightEnabled = true;
@@ -59,8 +66,13 @@ namespace canevents.src.Gui
         private void UpdatePlaceHighlight(PlaceListEntryMsg place)
         {
             long id = highlightEnabled ? (place?.Id ?? -1) : -1;
-            if (id == highlightedPlaceId) return;
+            // Selecting a different place is not the only reason to redraw: marking or removing a
+            // spawn or a pickup spot leaves the id alone, and the overlay would keep showing the
+            // arena as it was until the admin clicked away and back.
+            int revision = place == null ? 0 : (place.SpawnCount * 397) ^ MmPickupCount(place);
+            if (id == highlightedPlaceId && revision == highlightedRevision) return;
             highlightedPlaceId = id;
+            highlightedRevision = revision;
 
             var player = capi.World.Player;
             if (player == null) return;
@@ -85,6 +97,13 @@ namespace canevents.src.Gui
             // Green spawns / blue bounds / orange pending marks are drawn at once. (a, r, g, b)
             var spawnColors = spawnBlocks.Select(_ => ColorUtil.ToRgba(170, 80, 230, 80)).ToList();
             capi.World.HighlightBlocks(player, HighlightSlotSpawns, spawnBlocks, spawnColors);
+
+            // Murder Mystery weapon spawns in yellow. Spacing them by eye is the whole job here -
+            // the mode refuses to drop two tokens near each other, so spots the admin cannot see
+            // silently turn into spots that never get used.
+            var pickupBlocks = MmPickupBlocks(place);
+            var pickupColors = pickupBlocks.Select(_ => ColorUtil.ToRgba(190, 40, 220, 240)).ToList();
+            capi.World.HighlightBlocks(player, HighlightSlotMmPickups, pickupBlocks, pickupColors);
 
             if (!place.HasBounds)
             {
@@ -112,6 +131,7 @@ namespace canevents.src.Gui
             capi.World.HighlightBlocks(player, HighlightSlotBounds, new List<BlockPos>(), new List<int>());
             capi.World.HighlightBlocks(player, HighlightSlotSpawns, new List<BlockPos>(), new List<int>());
             capi.World.HighlightBlocks(player, HighlightSlotMarks, new List<BlockPos>(), new List<int>());
+            capi.World.HighlightBlocks(player, HighlightSlotMmPickups, new List<BlockPos>(), new List<int>());
             highlightedPlaceId = -1;
         }
 

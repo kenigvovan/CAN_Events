@@ -57,6 +57,123 @@ namespace canevents.src.Gui
             return true;
         }
 
+        /// <summary>
+        /// Opens a scrolling list table with the panel's standard look: borders, striped rows, a
+        /// frozen header, and a height that grows with the content up to a cap. Every tab drew this
+        /// preamble by hand, and each copy picked its own row height - so the same list looked
+        /// different depending on which tab you opened it from.
+        ///
+        /// Returns false when the table could not open; the caller then skips its rows, exactly as
+        /// with a raw BeginTable. Close with ImGui.EndTable() as usual.
+        /// </summary>
+        private static bool BeginListTable(string id, int columns, int rowCount,
+            float rowHeight = 22f, float maxHeight = 180f)
+        {
+            float height = Math.Min(rowCount * rowHeight + 26f, maxHeight);
+            return ImGui.BeginTable(id, columns,
+                ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY
+                | ImGuiTableFlags.SizingFixedFit,
+                new Vector2(ImGui.GetContentRegionAvail().X, height));
+        }
+
+        /// <summary>
+        /// The first cell of a row, as a selectable spanning the whole row. Returns true on the
+        /// click that selects it.
+        /// </summary>
+        private static bool SelectableRow(string id, string label, bool selected)
+        {
+            ImGui.TableNextRow();
+            ImGui.TableSetColumnIndex(0);
+            ImGui.PushID(id);
+            bool clicked = ImGui.Selectable(label, selected, ImGuiSelectableFlags.SpanAllColumns);
+            ImGui.PopID();
+            return clicked;
+        }
+
+        /// <summary>
+        /// The panel's delete confirmation. Returns true once, on the click that confirms.
+        ///
+        /// <paramref name="open"/> has to be re-armed by the caller before OpenPopup: Escape sets it
+        /// to false, and BeginPopupModal with a false ref never opens again.
+        /// </summary>
+        private static bool ConfirmDeleteModal(string popupId, ref bool open, string question, string subject)
+        {
+            bool confirmed = false;
+            if (!ImGui.BeginPopupModal(popupId, ref open,
+                ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoTitleBar)) return false;
+
+            ImGui.TextColored(ColBad, question);
+            if (!string.IsNullOrEmpty(subject)) ImGui.Text(subject);
+            ImGui.Spacing();
+
+            if (ImGui.Button("Yes, delete", new Vector2(100, 0)))
+            {
+                confirmed = true;
+                ImGui.CloseCurrentPopup();
+            }
+            ImGui.SameLine();
+            if (ImGui.Button("Cancel", new Vector2(70, 0))) ImGui.CloseCurrentPopup();
+            ImGui.EndPopup();
+            return confirmed;
+        }
+
+        /// <summary>
+        /// A destructive button that asks first: the second click confirms. The panel's other style
+        /// for this is a modal (see ConfirmDeleteModal); this one is for buttons that sit inline
+        /// among ordinary ones, where a modal would be heavier than the action deserves.
+        ///
+        /// Returns true only on the confirming click. The armed state clears itself the moment the
+        /// mouse leaves, so a button left armed by accident does not stay a trap.
+        /// </summary>
+        private static bool ArmedButton(ref bool armed, string label, string confirmLabel)
+        {
+            if (!armed)
+            {
+                if (StopSmallButton(label)) armed = true;
+                return false;
+            }
+
+            bool confirmed = GuiButtons.SmallButton(confirmLabel, PalStop);
+            if (confirmed || (!ImGui.IsItemHovered() && ImGui.IsMouseClicked(ImGuiMouseButton.Left)))
+                armed = false;
+            return confirmed;
+        }
+
+        /// <summary>Same "(?)" as HelpMarker, without the SameLine - for a caller that has already
+        /// placed it on the line itself.</summary>
+        private static void HelpMarkerInline(string text)
+        {
+            ImGui.TextDisabled("(?)");
+            if (!ImGui.IsItemHovered()) return;
+
+            ImGui.BeginTooltip();
+            ImGui.PushTextWrapPos(ImGui.GetFontSize() * 28f);
+            ImGui.TextUnformatted(text);
+            ImGui.PopTextWrapPos();
+            ImGui.EndTooltip();
+        }
+
+        /// <summary>Tab heading with its refresh button and the grey lines under it.</summary>
+        private static void SectionHeader(string title, string refreshId, Action onRefresh,
+            params string[] hints)
+        {
+            Heading(title);
+            if (onRefresh != null)
+            {
+                ImGui.SameLine();
+                if (ImGui.SmallButton("Refresh##" + refreshId)) onRefresh();
+            }
+            foreach (var hint in hints) ImGui.TextDisabled(hint);
+            ImGui.Spacing();
+        }
+
+        /// <summary>"Nothing here yet" plus optional advice on how to make something appear.</summary>
+        private static void EmptyState(string text, params string[] hints)
+        {
+            ImGui.TextColored(ColMuted, text);
+            foreach (var hint in hints) ImGui.TextDisabled(hint);
+        }
+
         /// <summary>Little "?" next to a control that explains it on hover.</summary>
         private static void HelpMarker(string text)
         {

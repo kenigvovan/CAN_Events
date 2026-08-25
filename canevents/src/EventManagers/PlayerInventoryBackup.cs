@@ -96,6 +96,11 @@ namespace canevents.src.EventManagers
             tree.SetInt("invCount", slotIndex);
             if (gearStaysWithPlayer) tree.SetBool("keepLiveInventory", true);
 
+            // What the player carries in their hands or on their back is not in any inventory - it
+            // hangs off their entity - so it needs its own line in the snapshot. See CarryOnCompat.
+            var carried = Compat.CarryOnCompat.Snapshot(player.Entity);
+            if (carried != null) tree["carryon"] = carried;
+
             var health = player.Entity.GetBehavior<EntityBehaviorHealth>();
             if (health != null)
             {
@@ -192,6 +197,11 @@ namespace canevents.src.EventManagers
             // Dependents-first: the client must never apply "belt removed" while a sheath packet is
             // still in flight behind it - see GearSlotOrderCompat for the crash that causes.
             Compat.GearSlotOrderCompat.MarkDirtyAfterClear(emptied);
+
+            // A chest carried on the back is in no inventory at all, so the loop above never sees it.
+            // Left on, it rides to the arena and CarryOn drops it - contents and all - on the first
+            // death. The snapshot Save() took is what puts it back at the end of the match.
+            Compat.CarryOnCompat.Clear(player);
         }
 
         /// <summary>
@@ -320,6 +330,13 @@ namespace canevents.src.EventManagers
                         InventoryUtil.Give(sapi, player, stack, "restore");
                     });
                 }
+
+                // Carried blocks come back after the inventory pass: putting a chest in the player's
+                // hands re-locks the hand slots CarryOn had locked, so it must not happen while those
+                // slots are still being filled. Skipped for a keep-live match for the same reason the
+                // inventory is - the block dropped on death and restoring it would mint a second one.
+                if (!keepLive && tree["carryon"] is ITreeAttribute carriedTree)
+                    Compat.CarryOnCompat.Restore(player, carriedTree);
 
                 // Must precede the health block: UpdateNutrientHealthBoost rewrites the
                 // "nutrientHealthMod" modifier from the restored levels, so MarkDirty below recomputes

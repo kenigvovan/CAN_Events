@@ -45,8 +45,7 @@ namespace canevents.src.EventManagers.eventBehavior
 
         public override void OnBeforeStart()
         {
-            runningEvent.SetDuration(timeLimitSeconds);
-            InitScores();
+            BeginMatch();
             jugScore.Clear();
             foreach (var uid in runningEvent.ParticipantsBefore) jugScore[uid] = 0;
             currentJugUid = null;   // InitScores() clears the resolution latch

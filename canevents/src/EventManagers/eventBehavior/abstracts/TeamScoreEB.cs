@@ -20,6 +20,22 @@ namespace canevents.src.EventManagers.eventBehavior.abstracts
         protected void InitTeamScores()
             => teamScores = new int[runningEvent.ParticipantsByGroupsBefore.Count];
 
+        /// <summary>Team modes open a match the same way, plus their score array - strictly after
+        /// InitScores, which is what fixes the roster this array is sized from.</summary>
+        protected override void BeginMatch()
+        {
+            base.BeginMatch();
+            InitTeamScores();
+        }
+
+        /// <summary>The score line every team mode prints when the match is over ("3 : 1").</summary>
+        protected string ScoreLine() => string.Join(" : ", teamScores);
+
+        // Time is up and nobody resolved the match on their own terms. Not virtual: a mode that
+        // resolves earlier (KOTH on its score limit) is protected by the latch inside ResolveMatch,
+        // so there is nothing here for a mode to override.
+        public override void OnBeforeFinish() => DeclareTeamWinner(ResolveWinnerTeam());
+
         // Team-mode scoreboard carries the per-team scores too.
         protected override void PushScoreboard()
             => runningEvent.NetworkHandler?.SendScoreboard(runningEvent, killCounts, deathCounts, teamScores);

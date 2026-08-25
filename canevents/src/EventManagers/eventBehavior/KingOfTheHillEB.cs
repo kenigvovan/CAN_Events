@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using canevents.src.EventManagers.eventBehavior.abstracts;
 using canevents.src.EventManagers.eventBehavior.Shared;
 using canevents.src.EventManagers.events;
@@ -65,9 +64,7 @@ namespace canevents.src.EventManagers.eventBehavior
 
         public override void OnBeforeStart()
         {
-            runningEvent.SetDuration(timeLimitSeconds);
-            InitScores();
-            InitTeamScores();
+            BeginMatch();
             zoneCounts = new int[runningEvent.ParticipantsByGroupsBefore.Count];
 
             // Radius/height are this mode's own settings and apply only when the hill was configured.
@@ -147,8 +144,7 @@ namespace canevents.src.EventManagers.eventBehavior
             // OnBeforeFinish to avoid racing its tick.
         }
 
-        // A lone surviving team wins by forfeit; otherwise the highest score.
-        public override void OnBeforeFinish() => DeclareTeamWinner(ResolveWinnerTeam());
+        // OnBeforeFinish (lone surviving team, else the highest score) comes from TeamScoreEB.
 
         private void ScoreTick()
         {
@@ -245,8 +241,7 @@ namespace canevents.src.EventManagers.eventBehavior
 
         public override void OnEnd()
         {
-            string score = string.Join(" : ", teamScores.Select(s => s.ToString()));
-            EventBroadcaster.Broadcast(runningEvent, Lang.Get("canevents:koth-ended", score));
+            EventBroadcaster.Broadcast(runningEvent, Lang.Get("canevents:koth-ended", ScoreLine()));
         }
     }
 }

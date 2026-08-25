@@ -138,7 +138,14 @@ namespace canevents.src.Network
                 .RegisterMessageType<DuelTargetListMsg>()
                 .RegisterMessageType<MatchReadyRequestMsg>()
                 .RegisterMessageType<MatchReadyResponseMsg>()
-                .RegisterMessageType<MatchReadyClosedMsg>();
+                .RegisterMessageType<MatchReadyClosedMsg>()
+                .RegisterMessageType<AddMmPickupMsg>()
+                .RegisterMessageType<ClearMmPickupsMsg>()
+                .RegisterMessageType<RemoveMmPickupMsg>()
+                .RegisterMessageType<ListMmPickupsMsg>()
+                .RegisterMessageType<RequestMmConfigMsg>()
+                .RegisterMessageType<MmConfigMsg>()
+                .RegisterMessageType<SaveMmConfigMsg>();
         }
     }
 }

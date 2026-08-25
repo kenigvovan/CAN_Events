@@ -866,14 +866,6 @@ namespace canevents.src.commands
             return string.Format("Saved to place '{0}' (id {1}).", target.Name, target.Id);
         }
 
-        // Match only by X/Z: courses are often vertical while admins mark bounds at floor level, so
-        // checking Y here would turn valid checkpoints into orphans.
-        private static bool BoundsContain(EventPlace place, BlockPos pos)
-        {
-            return pos.X >= place.BoundsMin.X && pos.X <= place.BoundsMax.X
-                && pos.Z >= place.BoundsMin.Z && pos.Z <= place.BoundsMax.Z;
-        }
-
         // Hunger Games place setup
 
         public TextCommandResult HgZoneSet(TextCommandCallingArgs args)
@@ -931,6 +923,23 @@ namespace canevents.src.commands
         public TextCommandResult CtfPostClear(TextCommandCallingArgs args)
             => EditAtFeet(args, (target, _) => placeConfig.ClearCtfPosts(target));
 
+        // Murder Mystery place setup: where the mode's weapon token can appear.
+
+        public TextCommandResult MmPickupAdd(TextCommandCallingArgs args)
+            => EditAtFeet(args, (target, pos) => placeConfig.AddMurderMysteryPickup(target, pos));
+
+        public TextCommandResult MmPickupClear(TextCommandCallingArgs args)
+            => EditAtFeet(args, (target, _) => placeConfig.ClearMurderMysteryPickups(target));
+
+        public TextCommandResult MmPickupList(TextCommandCallingArgs args)
+            => DescribeAtFeet(args, target => placeConfig.DescribeMurderMysteryPickups(target));
+
+        public TextCommandResult MmPickupRemove(TextCommandCallingArgs args)
+        {
+            int index = (int)args.Parsers[0].GetValue();
+            return EditAtFeet(args, (target, _) => placeConfig.RemoveMurderMysteryPickup(target, index));
+        }
+
         public TextCommandResult HgLootAdd(TextCommandCallingArgs args)
         {
             string tier = args.Parsers[0].GetValue() as string;
@@ -950,14 +959,13 @@ namespace canevents.src.commands
         private EventPlace FindPlaceContaining(IServerPlayer player, BlockPos pos)
         {
             if (EventPlaceInProgress.TryGetValue(player.PlayerUID, out var inProgress)
-                && inProgress.HasBounds && BoundsContain(inProgress, pos))
+                && PlaceBounds.Contains(inProgress, pos))
             {
                 return inProgress;
             }
             foreach (var pl in placeManager.EventPlaces)
             {
-                if (!pl.HasBounds) continue;
-                if (BoundsContain(pl, pos)) return pl;
+                if (PlaceBounds.Contains(pl, pos)) return pl;
             }
             return null;
         }

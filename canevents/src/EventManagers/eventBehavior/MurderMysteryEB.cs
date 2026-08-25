@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using canevents.src.EventManagers.eventBehavior.abstracts;
 using canevents.src.EventManagers.eventBehavior.Shared;
+using canevents.src.EventPlacesManagers.Places;
 using Vintagestory.API.Common;
 using Vintagestory.API.Common.Entities;
 using Vintagestory.API.Config;
@@ -42,6 +43,26 @@ namespace canevents.src.EventManagers.eventBehavior
         private float sheriffDisarmSeconds = 20f;
         private float sheriffDisarmSlowness = 0.6f;
 
+        /// <summary>
+        /// What a hit is worth in this mode, overriding whatever the weapon itself deals. 0 leaves the
+        /// item's own damage alone.
+        ///
+        /// A bow is the sheriff's whole kit, so its damage decides the mode: too low and a hit is a
+        /// warning shot, too high and the first arrow ends someone. Written per role because the same
+        /// bow in a murderer's hands (looted, or picked up off a spawn) should not have to be balanced
+        /// as the sheriff's. <see cref="bowDamage"/> is the fallback for both.
+        /// </summary>
+        private float bowDamage;
+        private float sheriffBowDamage;
+        private float murdererBowDamage;
+
+        /// <summary>Same for the murderer's knife, so the melee half can be tuned against the bow.</summary>
+        private float murdererMeleeDamage;
+
+        /// <summary>Does picking a bow up off the arena deputise an innocent? A murderer who finds one
+        /// stays a murderer either way - the badge cannot be looted.</summary>
+        private bool pickupMakesSheriff;
+
         /// <summary>Walk-speed multiplier for murderers. A small edge in a chase, and a tell for
         /// anyone paying attention. 1 = off.</summary>
         private float murdererSpeed = 1f;
@@ -65,6 +86,17 @@ namespace canevents.src.EventManagers.eventBehavior
 
         private readonly Dictionary<string, Role> roles = new Dictionary<string, Role>();
         private readonly DamageHookSet hooks = new DamageHookSet();
+
+        /// <summary>Drops the "find a weapon" token on the spots marked on the arena and hands out the
+        /// bow to whoever gets there first. Off unless the event config names an item to spawn.</summary>
+        private readonly PickupSpawner pickups = new PickupSpawner();
+
+        /// <summary>Undone first thing in OnEnd - see Unsubscribers for why that order matters.</summary>
+        private readonly Unsubscribers subscriptions = new Unsubscribers();
+
+        /// <summary>Puts the outfit back on anyone who takes it off; null when lockOutfit is off.
+        /// The wardrobe and the per-player pick come from this behavior itself (IOutfitWardrobe).</summary>
+        private OutfitLock outfitLock;
 
         /// <summary>What a murderer bot is handed, taken from the murderer kit itself.</summary>
         private string botWeaponCode;
@@ -110,16 +142,26 @@ namespace canevents.src.EventManagers.eventBehavior
             stalemateGraceSeconds = Config.Float("stalemateGraceSeconds", 60f);
             concealWeapons = Config.Bool("concealWeapons", true);
             lockOutfit = Config.Bool("lockOutfit", true);
+            bowDamage = Config.Float("bowDamage", 0f);
+            sheriffBowDamage = Config.Float("sheriffBowDamage", 0f);
+            murdererBowDamage = Config.Float("murdererBowDamage", 0f);
+            murdererMeleeDamage = Config.Float("murdererMeleeDamage", 0f);
+            pickupMakesSheriff = Config.Bool("bowPickupMakesSheriff", false);
+            // Reads bowPickupItem / bowPickupReward / the bowPickup* timers; declared through Config,
+            // so WarnUnknown does not flag them as typos.
+            pickups.Parse(Config, "bow");
             ParseLoadoutSets();
             Config.WarnUnknown();
         }
 
         public override void OnBeforeStart()
         {
-            runningEvent.SetDuration(timeLimitSeconds);
-            InitScores();   // also deals the outfits and clears the resolution latch
+            BeginMatch();   // also deals the outfits and clears the resolution latch
             roles.Clear();
             armedBots.Clear();
+
+            // After BeginMatch: it is what resolves this match's wardrobe, and the lock reads it.
+            outfitLock = lockOutfit ? new OutfitLock(runningEvent, this) : null;
         }
 
         public override void OnStart()
@@ -131,8 +173,8 @@ namespace canevents.src.EventManagers.eventBehavior
             foreach (var player in runningEvent.OnlineParticipants)
             {
                 MarkLootableWeapon(player);
-                ConcealWeapon(player);
-                WatchOutfit(player);
+                if (concealWeapons) MatchWeapons.MoveOutOfHand(player);
+                outfitLock?.Watch(player);
             }
             TellEveryoneTheirRole();
 
@@ -150,6 +192,28 @@ namespace canevents.src.EventManagers.eventBehavior
 
             // A bot dies outside the scored death path, so the mode has to listen for it directly.
             runningEvent.sapi.Event.OnEntityDeath += OnAnyEntityDeath;
+            subscriptions.Add(() => runningEvent.sapi.Event.OnEntityDeath -= OnAnyEntityDeath);
+
+            // The arena's weapon spawns. Nothing happens without both an item to drop and spots marked
+            // on the place, so an arena that was never set up simply plays the plain mode.
+            pickups.OnClaimed = OnBowPickedUp;
+            pickups.OnProgress = (player, carried, required) => player.SendMessage(0,
+                Lang.Get("canevents:mm-bow-progress", carried, required), EnumChatType.Notification);
+            pickups.Begin(runningEvent, BehaviorKeys.MurderMystery);
+
+            // Said out loud every match, both ways round: "nothing spawned" has three different
+            // causes (no item configured, no reward configured, no spots marked) and none of them is
+            // visible from inside the arena.
+            if (!pickups.Enabled)
+                log.Notification("Weapon spawns off: {0}. Set bowPickupItem and bowPickupReward on this "
+                    + "event to turn them on.", pickups.DisabledReason);
+            else if (!pickups.HasSpots)
+                log.Warning("Weapon spawns configured, but place id={0} ('{1}') has no pickup spots "
+                    + "marked - nothing will appear. Mark them with /canep mmpickup, or in the Murder "
+                    + "Mystery section of the Arenas tab.",
+                    runningEvent.Place?.Id, runningEvent.Place?.Name);
+            else
+                log.Notification("Weapon spawns armed: {0}", pickups.Describe());
 
             lastDeathAt = 0f;
 
@@ -168,6 +232,8 @@ namespace canevents.src.EventManagers.eventBehavior
             sinceHookSweep = 0f;
             HookEveryone();
             ArmBotMurderers();
+            // Spawns the next token when its timer is up and pays out anyone already holding one.
+            log.Safely("bow pickups", () => pickups.Tick(runningEvent, log));
             // A bot's death never reaches AfterScoredDeath: the manager only dispatches
             // OnParticipantDeath for players, and a bot is buried by ArenaBotsEB, which just calls
             // EliminatePlayer. Kill the last murderer while it is a bot and the match would
@@ -193,86 +259,6 @@ namespace canevents.src.EventManagers.eventBehavior
             if (runningEvent.ShortenDuration(endAt, "murder mystery stalemate"))
                 EventBroadcaster.Broadcast(runningEvent,
                     Lang.Get("canevents:mm-stalemate", (int)stalemateGraceSeconds));
-        }
-
-        // Outfit lock
-
-        /// <summary>Live subscriptions on each player's character inventory, kept so they can be
-        /// taken off again: a listener left behind would re-dress people after the match.</summary>
-        private readonly Dictionary<string, (IInventory inv, Action<int> handler)> outfitWatchers
-            = new Dictionary<string, (IInventory, Action<int>)>();
-
-        /// <summary>Set while we are the ones writing the slots, so our own changes do not come
-        /// back through SlotModified as another reason to dress.</summary>
-        private readonly HashSet<string> dressing = new HashSet<string>();
-
-        /// <summary>
-        /// Puts an outfit piece back the moment it comes off. Nothing stops a player from opening
-        /// their character inventory and dropping the clothes, and here that is not a wardrobe
-        /// choice - it erases the only description anyone can give of them ("the murderer wore
-        /// red"). The inventory tells us when it changed, so nothing has to be polled.
-        /// </summary>
-        private void WatchOutfit(IServerPlayer player)
-        {
-            if (!lockOutfit || outfits.Count == 0 || player == null) return;
-            string uid = player.PlayerUID;
-            if (outfitWatchers.ContainsKey(uid)) return;
-
-            var inv = player.InventoryManager?.GetOwnInventory(GlobalConstants.characterInvClassName);
-            if (inv == null) return;
-
-            Action<int> handler = _ => Redress(uid);
-            inv.SlotModified += handler;
-            outfitWatchers[uid] = (inv, handler);
-        }
-
-        private void Redress(string uid)
-        {
-            if (!dressing.Add(uid)) return;
-
-            // Deferred by a tick rather than done here: the inventory is mid-change inside its own
-            // SlotModified, and writing a clothing slot from that notification is the re-entry
-            // GearSlotOrderCompat exists to prevent.
-            runningEvent.sapi.Event.RegisterCallback(_ =>
-            {
-                dressing.Remove(uid);
-                if (runningEvent.EventState != EventState.Running || !runningEvent.IsActive(uid)) return;
-                var pl = runningEvent.sapi.World.PlayerByUid(uid) as IServerPlayer;
-                if (pl?.Entity == null || !pl.Entity.Alive) return;
-                // reclaimCarried: the very piece they took off goes back on, rather than a copy -
-                // otherwise stashing the coat in the backpack would leave them wearing a second one.
-                // Dress only fills empty clothing slots, so nothing else is disturbed.
-                EventOutfit.Dress(pl, runningEvent.sapi, outfits, OutfitIndexOf(uid), reclaimCarried: true);
-            }, 50);
-        }
-
-        /// <summary>Moves the listener onto the inventory the player actually has now. No-op while
-        /// it is the same one, so this is safe to call on every join.</summary>
-        private void RewatchOutfit(IServerPlayer player)
-        {
-            if (!lockOutfit || player == null) return;
-            string uid = player.PlayerUID;
-            var inv = player.InventoryManager?.GetOwnInventory(GlobalConstants.characterInvClassName);
-
-            if (outfitWatchers.TryGetValue(uid, out var existing))
-            {
-                if (ReferenceEquals(existing.inv, inv)) return;
-                if (existing.inv != null && existing.handler != null)
-                    existing.inv.SlotModified -= existing.handler;
-                outfitWatchers.Remove(uid);
-            }
-            WatchOutfit(player);
-        }
-
-        private void UnwatchOutfits()
-        {
-            foreach (var kvp in outfitWatchers)
-            {
-                if (kvp.Value.inv != null && kvp.Value.handler != null)
-                    kvp.Value.inv.SlotModified -= kvp.Value.handler;
-            }
-            outfitWatchers.Clear();
-            dressing.Clear();
         }
 
         // IBotCombatRoles: bots have no damage hooks, so their restraint has to come from having no
@@ -337,7 +323,9 @@ namespace canevents.src.EventManagers.eventBehavior
 
         private void HookEveryone()
         {
-            if (innocentsCanFight) return;
+            // The hook now carries two rules: unarmed innocents deal nothing, and configured weapon
+            // damage overrides the item's own. Either one on its own is reason enough to hook.
+            if (innocentsCanFight && !RulesDamage) return;
             foreach (var uid in runningEvent.ParticipantsStillInEvent)
             {
                 if (hooks.IsHooked(uid)) continue;
@@ -407,88 +395,17 @@ namespace canevents.src.EventManagers.eventBehavior
         }
 
         /// <summary>
-        /// Takes the weapon out of the hand everyone can see. The held item is rendered on the body
-        /// for every other player, so a knife or a bow at the pedestal names the murderer and the
-        /// sheriff before the match has begun - the loadout puts the first weapon in the main hand.
-        ///
-        /// Moved to a slot the player is not currently holding, and the hand is then filled with the
-        /// same harmless thing everyone else got (the ration): an empty hand among full ones would
-        /// be just as much of a tell. Drawing the weapon is then the murderer's own decision, and
-        /// the moment it appears is a real, earned clue.
-        /// </summary>
-        private void ConcealWeapon(IServerPlayer player)
-        {
-            if (!concealWeapons) return;
-            var hotbar = player?.InventoryManager?.GetOwnInventory(GlobalConstants.hotBarInvClassName);
-            if (hotbar == null) return;
-
-            // Off-hand and beyond are not part of the visible hotbar row (see LoadoutService).
-            int lastSlot = System.Math.Min(9, hotbar.Count - 1);
-            if (lastSlot < 1) return;
-
-            int active = player.InventoryManager.ActiveHotbarSlotNumber;
-            if (active < 0 || active > lastSlot) active = 0;
-
-            var handSlot = hotbar[active];
-            if (IsWeapon(handSlot?.Itemstack))
-            {
-                // From the far end: the near slots are the ones people cycle through by habit.
-                for (int i = lastSlot; i >= 0; i--)
-                {
-                    if (i == active || hotbar[i].Itemstack != null) continue;
-                    hotbar[i].Itemstack = handSlot.Itemstack;
-                    handSlot.Itemstack = null;
-                    hotbar[i].MarkDirty();
-                    handSlot.MarkDirty();
-                    break;
-                }
-            }
-
-            // Same thing in every hand: the ration the loadout handed out.
-            if (handSlot?.Itemstack != null) return;
-            for (int i = 0; i <= lastSlot; i++)
-            {
-                if (i == active) continue;
-                var stack = hotbar[i].Itemstack;
-                if (stack == null || IsWeapon(stack)) continue;
-                handSlot.Itemstack = stack;
-                hotbar[i].Itemstack = null;
-                handSlot.MarkDirty();
-                hotbar[i].MarkDirty();
-                break;
-            }
-        }
-
-        /// <summary>
-        /// Marks this player's weapon to survive their death and lie on the ground. The bow is the
-        /// point: whoever picks it up becomes the town's next sheriff, so a detective who dies badly
-        /// still leaves the town something to work with - and a suspicious item near a body.
+        /// Whose weapon is left on the ground when they die. The bow is the point: whoever picks it
+        /// up becomes the town's next sheriff, so a detective who dies badly still leaves the town
+        /// something to work with - and a suspicious item lying near a body.
         /// </summary>
         private void MarkLootableWeapon(IServerPlayer player)
         {
             var role = RoleOf(player.PlayerUID);
             bool lootable = role == Role.Sheriff ? sheriffDropsWeapon
                 : role == Role.Murderer && murdererDropsWeapon;
-            if (!lootable) return;
-
-            foreach (var inv in player.InventoryManager.Inventories.Values)
-            {
-                if (inv.ClassName == "creative") continue;
-                if (inv.ClassName == GlobalConstants.characterInvClassName) continue;
-
-                for (int i = 0; i < inv.Count; i++)
-                {
-                    var stack = inv[i]?.Itemstack;
-                    if (IsWeapon(stack)) IssuedGear.MarkDropOnDeath(stack);
-                }
-            }
+            if (lootable) MatchWeapons.MarkLootable(player);
         }
-
-        /// <summary>Anything that reads as a weapon in someone's hand. Tool covers the knife and the
-        /// bow; AttackPower catches a club or a rock handed out as a kit item.</summary>
-        private static bool IsWeapon(ItemStack stack)
-            => stack?.Collectible != null
-               && (stack.Collectible.Tool != null || stack.Collectible.AttackPower > 1f);
 
         private string SetNameOf(Role role) => role switch
         {
@@ -561,19 +478,23 @@ namespace canevents.src.EventManagers.eventBehavior
             var player = runningEvent.sapi.World.PlayerByUid(sheriffUid) as IServerPlayer;
             if (player == null) return;
 
-            var taken = TakeWeapons(player);
+            var taken = MatchWeapons.TakeAll(player);
             if (taken.Count > 0)
             {
                 // Handed back rather than replaced, so a bow that was half-used comes back as it was.
                 runningEvent.sapi.Event.RegisterCallback(_ =>
                 {
+                    // The match first: a survivor stays IsActive after the final whistle, and their
+                    // inventory has been restored from the backup by then - handing the match bow
+                    // back now would mint it into their real belongings.
+                    if (runningEvent.EventState != EventState.Running) return;
                     var pl = runningEvent.sapi.World.PlayerByUid(sheriffUid) as IServerPlayer;
                     if (pl?.Entity == null || !pl.Entity.Alive) return;
                     if (!runningEvent.IsActive(sheriffUid)) return;
                     foreach (var stack in taken) InventoryUtil.Give(runningEvent.sapi, pl, stack, "mm-rearm");
                     // Straight back out of the visible hand: a bow that reappears in front of
                     // everyone undoes the concealment the sheriff has been living by all match.
-                    ConcealWeapon(pl);
+                    if (concealWeapons) MatchWeapons.MoveOutOfHand(pl);
                     EventBroadcaster.ClearSpeedMutator(pl);
                     pl.SendMessage(0, Lang.Get("canevents:mm-sheriff-rearmed"), EnumChatType.Notification);
                 }, (int)(sheriffDisarmSeconds * 1000));
@@ -585,27 +506,6 @@ namespace canevents.src.EventManagers.eventBehavior
             player.SendMessage(0,
                 Lang.Get("canevents:mm-sheriff-disarmed", (int)sheriffDisarmSeconds),
                 EnumChatType.Notification);
-        }
-
-        /// <summary>Pulls every weapon out of a player's hands and bags, returning what was taken.</summary>
-        private List<ItemStack> TakeWeapons(IServerPlayer player)
-        {
-            var taken = new List<ItemStack>();
-            foreach (var inv in player.InventoryManager.Inventories.Values)
-            {
-                if (inv.ClassName == "creative") continue;
-                if (inv.ClassName == GlobalConstants.characterInvClassName) continue;   // worn clothes
-
-                for (int i = 0; i < inv.Count; i++)
-                {
-                    var slot = inv[i];
-                    if (!IsWeapon(slot?.Itemstack)) continue;
-                    taken.Add(slot.Itemstack);
-                    slot.Itemstack = null;
-                    slot.MarkDirty();
-                }
-            }
-            return taken;
         }
 
         private static string ParsePenalty(string value)
@@ -703,17 +603,21 @@ namespace canevents.src.EventManagers.eventBehavior
             // the dead body, and the outfit listener on an inventory nobody uses any more.
             foreach (var player in runningEvent.OnlineParticipants)
             {
-                if (!innocentsCanFight) hooks.RehookIfStale(player);
-                RewatchOutfit(player);
+                hooks.RehookIfStale(player);   // no-op for a player that was never hooked
+                outfitLock?.Rewatch(player);
             }
-            if (!innocentsCanFight) HookEveryone();
+            HookEveryone();   // decides for itself whether this mode hooks at all
         }
 
         public override void OnEnd()
         {
-            runningEvent.sapi.Event.OnEntityDeath -= OnAnyEntityDeath;
+            subscriptions.UnhookAll();
             hooks.UnhookAll();   // CRITICAL: a leaked hook would mute damage in the next match
-            UnwatchOutfits();    // as would a listener that keeps re-dressing people afterwards
+            outfitLock?.UnwatchAll();   // as would a listener that keeps re-dressing people
+
+            // Tokens nobody claimed are ours to take back: left lying there they would be free loot
+            // for the next match, or for whoever wanders in between them.
+            log.Safely("bow pickup cleanup", () => pickups.End(runningEvent));
 
             var murderers = runningEvent.ParticipantsBefore
                 .Where(uid => RoleOf(uid) == Role.Murderer)
@@ -729,6 +633,58 @@ namespace canevents.src.EventManagers.eventBehavior
                 ? "canevents:mm-win-murderers"
                 : "canevents:mm-win-innocents"));
         }
+
+        /// <summary>
+        /// Someone found a weapon spawn. Told privately, and put straight out of the visible hand:
+        /// walking away from the spot with a drawn bow announces both the finder and the fact that
+        /// the arena has an armed player in it.
+        /// </summary>
+        private void OnBowPickedUp(IServerPlayer player, List<ItemStack> given)
+        {
+            if (player == null) return;
+
+            // An innocent can be deputised by the find; a murderer keeps their own side. Done before
+            // the messages so the damage rules and the wording agree on who this player now is.
+            bool deputised = false;
+            if (pickupMakesSheriff && RoleOf(player.PlayerUID) == Role.Innocent)
+            {
+                roles[player.PlayerUID] = Role.Sheriff;
+                deputised = true;
+            }
+
+            if (sheriffDropsWeapon && RoleOf(player.PlayerUID) == Role.Sheriff)
+                MatchWeapons.MarkLootable(player);
+            if (concealWeapons) MatchWeapons.MoveOutOfHand(player);
+
+            player.SendMessage(0, Lang.Get(deputised
+                ? "canevents:mm-bow-found-sheriff"
+                : "canevents:mm-bow-found"), EnumChatType.Notification);
+        }
+
+        /// <summary>
+        /// What this hit is worth once the mode has had its say, or the weapon's own damage when
+        /// nothing is configured. Ranged and melee are told apart by the projectile: a bow's arrow is
+        /// the damage source, while the archer is only its cause.
+        /// </summary>
+        private float RuledDamage(float damage, string attackerUid, DamageSource source)
+        {
+            bool ranged = source?.SourceEntity != null
+                          && !ReferenceEquals(source.SourceEntity, source.GetCauseEntity());
+
+            var role = RoleOf(attackerUid);
+            float ruled = ranged
+                ? (role == Role.Sheriff ? sheriffBowDamage
+                    : role == Role.Murderer ? murdererBowDamage : 0f)
+                : (role == Role.Murderer ? murdererMeleeDamage : 0f);
+
+            // Per-role first, the shared bow figure second, the item's own damage last.
+            if (ruled <= 0f && ranged) ruled = bowDamage;
+            return ruled > 0f ? ruled : damage;
+        }
+
+        /// <summary>Is there anything for the damage hook to do beyond disarming the innocents?</summary>
+        private bool RulesDamage
+            => bowDamage > 0f || sheriffBowDamage > 0f || murdererBowDamage > 0f || murdererMeleeDamage > 0f;
 
         private Role RoleOf(string uid)
             => uid != null && roles.TryGetValue(uid, out var r) ? r : Role.Innocent;
@@ -749,7 +705,8 @@ namespace canevents.src.EventManagers.eventBehavior
                 string attackerUid = attacker.PlayerUID;
                 if (attackerUid == victimUid) return damage;
                 if (!runningEvent.IsParticipant(attackerUid)) return damage;
-                return RoleOf(attackerUid) == Role.Innocent ? 0f : damage;
+                if (!innocentsCanFight && RoleOf(attackerUid) == Role.Innocent) return 0f;
+                return RuledDamage(damage, attackerUid, source);
             });
         }
     }

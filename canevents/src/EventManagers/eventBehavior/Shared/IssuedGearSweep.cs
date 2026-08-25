@@ -27,22 +27,14 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
             // No bounds, no sweep. The alternative - guessing a radius around the spawn points -
             // would reach into whatever happens to stand next to an unmarked arena, and taking
             // items out of someone's base is a far worse bug than a sword left on the sand.
-            if (sapi == null || place == null || !place.HasBounds
-                || place.BoundsMin == null || place.BoundsMax == null)
+            if (sapi == null
+                || !PlaceBounds.TryCuboid(place, HorizontalMargin,
+                       sapi.World.BlockAccessor.MapSizeY, out var from, out var to))
             {
                 log?.Debug("Issued-gear sweep skipped for '{0}': the place has no marked bounds.",
                     place?.Name ?? "?");
                 return 0;
             }
-
-            var min = place.BoundsMin;
-            var max = place.BoundsMax;
-            // Bounds are marked at floor level, so vertically they are a slab rather than a volume -
-            // the whole column is the honest reading of an arena's footprint, and the same reason
-            // the mod's other bounds checks ignore Y.
-            var from = new BlockPos(min.X - HorizontalMargin, 0, min.Z - HorizontalMargin, min.dimension);
-            var to = new BlockPos(max.X + HorizontalMargin, sapi.World.BlockAccessor.MapSizeY,
-                max.Z + HorizontalMargin, min.dimension);
 
             var found = sapi.World.GetEntitiesInsideCuboid(from, to,
                 e => e is EntityItem item && IssuedGear.IsIssued(item.Itemstack));

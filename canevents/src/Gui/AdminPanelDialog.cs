@@ -595,14 +595,12 @@ namespace canevents.src.Gui
             var adminList = networkHandler.AdminEventList.Value;
             if (adminList?.Events == null || adminList.Events.Length == 0)
             {
-                ImGui.TextColored(ColMuted, "No events loaded.");
+                EmptyState("No events loaded.");
                 return;
             }
 
-            float tableHeight = System.Math.Min(adminList.Events.Length * 26f + 26f, 320f);
-            if (ImGui.BeginTable("##AdminEventsTable", 5,
-                ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY | ImGuiTableFlags.SizingFixedFit,
-                new Vector2(ImGui.GetContentRegionAvail().X, tableHeight)))
+            if (BeginListTable("##AdminEventsTable", 5, adminList.Events.Length,
+                rowHeight: 26f, maxHeight: 320f))
             {
                 ImGui.TableSetupColumn("Code", ImGuiTableColumnFlags.WidthStretch);
                 ImGui.TableSetupColumn("Category", ImGuiTableColumnFlags.WidthFixed, 90f);
@@ -768,6 +766,15 @@ namespace canevents.src.Gui
             if (HasType(place, "PARKOUR")) Badge("C", HasSummary(place, "checkpoints"), "Parkour checkpoints");
             if (HasType(place, "HUNGERGAMES")) Badge("Z", HasSummary(place, "zone"), "Hunger Games zone");
             if (HasType(place, "SPLEEF")) Badge("P", HasSummary(place, "platform"), "Spleef platform blocks");
+            // Optional by design: an arena with no spots simply plays Murder Mystery without weapon
+            // spawns, so the badge reports what is there rather than a fault.
+            if (HasType(place, "MURDERMYSTERY"))
+            {
+                int spots = MmPickupCount(place);
+                Badge("W", spots > 0, spots > 0
+                    ? spots + " weapon pickup spot(s)"
+                    : "No weapon pickup spots: the bow spawns are off on this arena");
+            }
         }
 
         private string BuildPlaceTooltip(PlaceListEntryMsg place)

@@ -65,10 +65,7 @@ namespace canevents.src.EventManagers.eventBehavior
 
         public override void OnBeforeStart()
         {
-            runningEvent.SetDuration(timeLimitSeconds);
-            InitScores();
-            InitTeamScores();
-
+            BeginMatch();
             ResolvePostsFromPlace(runningEvent.ParticipantsByGroupsBefore.Count);
             carriedBy = new string[posts.Length];
         }
@@ -469,7 +466,7 @@ namespace canevents.src.EventManagers.eventBehavior
 
         // Manager owns the time-up trigger. ResolveWinnerTeam gives survivors a forfeit win over a
         // wiped-out/deserting team instead of deciding on flag score.
-        public override void OnBeforeFinish() => DeclareTeamWinner(ResolveWinnerTeam());
+        // OnBeforeFinish (time-up winner) comes from TeamScoreEB.
 
         /// <summary>
         /// Passes the capture limit so the HUD can draw progress bars; TeamScoreEB's default omits
@@ -522,8 +519,7 @@ namespace canevents.src.EventManagers.eventBehavior
             for (int t = 0; t < carriedBy.Length; t++) carriedBy[t] = null;
             SyncCarriers();
 
-            string score = string.Join(" : ", Array.ConvertAll(teamScores, s => s.ToString()));
-            EventBroadcaster.Broadcast(runningEvent, Lang.Get("canevents:ctf-ended", score));
+            EventBroadcaster.Broadcast(runningEvent, Lang.Get("canevents:ctf-ended", ScoreLine()));
         }
     }
 }

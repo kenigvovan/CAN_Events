@@ -248,7 +248,15 @@ namespace canevents.src
             _onDeath      = (player, source) => this.CANEventManager.OnDeath(player, source);
             _onRespawn    = player => this.CANEventManager.OnRespawn(player);
             _onDisconnect = player => this.CANEventManager.OnDisconnect(player);
-            _onReconnect  = player => this.CANEventManager.OnReconnect(player);
+            _onReconnect  = player =>
+            {
+                // Armour an older build of this mod seated by dress-type index can be stuck in a
+                // character slot Combat Overhaul has switched off, where it crashes vanilla's damage
+                // handler on every hit the player takes and the player cannot reach it to take it off.
+                // Cleared on join, before anything else touches the inventory.
+                Compat.CharacterInventoryCompat.ClearUnusableSlots(player, api.World.Logger);
+                this.CANEventManager.OnReconnect(player);
+            };
             api.Event.PlayerDeath       += _onDeath;
             api.Event.PlayerRespawn     += _onRespawn;
             api.Event.PlayerDisconnect  += _onDisconnect;

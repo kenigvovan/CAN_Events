@@ -103,6 +103,7 @@ namespace canevents.src.Network
             foreach (var place in placeManager.EventPlaces)
             {
                 var spawns = place.spawnPositions;
+                var mmPickups = PlaceSummaryFormatter.PackMurderMysteryPickups(place);
                 entries.Add(new PlaceListEntryMsg
                 {
                     Id = place.Id,
@@ -125,7 +126,10 @@ namespace canevents.src.Network
                     Description = place.Description,
                     SchematicTemplateCode = place.SchematicTemplateCode,
                     SchematicOnDemand = place.SchematicOnDemand,
-                    BehaviorSummary = PlaceSummaryFormatter.Summarize(place)
+                    BehaviorSummary = PlaceSummaryFormatter.Summarize(place),
+                    MmPickupX = mmPickups.Select(p => p.X).ToArray(),
+                    MmPickupY = mmPickups.Select(p => p.Y).ToArray(),
+                    MmPickupZ = mmPickups.Select(p => p.Z).ToArray()
                 });
             }
 
@@ -317,10 +321,11 @@ namespace canevents.src.Network
         /// bounds aren't enforced during a match and starting just off the edge can be intended.</summary>
         private static string OutsideBoundsNote(EventPlace place, Vintagestory.API.MathTools.BlockPos pos)
         {
-            if (!place.HasBounds || place.BoundsMin == null || place.BoundsMax == null) return "";
-            bool inside = pos.X >= place.BoundsMin.X && pos.X <= place.BoundsMax.X
-                       && pos.Z >= place.BoundsMin.Z && pos.Z <= place.BoundsMax.Z;
-            return inside ? "" : " WARNING: that position is outside the place's bounds.";
+            // No bounds, nothing to be outside of.
+            if (!PlaceBounds.Has(place)) return "";
+            return PlaceBounds.Contains(place, pos)
+                ? ""
+                : " WARNING: that position is outside the place's bounds.";
         }
 
         private void OnRemoveSpawnPoint(IServerPlayer player, RemoveSpawnPointMsg msg)

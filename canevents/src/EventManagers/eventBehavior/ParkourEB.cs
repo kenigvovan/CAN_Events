@@ -21,6 +21,9 @@ namespace canevents.src.EventManagers.eventBehavior
     /// </summary>
     public class ParkourEB : CANEventBehavior, Shared.IMatchScorer
     {
+        /// <summary>Undone first thing in OnEnd - see Unsubscribers for why that order matters.</summary>
+        private readonly Shared.Unsubscribers subscriptions = new Shared.Unsubscribers();
+
         private int defaultLives = 3;
         private float finishGraceSeconds = 90f;
         private float prefightSeconds = 3f;
@@ -149,6 +152,7 @@ namespace canevents.src.EventManagers.eventBehavior
             finalizerListenerId = runningEvent.RegisterMatchTick(FinalizerTick, 250);
 
             runningEvent.sapi.Event.BreakBlock += OnBreakBlock;
+            subscriptions.Add(() => runningEvent.sapi.Event.BreakBlock -= OnBreakBlock);
         }
 
         private void OnBreakBlock(IServerPlayer byPlayer, BlockSelection sel, ref float dropMult, ref EnumHandling handling)
@@ -339,7 +343,7 @@ namespace canevents.src.EventManagers.eventBehavior
         {
             // Teardown FIRST, cosmetics after: a throw in the ranking broadcast is swallowed per
             // behavior and would otherwise leak the BreakBlock subscription and checkpoint BEs.
-            runningEvent.sapi.Event.BreakBlock -= OnBreakBlock;
+            subscriptions.UnhookAll();
 
             // Remove the BEs attached on top of existing world blocks; nothing else cleans them up,
             // since we don't own the underlying block.

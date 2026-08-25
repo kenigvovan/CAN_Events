@@ -137,6 +137,44 @@ namespace canevents.src.Network
             clientChannel.SendPacket(new ClearCtfPostsMsg { PlaceId = placeId });
         }
 
+        /// <summary>Marks a Murder Mystery weapon-pickup spot at the caller's feet, on this exact place.</summary>
+        public void SendAddMmPickup(long placeId)
+        {
+            clientChannel.SendPacket(new AddMmPickupMsg { PlaceId = placeId });
+        }
+
+        public void SendClearMmPickups(long placeId)
+        {
+            clientChannel.SendPacket(new ClearMmPickupsMsg { PlaceId = placeId });
+        }
+
+        public void SendRemoveMmPickup(long placeId, int index)
+        {
+            clientChannel.SendPacket(new RemoveMmPickupMsg { PlaceId = placeId, Index = index });
+        }
+
+        public void SendListMmPickups(long placeId)
+        {
+            clientChannel.SendPacket(new ListMmPickupsMsg { PlaceId = placeId });
+        }
+
+        /// <summary>Asks for a Murder Mystery event's editable settings; null eventCode lets the
+        /// server pick the variant that fits this place.</summary>
+        public void SendRequestMmConfig(long placeId, string eventCode = null)
+        {
+            clientChannel.SendPacket(new RequestMmConfigMsg { PlaceId = placeId, EventCode = eventCode });
+        }
+
+        public void SendSaveMmConfig(long placeId, string eventCode, string attributesJson)
+        {
+            clientChannel.SendPacket(new SaveMmConfigMsg
+            {
+                PlaceId = placeId,
+                EventCode = eventCode,
+                AttributesJson = attributesJson
+            });
+        }
+
         /// <summary>Sets the HG storm centre at the caller's feet with this radius, on this place.</summary>
         public void SendSetHgZone(long placeId, float radius)
         {

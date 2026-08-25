@@ -1,6 +1,5 @@
 using System;
 using System.Linq;
-using System.Numerics;
 using canevents.src.Network;
 using ImGuiNET;
 
@@ -108,11 +107,8 @@ namespace canevents.src.Gui
             if (list.OmittedCount > 0)
                 ImGui.TextColored(ColWarn, list.OmittedCount + " more not shown - use the box above.");
 
-            float height = Math.Min(list.Players.Length * 26f + 26f, 360f);
-            if (!ImGui.BeginTable("##PlayerAccessTable", 5,
-                ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY
-                | ImGuiTableFlags.SizingFixedFit,
-                new Vector2(ImGui.GetContentRegionAvail().X, height))) return;
+            if (!BeginListTable("##PlayerAccessTable", 5, list.Players.Length,
+                rowHeight: 26f, maxHeight: 360f)) return;
 
             ImGui.TableSetupColumn("Player", ImGuiTableColumnFlags.WidthStretch);
             ImGui.TableSetupColumn("Role", ImGuiTableColumnFlags.WidthFixed, 90f);

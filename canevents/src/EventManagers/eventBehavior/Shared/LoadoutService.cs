@@ -169,58 +169,25 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
                 if (skipShields && stack.Collectible is Item shieldCheck
                     && shieldCheck.Code.Path.StartsWith("shield")) continue;
 
-                // Wearable armor → character inventory. Vanilla routes by EnumCharacterDressType slot
-                // index; Combat Overhaul replaces it with ArmorInventory, so fall back to slot.CanHold.
+                // Wearable armor → character inventory, always through the slot's own CanHold: writing
+                // by EnumCharacterDressType index lands in slots Combat Overhaul has switched off and
+                // crashes the damage handler - see CharacterInventoryCompat.
                 string clothesCat = stack.Collectible.Attributes?["clothescategory"]?.AsString(null)
                     ?? stack.Collectible.Attributes?["clothesCategoryByType"]?.AsObject<Dictionary<string, string>>()?.Values.FirstOrDefault();
                 if (clothesCat != null && skipWearables) continue;
                 if (clothesCat != null && characterInv != null)
                 {
-                    bool combatOverhaulActive = sapi.ModLoader.IsModEnabled("combatoverhaul");
-                    bool placed = false;
+                    EnumCharacterDressType? dressType =
+                        Enum.TryParse<EnumCharacterDressType>(clothesCat, true, out var parsed)
+                            ? parsed
+                            : (EnumCharacterDressType?)null;
 
-                    if (!combatOverhaulActive && Enum.TryParse<EnumCharacterDressType>(clothesCat, true, out var dressType)
-                        && (int)dressType >= 0 && (int)dressType < characterInv.Count)
+                    var worn = Compat.CharacterInventoryCompat.Wear(characterInv, stack, dressType);
+                    if (worn != null)
                     {
-                        // Vanilla VS has one slot per clothes category, so multi-layer loadouts
-                        // collide; last item wins, putting the outer JSON layer on.
-                        var slot = characterInv[(int)dressType];
-                        slot.Itemstack = stack;
-                        slot.MarkDirty();
-                        placed = true;
+                        worn.MarkDirty();
+                        continue;
                     }
-
-                    if (!placed)
-                    {
-                        var dummy = new DummySlot(stack);
-                        // First pass: prefer an empty matching slot.
-                        for (int i = 0; i < characterInv.Count; i++)
-                        {
-                            var slot = characterInv[i];
-                            if (slot.Itemstack != null) continue;
-                            if (!slot.CanHold(dummy)) continue;
-                            slot.Itemstack = stack;
-                            slot.MarkDirty();
-                            placed = true;
-                            break;
-                        }
-                        // Second pass: overwrite the last matching slot, so layered loadouts
-                        // collapse to "last layer in the JSON wins".
-                        if (!placed)
-                        {
-                            for (int i = characterInv.Count - 1; i >= 0; i--)
-                            {
-                                var slot = characterInv[i];
-                                if (!slot.CanHold(dummy)) continue;
-                                slot.Itemstack = stack;
-                                slot.MarkDirty();
-                                placed = true;
-                                break;
-                            }
-                        }
-                    }
-
-                    if (placed) continue;
                     sapi.World.Logger.Warning("Could not equip armor {0} on {1}", entry.Code, player.PlayerName);
                     continue;
                 }

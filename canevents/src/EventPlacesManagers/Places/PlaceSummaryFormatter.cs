@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Globalization;
 using Newtonsoft.Json.Linq;
+using Vintagestory.API.MathTools;
 
 namespace canevents.src.EventPlacesManagers.Places
 {
@@ -56,6 +57,19 @@ namespace canevents.src.EventPlacesManagers.Places
                 }
             }
 
+            if (place.TryGetBehaviorData(BehaviorKeys.MurderMystery, out var mm)
+                && mm["PickupSpots"] is JArray pickupArr)
+            {
+                // One line per spot with coordinates, like the CTF posts: the panel has no other view
+                // of them, and "4 spots" is not something an admin can check against the arena.
+                for (int i = 0; i < pickupArr.Count; i++)
+                {
+                    lines.Add(JsonPos.TryRead(pickupArr[i], out var spot)
+                        ? string.Format("mm pickup {0} @ {1},{2},{3}", i, spot.X, spot.Y, spot.Z)
+                        : string.Format("mm pickup {0}: NOT SET", i));
+                }
+            }
+
             if (place.TryGetBehaviorData(BehaviorKeys.Spleef, out var spleef))
             {
                 int blocks = (spleef["PlatformX"] as JArray)?.Count ?? 0;
@@ -70,6 +84,22 @@ namespace canevents.src.EventPlacesManagers.Places
             }
 
             return lines.ToArray();
+        }
+
+        /// <summary>
+        /// The Murder Mystery pickup spots as plain positions for the panel (overlay and per-spot
+        /// buttons). Order is the stored order, gaps included as nulls would break the index the
+        /// panel removes by - a malformed entry keeps its slot as (0,0,0) and can still be removed.
+        /// </summary>
+        public static List<BlockPos> PackMurderMysteryPickups(EventPlace place)
+        {
+            var spots = new List<BlockPos>();
+            if (!place.TryGetBehaviorData(BehaviorKeys.MurderMystery, out var data)
+                || !(data["PickupSpots"] is JArray arr)) return spots;
+
+            foreach (var token in arr)
+                spots.Add(JsonPos.TryRead(token, out var pos) ? pos : new BlockPos(0, 0, 0, 0));
+            return spots;
         }
 
         /// <summary>"x,y,z,r,h" for the admin panel's hill overlay, or null when no hill is set.</summary>

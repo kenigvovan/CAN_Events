@@ -164,17 +164,23 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
                 }
 
                 string category = item.Attributes?["clothescategory"]?.AsString(null);
-                if (category == null
-                    || !Enum.TryParse<EnumCharacterDressType>(category, true, out var dressType)
-                    || (int)dressType < 0 || (int)dressType >= inv.Count)
+                if (category == null)
                 {
                     sapi.World.Logger.Warning("[outfit] {0} has no usable clothes category, skipped.", code);
                     continue;
                 }
+                EnumCharacterDressType? dressType =
+                    Enum.TryParse<EnumCharacterDressType>(category, true, out var parsed)
+                        ? parsed
+                        : (EnumCharacterDressType?)null;
 
-                // Never over an existing piece: the loadout's armour came first and balances the fight.
-                var slot = inv[(int)dressType];
-                if (slot.Itemstack != null) continue;
+                // Where it would go is settled before anything is taken or conjured: emptyOnly, so the
+                // loadout's armour - which came first and balances the fight - is never displaced, and
+                // by the slot's own CanHold rather than by dress-type index, which would land in the
+                // slots Combat Overhaul switched off. See CharacterInventoryCompat.
+                var slot = Compat.CharacterInventoryCompat.FindWearSlot(
+                    inv, new ItemStack(item), dressType, emptyOnly: true);
+                if (slot == null) continue;
 
                 var piece = TakeCarried(reclaimFrom, code);
                 if (piece == null)

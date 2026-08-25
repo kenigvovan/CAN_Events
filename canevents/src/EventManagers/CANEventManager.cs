@@ -505,6 +505,58 @@ namespace canevents.src.EventManagers
             return (true, Lang.Get("canevents:hgcfg-saved", ev.Code));
         }
 
+        /// <summary>
+        /// Applies an admin edit of a Murder Mystery event's tunables: mutates the live behavior's
+        /// Attributes (so the next match uses them without a restart) and persists them into the event
+        /// JSON. Only keys in <see cref="eventBehavior.Shared.MmConfigKeys"/> are touched - the
+        /// loadouts and outfits sharing that object are edited elsewhere and must survive this.
+        /// </summary>
+        public (bool ok, string message) UpdateEventMmConfig(string code, JObject settings)
+        {
+            if (string.IsNullOrEmpty(code)) return (false, Lang.Get("canevents:rewardcfg-no-code"));
+            if (settings == null) return (false, Lang.Get("canevents:mmcfg-nothing"));
+            var ev = FindEventByCode(code);
+            if (ev == null) return (false, Lang.Get("canevents:event-not-found", code));
+
+            var mm = ev.GetBehavior<eventBehavior.MurderMysteryEB>();
+            if (mm?.Attributes?.Token is JObject attrTok)
+            {
+                ApplyMmSettings(attrTok, settings);
+                // Rewrap so JsonObject re-reads the mutated token rather than any cached child wrappers.
+                mm.Attributes = new Vintagestory.API.Datastructures.JsonObject(attrTok);
+            }
+
+            if (!PersistEventMmConfig(ev.Code, settings, out string err))
+                return (true, Lang.Get("canevents:rewardcfg-save-failed", err));
+            return (true, Lang.Get("canevents:mmcfg-saved", ev.Code));
+        }
+
+        // Copies the editable keys across, and only those. A key the panel left out is left as it was,
+        // so an older panel editing a newer config cannot erase settings it never showed.
+        private static void ApplyMmSettings(JObject target, JObject settings)
+        {
+            foreach (var prop in settings.Properties())
+                if (eventBehavior.Shared.MmConfigKeys.IsEditable(prop.Name))
+                    target[prop.Name] = prop.Value;
+        }
+
+        // Writes the edited settings into the "MurderMystery" behavior's "attributes" of the matching
+        // event JSON, leaving every other key intact.
+        private bool PersistEventMmConfig(string code, JObject settings, out string error)
+            => eventConfigStore.Edit(code, obj =>
+            {
+                if (!(obj["behaviors"] is JArray behs)) return "no behaviors array";
+
+                JObject mmBeh = null;
+                foreach (var b in behs)
+                    if (b is JObject bo && bo["name"]?.Value<string>() == "MurderMystery") { mmBeh = bo; break; }
+                if (mmBeh == null) return "no MurderMystery behavior";
+
+                if (!(mmBeh["attributes"] is JObject attr)) { attr = new JObject(); mmBeh["attributes"] = attr; }
+                ApplyMmSettings(attr, settings);
+                return null;
+            }, out error);
+
         // Writes lootTables/zonePhases into the "HungerGames" behavior's "attributes" of the matching
         // event JSON, leaving every other key intact.
         private bool PersistEventHgConfig(string code, JObject lootTables, JArray zonePhases, out string error)

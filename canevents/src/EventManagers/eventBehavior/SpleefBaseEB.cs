@@ -16,6 +16,9 @@ namespace canevents.src.EventManagers.eventBehavior
     {
         public string StartCryLangKey => "canevents:spleef-start-cry";
 
+        /// <summary>Undone first thing in OnEnd - see Unsubscribers for why that order matters.</summary>
+        private readonly Shared.Unsubscribers subscriptions = new Shared.Unsubscribers();
+
 
         protected int platformWidth = 20;
         protected int platformDepth = 20;
@@ -201,6 +204,7 @@ namespace canevents.src.EventManagers.eventBehavior
         public override void OnStart()
         {
             runningEvent.sapi.Event.BreakBlock += OnBreakPlatformBlock;
+            subscriptions.Add(() => runningEvent.sapi.Event.BreakBlock -= OnBreakPlatformBlock);
         }
 
         private void OnBreakPlatformBlock(IServerPlayer player, BlockSelection sel,
@@ -393,7 +397,7 @@ namespace canevents.src.EventManagers.eventBehavior
 
         public override void OnEnd()
         {
-            runningEvent.sapi.Event.BreakBlock -= OnBreakPlatformBlock;
+            subscriptions.UnhookAll();
 
             // Drop live melt BEs first, or their timers outlive the match and delete restored terrain.
             RemoveMeltEntities();

@@ -136,6 +136,32 @@ namespace canevents.src.Gui
                     ImGui.BulletText("Tweak crown bonuses / scoreLimit in event_juggernaut.json.");
                     ImGui.TreePop();
                 }
+                if (ImGui.TreeNode("Murder Mystery (MURDERMYSTERY place)"))
+                {
+                    ImGui.TextColored(ColAccent, "Weapon damage");
+                    ImGui.BulletText("sheriffBowDamage / murdererBowDamage set what an arrow is worth per role;");
+                    ImGui.BulletText("  bowDamage is the fallback for both, murdererMeleeDamage covers the knife.");
+                    ImGui.BulletText("0 leaves the item's own damage alone.");
+                    ImGui.BulletText("Edit it in Arenas tab > Murder Mystery > Settings, or in event_murdermystery.json.");
+                    ImGui.BulletText("Saving writes the event JSON in ModConfig and applies to the next match.");
+                    ImGui.Spacing();
+                    ImGui.TextColored(ColAccent, "Weapon spawns during the match");
+                    ImGui.BulletText("bowPickupItem names an ORDINARY item to drop (no new item needs making).");
+                    ImGui.BulletText("Players collect it: every bowPickupRequired of them (10 by default) turn");
+                    ImGui.BulletText("  into bowPickupReward - a bow and arrows. Leftovers above that stay in the bag.");
+                    ImGui.BulletText("Carried parts are real items: they drop on death and can be looted.");
+                    ImGui.BulletText("Timers: bowPickupFirstSeconds, then every bowPickupIntervalSeconds.");
+                    ImGui.BulletText("bowPickupMaxActive caps how many lie around; bowPickupMinDistance keeps");
+                    ImGui.BulletText("  two of them apart, so one corner cannot become a stash.");
+                    ImGui.BulletText("bowPickupLifetimeSeconds expires an untouched one (0 = it waits).");
+                    ImGui.BulletText("bowPickupMakesSheriff turns an innocent finder into the sheriff.");
+                    ImGui.Spacing();
+                    ImGui.TextColored(ColAccent, "Marking the spots");
+                    ImGui.BulletText("Arenas tab > select the place > Murder Mystery section, or /canep mmpickup.");
+                    ImGui.BulletText("Marked spots are drawn in the world in yellow while the place is selected.");
+                    ImGui.BulletText("No spots marked = no weapon spawns; the mode plays as it always did.");
+                    ImGui.TreePop();
+                }
                 if (ImGui.TreeNode("Schedule auto-running events"))
                 {
                     ImGui.BulletText("Dashboard > Auto-scheduler >Turn ON/OFF and pick an interval.");
@@ -215,6 +241,7 @@ namespace canevents.src.Gui
                 ImGui.BulletText("/canep cp <index> | cpfinish | cplist | cpremove | cpedit <idx> | cplives <n>  - parkour checkpoints");
                 ImGui.BulletText("/canep hgzone <radius> | hgloot [tier] | hglootlist | hglootclear  - Hunger Games zone and loot");
                 ImGui.BulletText("/canep ctfpost <team> | ctfposts | ctfclear  - CTF flag posts");
+                ImGui.BulletText("/canep mmpickup | mmpickuplist | mmpickupremove <idx> | mmpickupclear  - Murder Mystery weapon spawns");
                 ImGui.BulletText("/eventadmin start <eventCode>  - announce an event");
                 ImGui.BulletText("/eventadmin stop  - abort all running events");
                 ImGui.BulletText("/eventadmin schedule on | off | interval <minutes>");

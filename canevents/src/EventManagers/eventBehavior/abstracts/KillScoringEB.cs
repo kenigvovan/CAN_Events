@@ -92,6 +92,20 @@ namespace canevents.src.EventManagers.eventBehavior.abstracts
             return result;
         }
 
+        /// <summary>
+        /// The opening of a match, in the order every mode needs it: the time limit, then the score
+        /// reset. Call it FIRST from OnBeforeStart and do mode-specific setup after - InitScores
+        /// clears the match-resolution latch, so anything that ran before it would be undone.
+        ///
+        /// A mode without a time limit (ArenaFight) calls <see cref="InitScores"/> directly: passing
+        /// it through here would hand it a deadline it is not supposed to have.
+        /// </summary>
+        protected virtual void BeginMatch()
+        {
+            runningEvent.SetDuration(timeLimitSeconds);
+            InitScores();
+        }
+
         /// <summary>Zero-init kill/death tallies for every participant. Call from OnBeforeStart().</summary>
         protected void InitScores()
         {

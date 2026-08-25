@@ -37,13 +37,8 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
             }
 
             // A misconfigured place still plays, instead of ending in a mute 0:0 draw.
-            if (place.HasBounds && place.BoundsMin != null && place.BoundsMax != null)
-            {
-                x = (place.BoundsMin.X + place.BoundsMax.X) / 2.0 + 0.5;
-                y = (place.BoundsMin.Y + place.BoundsMax.Y) / 2.0 + 0.5;
-                z = (place.BoundsMin.Z + place.BoundsMax.Z) / 2.0 + 0.5;
+            if (PlaceBounds.TryCentre(place, out x, out y, out z))
                 return ZoneOrigin.BoundsCentre;
-            }
 
             return ZoneOrigin.None;
         }

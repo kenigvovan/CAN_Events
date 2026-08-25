@@ -98,6 +98,12 @@ namespace canevents.src.Network
             SetAdminHandler<GenerateHgLayoutMsg>(OnGenerateHgLayout);
             SetAdminHandler<HgPreviewMsg>(OnHgPreview);
             SetAdminHandler<SaveHgConfigMsg>(OnSaveHgConfig);
+            SetAdminHandler<AddMmPickupMsg>(OnAddMmPickup);
+            SetAdminHandler<ClearMmPickupsMsg>(OnClearMmPickups);
+            SetAdminHandler<RemoveMmPickupMsg>(OnRemoveMmPickup);
+            SetAdminHandler<ListMmPickupsMsg>(OnListMmPickups);
+            SetAdminHandler<RequestMmConfigMsg>(OnRequestMmConfig);
+            SetAdminHandler<SaveMmConfigMsg>(OnSaveMmConfig);
 
             // Open to any player: each of these validates against server state instead.
             SetHandler<JoinEventRequestMsg>(OnJoinRequest);

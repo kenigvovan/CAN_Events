@@ -165,9 +165,9 @@ namespace canevents.src.Gui
             var list = networkHandler.SchematicList.Value;
             if (list?.Schematics == null || list.Schematics.Length == 0)
             {
-                ImGui.TextColored(ColMuted, "No schematics found.");
-                ImGui.TextDisabled("Export a build with the game's worldedit tools, then drop the .json");
-                ImGui.TextDisabled("into ModConfig/canevents/schematics/ and hit Refresh.");
+                EmptyState("No schematics found.",
+                    "Export a build with the game's worldedit tools, then drop the .json",
+                    "into ModConfig/canevents/schematics/ and hit Refresh.");
                 return;
             }
 
@@ -264,32 +264,22 @@ namespace canevents.src.Gui
             var list = networkHandler.ItemSetList(kind).Value;
             int setCount = list?.Events?.Sum(e => e.Sets?.Length ?? 0) ?? 0;
 
-            ImGui.TextColored(ColAccent, isOutfit ? "Outfit Sets" : "Loadout Sets");
-            ImGui.SameLine();
-            if (ImGui.SmallButton("Refresh##" + idSuffix)) networkHandler.RequestLoadoutList(kind);
             if (isOutfit)
-            {
-                ImGui.TextDisabled("Plain clothes worn over the loadout, so players can be told apart");
-                ImGui.TextDisabled("and described. One set = one outfit; each player gets a different one.");
-            }
+                SectionHeader("Outfit Sets", idSuffix, () => networkHandler.RequestLoadoutList(kind),
+                    "Plain clothes worn over the loadout, so players can be told apart",
+                    "and described. One set = one outfit; each player gets a different one.");
             else
-            {
-                ImGui.TextDisabled("Gear handed to players at match start. Sets edited here override the ones in event JSON.");
-                ImGui.TextDisabled("Several sets on one event become a choice players make before the match.");
-            }
-            ImGui.Spacing();
+                SectionHeader("Loadout Sets", idSuffix, () => networkHandler.RequestLoadoutList(kind),
+                    "Gear handed to players at match start. Sets edited here override the ones in event JSON.",
+                    "Several sets on one event become a choice players make before the match.");
 
             if (setCount == 0)
             {
-                ImGui.TextColored(ColMuted, isOutfit
-                    ? "No managed outfits yet."
-                    : "No managed loadout sets yet.");
-                ImGui.TextDisabled("Build one below, or use 'Import from JSON' to copy an event's inline sets");
-                ImGui.TextDisabled("into editable ones.");
+                EmptyState(isOutfit ? "No managed outfits yet." : "No managed loadout sets yet.",
+                    "Build one below, or use 'Import from JSON' to copy an event's inline sets",
+                    "into editable ones.");
             }
-            else if (ImGui.BeginTable("##ItemSetsTable" + idSuffix, 3,
-                ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY | ImGuiTableFlags.SizingFixedFit,
-                new Vector2(ImGui.GetContentRegionAvail().X, System.Math.Min(setCount * 22f + 26f, 160f))))
+            else if (BeginListTable("##ItemSetsTable" + idSuffix, 3, setCount, maxHeight: 160f))
             {
                 ImGui.TableSetupColumn("Event",   ImGuiTableColumnFlags.WidthFixed, 110f);
                 ImGui.TableSetupColumn("Set",     ImGuiTableColumnFlags.WidthStretch);
@@ -302,17 +292,12 @@ namespace canevents.src.Gui
                     if (ev.Sets == null) continue;
                     foreach (var set in ev.Sets)
                     {
-                        ImGui.TableNextRow();
-                        ImGui.TableSetColumnIndex(0);
-
                         bool isSelected = st.SelectedEvent == ev.EventCode && st.SelectedSet == set.Name;
-                        ImGui.PushID(ev.EventCode + "/" + set.Name);
-                        if (ImGui.Selectable(ev.EventCode, isSelected, ImGuiSelectableFlags.SpanAllColumns))
+                        if (SelectableRow(ev.EventCode + "/" + set.Name, ev.EventCode, isSelected))
                         {
                             st.SelectedEvent = ev.EventCode;
                             st.SelectedSet = set.Name;
                         }
-                        ImGui.PopID();
 
                         ImGui.TableSetColumnIndex(1);
                         ImGui.Text(set.Name ?? "");
@@ -367,21 +352,12 @@ namespace canevents.src.Gui
                     ImGui.OpenPopup("##ConfirmDeleteSet");
                 }
 
-                if (ImGui.BeginPopupModal("##ConfirmDeleteSet", ref deleteSetModalOpen,
-                    ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoTitleBar))
+                if (ConfirmDeleteModal("##ConfirmDeleteSet", ref deleteSetModalOpen,
+                    isOutfit ? "Delete outfit?" : "Delete loadout set?",
+                    selSet.Name + "  (" + st.SelectedEvent + ")"))
                 {
-                    ImGui.TextColored(ColBad, isOutfit ? "Delete outfit?" : "Delete loadout set?");
-                    ImGui.Text(selSet.Name + "  (" + st.SelectedEvent + ")");
-                    ImGui.Spacing();
-                    if (ImGui.Button("Yes, delete", new Vector2(100, 0)))
-                    {
-                        networkHandler.SendDeleteLoadoutSet(st.SelectedEvent, selSet.Name, kind);
-                        st.SelectedSet = "";
-                        ImGui.CloseCurrentPopup();
-                    }
-                    ImGui.SameLine();
-                    if (ImGui.Button("Cancel", new Vector2(70, 0))) ImGui.CloseCurrentPopup();
-                    ImGui.EndPopup();
+                    networkHandler.SendDeleteLoadoutSet(st.SelectedEvent, selSet.Name, kind);
+                    st.SelectedSet = "";
                 }
 
                 ImGui.Spacing();
@@ -441,10 +417,9 @@ namespace canevents.src.Gui
 
             if (st.Pending.Count > 0)
             {
-                float pendingHeight = System.Math.Min(st.Pending.Count * 34f + 26f, 180f);
-                if (ImGui.BeginTable("##PendingItems" + idSuffix, isOutfit ? 3 : 4,
-                    ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY | ImGuiTableFlags.SizingFixedFit,
-                    new Vector2(ImGui.GetContentRegionAvail().X, pendingHeight)))
+                // Taller rows than a plain list: these carry item icons.
+                if (BeginListTable("##PendingItems" + idSuffix, isOutfit ? 3 : 4, st.Pending.Count,
+                    rowHeight: 34f, maxHeight: 180f))
                 {
                     ImGui.TableSetupColumn("",      ImGuiTableColumnFlags.WidthFixed, 32f);
                     ImGui.TableSetupColumn("Item",  ImGuiTableColumnFlags.WidthStretch);

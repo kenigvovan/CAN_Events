@@ -1,5 +1,4 @@
 using System.Linq;
-using System.Numerics;
 using canevents.src.Network;
 using ImGuiNET;
 
@@ -11,7 +10,7 @@ namespace canevents.src.Gui
         private void DrawArenasTab()
         {
             Heading("Arena Management");
-            ImGui.TextDisabled("Setup column: S spawns, B bounds, H hill, C checkpoints, Z zone, P platform. Red means missing.");
+            ImGui.TextDisabled("Setup column: S spawns, B bounds, H hill, C checkpoints, Z zone, P platform, W weapon spawns. Red means missing.");
             ImGui.Spacing();
 
             var placeList = networkHandler.PlaceList.Value;
@@ -47,6 +46,7 @@ namespace canevents.src.Gui
                 if (HasType(selectedPlace, "PARKOUR")) DrawParkourSection(selectedPlace);
                 if (HasType(selectedPlace, "HUNGERGAMES")) DrawHungerGamesSection(selectedPlace);
                 if (HasType(selectedPlace, "CTF")) DrawCtfSection(selectedPlace);
+                if (HasType(selectedPlace, "MURDERMYSTERY")) DrawMurderMysterySection(selectedPlace);
                 if (HasType(selectedPlace, "SPLEEF")) DrawSpleefSection(selectedPlace);
 
                 ImGui.PopID();
@@ -70,15 +70,11 @@ namespace canevents.src.Gui
             var placeList = networkHandler.PlaceList.Value;
             if (placeList?.Places == null || placeList.Places.Length == 0)
             {
-                ImGui.TextColored(ColMuted, "No places found.");
+                EmptyState("No places found.");
                 return;
             }
 
-            float tableHeight = System.Math.Min(placeList.Places.Length * 22f + 22f, 180f);
-            if (!ImGui.BeginTable("##PlacesTable", 7,
-                ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY | ImGuiTableFlags.SizingFixedFit,
-                new Vector2(ImGui.GetContentRegionAvail().X, tableHeight)))
-                return;
+            if (!BeginListTable("##PlacesTable", 7, placeList.Places.Length)) return;
 
             ImGui.TableSetupColumn("ID",     ImGuiTableColumnFlags.WidthFixed, 30f);
             ImGui.TableSetupColumn("Name",   ImGuiTableColumnFlags.WidthStretch);
@@ -92,15 +88,9 @@ namespace canevents.src.Gui
 
             foreach (var place in placeList.Places)
             {
-                ImGui.TableNextRow();
-                ImGui.TableSetColumnIndex(0);
-
-                bool isSelected = selectedPlaceId == place.Id;
-                ImGui.PushID((int)place.Id);
-                if (ImGui.Selectable(place.Id.ToString(), isSelected, ImGuiSelectableFlags.SpanAllColumns))
+                if (SelectableRow(place.Id.ToString(), place.Id.ToString(), selectedPlaceId == place.Id))
                     selectedPlaceId = place.Id;
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip(BuildPlaceTooltip(place));
-                ImGui.PopID();
 
                 ImGui.TableSetColumnIndex(1);
                 ImGui.Text(place.Name ?? "");
@@ -441,32 +431,19 @@ namespace canevents.src.Gui
 
         private void DrawDeleteModal()
         {
-            if (!ImGui.BeginPopupModal("##ConfirmDelete", ref deleteModalOpen,
-                ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoTitleBar))
-                return;
-
             var placeList = networkHandler.PlaceList.Value;
             var delPlace = placeList?.Places != null
                 ? System.Array.Find(placeList.Places, p => p.Id == pendingDeletePlaceId)
                 : null;
 
-            ImGui.TextColored(ColBad, "Delete place?");
-            ImGui.Text(delPlace?.Name ?? "#" + pendingDeletePlaceId);
-            ImGui.Spacing();
-            if (ImGui.Button("Yes, delete", new Vector2(100, 0)))
-            {
-                networkHandler.SendRemovePlaceWithRestore(pendingDeletePlaceId);
-                if (selectedPlaceId == pendingDeletePlaceId) selectedPlaceId = -1;
-                pendingDeletePlaceId = -1;
-                ImGui.CloseCurrentPopup();
-            }
-            ImGui.SameLine();
-            if (ImGui.Button("Cancel", new Vector2(70, 0)))
-            {
-                pendingDeletePlaceId = -1;
-                ImGui.CloseCurrentPopup();
-            }
-            ImGui.EndPopup();
+            // pendingDeletePlaceId is only ever read in here and rewritten every time the modal is
+            // opened, so cancelling does not need to clear it.
+            if (!ConfirmDeleteModal("##ConfirmDelete", ref deleteModalOpen, "Delete place?",
+                delPlace?.Name ?? "#" + pendingDeletePlaceId)) return;
+
+            networkHandler.SendRemovePlaceWithRestore(pendingDeletePlaceId);
+            if (selectedPlaceId == pendingDeletePlaceId) selectedPlaceId = -1;
+            pendingDeletePlaceId = -1;
         }
     }
 }

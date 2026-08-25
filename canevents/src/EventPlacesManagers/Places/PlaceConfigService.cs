@@ -200,6 +200,72 @@ namespace canevents.src.EventPlacesManagers.Places
             return sb.ToString().TrimEnd();
         }
 
+        // Murder Mystery
+
+        /// <summary>
+        /// Marks a spot where the mode's weapon token can appear. Re-marking the same block is a no-op
+        /// rather than a second spot there: two spots on one block would let the same corner hold two
+        /// tokens, which is exactly what the minimum-distance rule exists to prevent.
+        /// </summary>
+        public PlaceEditResult AddMurderMysteryPickup(EventPlace place, BlockPos floorPos)
+        {
+            if (!TryEdit(place, out var busy)) return busy;
+
+            var arr = GetOrCreateArray(place, BehaviorKeys.MurderMystery, "PickupSpots");
+            for (int i = 0; i < arr.Count; i++)
+                if (arr[i] is JObject e && JsonPos.Matches(e, floorPos))
+                    return PlaceEditResult.Fail(Lang.Get("canevents:mm-pickup-duplicate"));
+
+            arr.Add(JsonPos.Write(floorPos));
+            Persist(place);
+
+            return PlaceEditResult.Success(string.Format(
+                "MM pickup spot added on '{0}' at ({1}, {2}, {3}). Total: {4}.",
+                place.Name, floorPos.X, floorPos.Y, floorPos.Z, arr.Count));
+        }
+
+        /// <summary>Removes one spot by its index in the stored array - the index the panel renders.</summary>
+        public PlaceEditResult RemoveMurderMysteryPickup(EventPlace place, int index)
+        {
+            if (!TryEdit(place, out var busy)) return busy;
+            if (!TryGetPickupArray(place, index, out var arr))
+                return PlaceEditResult.Fail(Lang.Get("canevents:mm-pickup-invalid-index"));
+
+            arr.RemoveAt(index);
+            Persist(place);
+            return PlaceEditResult.Success(string.Format("Removed MM pickup spot #{0} on '{1}'. Left: {2}.",
+                index, place.Name, arr.Count));
+        }
+
+        public PlaceEditResult ClearMurderMysteryPickups(EventPlace place)
+        {
+            if (!TryEdit(place, out var busy)) return busy;
+
+            if (place.TryGetBehaviorData(BehaviorKeys.MurderMystery, out var data))
+            {
+                data["PickupSpots"] = new JArray();
+                Persist(place);
+            }
+            return PlaceEditResult.Success(string.Format("MM pickup spots cleared on '{0}'.", place.Name));
+        }
+
+        /// <summary>Human-readable listing. Read-only, so it works on an occupied place too.</summary>
+        public string DescribeMurderMysteryPickups(EventPlace place)
+        {
+            if (!place.TryGetBehaviorData(BehaviorKeys.MurderMystery, out var data)
+                || !(data["PickupSpots"] is JArray arr) || arr.Count == 0)
+                return string.Format("No pickup spots on '{0}'.", place.Name);
+
+            var sb = new StringBuilder();
+            sb.AppendLine(string.Format("'{0}' has {1} pickup spot(s):", place.Name, arr.Count));
+            for (int i = 0; i < arr.Count; i++)
+            {
+                if (!JsonPos.TryRead(arr[i], out var pos)) continue;
+                sb.AppendLine(string.Format("  #{0}  ({1}, {2}, {3})", i, pos.X, pos.Y, pos.Z));
+            }
+            return sb.ToString().TrimEnd();
+        }
+
         // King of the Hill
 
         /// <summary>Height &lt;= 0 means "unset" and falls back to the documented default of 5: an
@@ -258,6 +324,14 @@ namespace canevents.src.EventPlacesManagers.Places
             var arr = data[field] as JArray;
             if (arr == null) { arr = new JArray(); data[field] = arr; }
             return arr;
+        }
+
+        private static bool TryGetPickupArray(EventPlace place, int index, out JArray arr)
+        {
+            arr = null;
+            if (!place.TryGetBehaviorData(BehaviorKeys.MurderMystery, out var data)) return false;
+            arr = data["PickupSpots"] as JArray;
+            return arr != null && index >= 0 && index < arr.Count;
         }
 
         private static bool TryGetLootArray(EventPlace place, int index, out JArray arr)

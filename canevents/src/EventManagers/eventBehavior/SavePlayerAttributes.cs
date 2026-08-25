@@ -17,6 +17,9 @@ namespace canevents.src.EventManagers.eventBehavior
     {
         private readonly Shared.DamageHookSet damageHooks = new Shared.DamageHookSet();
 
+        /// <summary>Undone first thing in OnEnd - see Unsubscribers for why that order matters.</summary>
+        private readonly Shared.Unsubscribers subscriptions = new Shared.Unsubscribers();
+
         public SavePlayerAttributes(string name, JsonObject attributes, RunningEvent runningEvent) : base(name, attributes, runningEvent)
         {
         }
@@ -89,12 +92,12 @@ namespace canevents.src.EventManagers.eventBehavior
             // Catches deaths that bypass the damage pipeline (e.g. /kill, void fall).
             // Fires inside Die() before EntityPlayer's inventory-drop behavior runs.
             runningEvent.sapi.Event.OnEntityDeath += OnAnyEntityDeath;
+            subscriptions.Add(() => runningEvent.sapi.Event.OnEntityDeath -= OnAnyEntityDeath);
         }
 
         public override void OnEnd()
         {
-            runningEvent.sapi.Event.OnEntityDeath -= OnAnyEntityDeath;
-
+            subscriptions.UnhookAll();
             damageHooks.UnhookAll();
 
             // Offline players keep their ModData backup and are restored on reconnect

@@ -81,6 +81,17 @@ namespace canevents.src.Network
         // rather than the raw JObject, so the panel needs no per-behavior schema.
         [ProtoMember(21)]
         public string[] BehaviorSummary;
+
+        // Murder Mystery weapon-pickup spots, index-aligned with the stored array so the panel's
+        // Remove buttons address the right one. Sent as coordinates rather than read back out of
+        // BehaviorSummary: the panel also draws them in the world, and parsing its own prose to do
+        // that is how a display string quietly becomes a wire format.
+        [ProtoMember(22)]
+        public int[] MmPickupX;
+        [ProtoMember(23)]
+        public int[] MmPickupY;
+        [ProtoMember(24)]
+        public int[] MmPickupZ;
     }
 
     /// <summary>Client requests to toggle the Enabled flag of an event place.</summary>
@@ -238,6 +249,76 @@ namespace canevents.src.Network
     /// <summary>Removes every CTF flag post from the given place.</summary>
     [ProtoContract]
     public class ClearCtfPostsMsg
+    {
+        [ProtoMember(1)] public long PlaceId;
+    }
+
+    /// <summary>Marks a Murder Mystery weapon-pickup spot at the caller's feet on the given place.</summary>
+    [ProtoContract]
+    public class AddMmPickupMsg
+    {
+        [ProtoMember(1)] public long PlaceId;
+    }
+
+    /// <summary>Removes every Murder Mystery pickup spot from the given place.</summary>
+    [ProtoContract]
+    public class ClearMmPickupsMsg
+    {
+        [ProtoMember(1)] public long PlaceId;
+    }
+
+    /// <summary>Removes the pickup spot at the given index (as shown in the panel list).</summary>
+    [ProtoContract]
+    public class RemoveMmPickupMsg
+    {
+        [ProtoMember(1)] public long PlaceId;
+        [ProtoMember(2)] public int Index;
+    }
+
+    /// <summary>
+    /// Client asks for a Murder Mystery event's tunable settings (damage, weapon-spawn timers), to
+    /// edit them in the panel. EventCode picks the variant; null/empty lets the server choose.
+    /// </summary>
+    [ProtoContract]
+    public class RequestMmConfigMsg
+    {
+        [ProtoMember(1)] public long PlaceId;
+        [ProtoMember(2)] public string EventCode;
+    }
+
+    /// <summary>
+    /// Server's answer to <see cref="RequestMmConfigMsg"/>: the editable attributes as a flat JSON
+    /// object. JSON rather than a field per setting - the two sides would otherwise have to be kept
+    /// in step through a protobuf contract every time a setting is added, and the panel already
+    /// parses JSON for the Hunger Games editor.
+    /// </summary>
+    [ProtoContract]
+    public class MmConfigMsg
+    {
+        [ProtoMember(1)] public long PlaceId;
+        [ProtoMember(2)] public string EventCode;
+        /// <summary>Every Murder Mystery event that could run here, for the variant combo.</summary>
+        [ProtoMember(3)] public string[] MmEventCodes;
+        /// <summary>Only the keys the panel is allowed to edit (see MmConfigKeys); "{}" when there
+        /// is no event to read.</summary>
+        [ProtoMember(4)] public string AttributesJson;
+    }
+
+    /// <summary>
+    /// Admin saves edited Murder Mystery settings. The payload is the same flat JSON; the server
+    /// applies only known keys, so a stale client cannot wipe the loadouts or outfits it never sent.
+    /// </summary>
+    [ProtoContract]
+    public class SaveMmConfigMsg
+    {
+        [ProtoMember(1)] public string EventCode;
+        [ProtoMember(2)] public string AttributesJson;
+        [ProtoMember(3)] public long PlaceId;   // so the server can refresh the panel after saving
+    }
+
+    /// <summary>Asks the server to reply with the given place's Murder Mystery pickup spots.</summary>
+    [ProtoContract]
+    public class ListMmPickupsMsg
     {
         [ProtoMember(1)] public long PlaceId;
     }

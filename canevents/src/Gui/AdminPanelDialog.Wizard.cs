@@ -372,6 +372,7 @@ namespace canevents.src.Gui
             if (HasType(place, "PARKOUR")) DrawParkourSection(place);
             if (HasType(place, "HUNGERGAMES")) DrawHungerGamesSection(place);
             if (HasType(place, "CTF")) DrawCtfSection(place);
+            if (HasType(place, "MURDERMYSTERY")) DrawMurderMysterySection(place);
             if (HasType(place, "SPLEEF"))
             {
                 ImGui.Spacing();

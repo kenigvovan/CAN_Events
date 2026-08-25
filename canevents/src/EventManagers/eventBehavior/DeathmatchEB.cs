@@ -1,4 +1,3 @@
-using System.Linq;
 using canevents.src.EventManagers.eventBehavior.abstracts;
 using canevents.src.EventManagers.eventBehavior.Shared;
 using canevents.src.EventManagers.events;
@@ -29,12 +28,7 @@ namespace canevents.src.EventManagers.eventBehavior
             Config.WarnUnknown();
         }
 
-        public override void OnBeforeStart()
-        {
-            runningEvent.SetDuration(timeLimitSeconds);
-            InitScores();
-            InitTeamScores();
-        }
+        public override void OnBeforeStart() => BeginMatch();
 
         public override void OnStart() => GiveLoadoutAndHealAll();
 
@@ -49,9 +43,8 @@ namespace canevents.src.EventManagers.eventBehavior
             // No EliminatePlayer: the player respawns via the vanilla flow and OnParticipantRespawn
             // re-equips them.
 
-            string score = string.Join(" : ", teamScores.Select(s => s.ToString()));
             EventBroadcaster.Broadcast(runningEvent,
-                Lang.Get("canevents:deathmatch-kill-score", victim.PlayerName, kill.KillerName, score));
+                Lang.Get("canevents:deathmatch-kill-score", victim.PlayerName, kill.KillerName, ScoreLine()));
         }
 
         protected override void AfterScoredDeath(IServerPlayer victim, KillInfo kill)
@@ -70,15 +63,11 @@ namespace canevents.src.EventManagers.eventBehavior
             GiveLoadoutAndHeal(player);
         }
 
-        // Manager owns the time-up trigger (MaxDurationSeconds); OnBeforeFinish runs first, so
-        // resolve the team winner from current scores here.
-        public override void OnBeforeFinish() => DeclareTeamWinner(ResolveWinnerTeam());
+        // OnBeforeFinish (time-up winner) comes from TeamScoreEB - it is the same in every team mode.
 
         public override void OnEnd()
-        {
-            string score = string.Join(" : ", teamScores.Select(s => s.ToString()));
-            EventBroadcaster.Broadcast(runningEvent, Lang.Get("canevents:deathmatch-ended", score));
-        }
+            => EventBroadcaster.Broadcast(runningEvent,
+                Lang.Get("canevents:deathmatch-ended", ScoreLine()));
 
         public bool TryGetRespawnPoint(string playerUid, out PlayerSpawnPos pos)
             => EventSpawns.TryGetRandom(runningEvent, out pos);

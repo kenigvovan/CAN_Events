@@ -11,5 +11,6 @@ namespace canevents.src.EventPlacesManagers.Places
         public const string KingOfTheHill = "KingOfTheHill";
         public const string HungerGames = "HungerGames";
         public const string CaptureTheFlag = "CaptureTheFlag";
+        public const string MurderMystery = "MurderMystery";
     }
 }
