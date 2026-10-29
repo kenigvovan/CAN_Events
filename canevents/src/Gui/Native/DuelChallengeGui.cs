@@ -11,17 +11,7 @@ using Vintagestory.API.Config;
 
 namespace canevents.src.Gui.Native
 {
-    /// <summary>
-    /// "Challenge so-and-so" - the sender's half of a duel, deliberately shaped like the
-    /// <see cref="DuelPromptGui"/> the target will see. The terms used to live under the duel list as
-    /// one shared set for whoever got clicked next; that read as a settings panel and made it easy to
-    /// stake gear at the wrong person. They belong to one challenge, so they are asked for once a
-    /// target is chosen and thrown away afterwards.
-    ///
-    /// The stake is never typed. A player holds the thing they are betting and clicks - the same
-    /// gesture the admin panel uses for reward items - and it shows up as a real item icon, which is
-    /// the language the rest of the game speaks (see EventCardCell.RenderIcons).
-    /// </summary>
+    // Sender side of a duel challenge; mirrors DuelPromptGui. Stake items are taken from the hand.
     public class DuelChallengeGui : GuiDialog
     {
         private readonly ClientNetworkHandler networkHandler;
@@ -31,8 +21,7 @@ namespace canevents.src.Gui.Native
         private DuelModeMsg[] modes = Array.Empty<DuelModeMsg>();
         private string[] disabledMutators = Array.Empty<string>();
 
-        // The terms being composed. Reset on every open: last fight's rules quietly applying to the
-        // next opponent is exactly how someone stakes their gear without meaning to.
+        // Reset on every open so old terms never carry over to a new opponent.
         private string modeCode;          // null = let the server pick a fitting mode
         private string forcedLoadout;     // null = each player picks their own set
         private bool noArmor, noShields, friendlyFire, randomLoadout;
@@ -46,19 +35,15 @@ namespace canevents.src.Gui.Native
 
         private const double Width = 470;
 
-        /// <summary>Height the stake card turned out to be; see <see cref="MeasureList"/>. Starts at a
-        /// guess, because a card cannot be measured before it is composed.</summary>
+        // Stake card height from the previous compose; 86 is a first-pass guess.
         private double measuredListHeight = 86;
         private bool measuring;
 
-        /// <summary>Set before closing on a sent challenge, so the dismissal path can tell the two
-        /// apart and only reopen the browser on a real cancel.</summary>
         private bool challengeSent;
 
         private string lastSummary;
 
-        /// <summary>Raised when the dialog is dismissed without challenging. Wired to reopen the
-        /// browser, which stepped aside for this.</summary>
+        // Reopens the browser after a cancel.
         public Action OnCancelled;
 
         public DuelChallengeGui(ICoreClientAPI capi, ClientNetworkHandler networkHandler) : base(capi)
@@ -66,7 +51,6 @@ namespace canevents.src.Gui.Native
             this.networkHandler = networkHandler;
         }
 
-        // Opened from the duel list, never by a key.
         public override string ToggleKeyCombinationCode => null;
 
         public void OpenFor(string name, int wins, int losses, int draws,
@@ -91,24 +75,13 @@ namespace canevents.src.Gui.Native
 
         private void Compose()
         {
-            var bgBounds = ElementBounds.Fill.WithFixedPadding(GuiStyle.ElementToDialogPadding);
-            bgBounds.BothSizing = ElementSizing.FitToChildren;
-            var dialogBounds = ElementStdBounds.AutosizedMainDialog.WithAlignment(EnumDialogArea.CenterMiddle);
-
-            var composer = capi.Gui
-                .CreateCompo("canevents-duelchallenge", dialogBounds)
-                .AddShadedDialogBG(bgBounds)
-                .AddDialogTitleBar(Lang.Get("canevents:gui-challenge-title", targetName), OnDismiss)
-                .BeginChildElements(bgBounds);
+            var composer = DialogShell.Begin(capi, "canevents-duelchallenge",
+                Lang.Get("canevents:gui-challenge-title", targetName), OnDismiss);
 
             var font = CairoFont.WhiteSmallishText();
+            double y = DialogShell.BodyTop;
 
-            // bgBounds children start 20px below the dialog top but the title bar is 31px tall, so at
-            // y=0 the first line sits on top of it.
-            double y = 14;
-
-            // Who you are about to fight, in the only terms that matter before a duel. Nothing is
-            // drawn for a first meeting: "0 - 0 - 0" reads like a loss.
+            // Head-to-head record; hidden on a first meeting.
             if (winsVs + lossesVs + drawsVs > 0)
             {
                 composer.AddStaticText(
@@ -121,8 +94,6 @@ namespace canevents.src.Gui.Native
             y = ComposeStakeRow(composer, y);
             y = ComposeMutatorRows(composer, y);
 
-            // What the other side is about to be asked, in their words. The whole point of gathering
-            // the terms in one dialog is that they can be read back before anyone commits.
             composer.AddDynamicText(SummaryText(), CairoFont.WhiteSmallText().WithColor(Palette.Detail),
                 ElementBounds.Fixed(0, y, Width, 40), "summary");
             lastSummary = SummaryText();
@@ -137,16 +108,14 @@ namespace canevents.src.Gui.Native
 
             SingleComposer = composer.EndChildElements().Compose();
 
-            // Restore what a fresh composer does not carry over. Compose() runs again on every
-            // stake change and mode switch, so these would otherwise reset under the player.
+            // A fresh composer loses input state; Compose() reruns on every stake or mode change.
             SingleComposer.GetTextInput("stakeqty")?.SetValue(qtyInput);
             SingleComposer.GetSwitch("noarmor")?.SetValue(noArmor);
             SingleComposer.GetSwitch("noshields")?.SetValue(noShields);
             SingleComposer.GetSwitch("friendlyfire")?.SetValue(friendlyFire);
             SingleComposer.GetSwitch("randomloadout")?.SetValue(randomLoadout);
 
-            // Now that the stake card has been measured, lay the dialog out again around its real
-            // height. Guarded, and settles immediately: the second pass measures the same card.
+            // Second pass measures the same card, so this settles after one recompose.
             if (!measuring && MeasureList())
             {
                 measuring = true;
@@ -155,8 +124,6 @@ namespace canevents.src.Gui.Native
             }
         }
 
-        // Mode, and the loadout it allows. Words, so they stay dropdowns - only the stake is a thing,
-        // and only the stake gets a card.
         private double ComposeModeRow(GuiComposer composer, CairoFont font, double y)
         {
             composer.AddStaticText(Lang.Get("canevents:gui-duel-mode"), font,
@@ -193,9 +160,6 @@ namespace canevents.src.Gui.Native
             return y;
         }
 
-        // The stake as a card of real item icons, with the inventory tooltip on hover - the same
-        // treatment the class picker gives a loadout, for the same reason: spelled-out item names
-        // wrap onto four lines and still get cut.
         private double ComposeStakeRow(GuiComposer composer, double y)
         {
             string packed = ItemSetUtil.Pack(stake);
@@ -214,7 +178,7 @@ namespace canevents.src.Gui.Native
             composer.AddCellList(listBounds,
                 (row, bounds) => new EventTileRow(capi, row, bounds), new[] { card }, "stake");
 
-            // Cell padding has to be set before Compose(), when the list builds its cell bounds.
+            // Padding must be set before Compose(), when the list builds its cell bounds.
             var list = composer.GetCellList<EventCardRow>("stake");
             list.unscaledCellSpacing = 6;
             list.UnscaledCellVerPadding = 0;
@@ -242,8 +206,7 @@ namespace canevents.src.Gui.Native
             return y + 36;
         }
 
-        // Two columns, so four switches take two lines rather than a wall. A knob the server forbids
-        // is not drawn at all, and the rest close the gap it leaves.
+        // Two columns; mutators the server disables are skipped.
         private double ComposeMutatorRows(GuiComposer composer, double y)
         {
             var pending = new List<(string key, string langKey, Action<bool> set, string name)>
@@ -287,14 +250,7 @@ namespace canevents.src.Gui.Native
             return y;
         }
 
-        // Actions
-
-        /// <summary>
-        /// Puts whatever the player is holding on the table. The held stack is where the code comes
-        /// from, so it always arrives in the full "game:item" form the server's inventory check
-        /// compares against - typing it by hand is how you get a stake the server says you cannot
-        /// afford while it sits in your bag.
-        /// </summary>
+        // Held stack gives the full "game:item" code the server's inventory check expects.
         private bool OnAddFromHand()
         {
             if (!GuiItemUtil.TryReadHeldItem(capi, out string code, out _))
@@ -306,8 +262,7 @@ namespace canevents.src.Gui.Native
             if (!int.TryParse(qtyInput, NumberStyles.Integer, CultureInfo.InvariantCulture, out int qty)
                 || qty < 1) qty = 1;
 
-            // Not clamped to the held stack: gear is usually spread across the bag, and the server
-            // checks the whole inventory before it charges anyone.
+            // Not clamped to the held stack; the server checks the whole inventory.
             stake.Add(new RewardItem { Code = code, Quantity = qty });
 
             Compose();
@@ -317,11 +272,9 @@ namespace canevents.src.Gui.Native
         private void OnModeChanged(string value, bool selected)
         {
             modeCode = value == "" ? null : value;
-            // A different mode has different loadout sets; a forced set from the old one would be
-            // refused by the server, so it does not carry over.
+            // Loadout sets differ per mode.
             forcedLoadout = null;
-            // Deferred: showing or hiding the loadout dropdown needs a recompose, and tearing the
-            // composer down from inside its own dropdown callback is how GUIs crash.
+            // Deferred: recomposing inside the dropdown's own callback crashes the GUI.
             capi.Event.EnqueueMainThreadTask(() => { if (IsOpened()) Compose(); }, "canevents-duelterms");
         }
 
@@ -337,8 +290,6 @@ namespace canevents.src.Gui.Native
                 modeCode,
                 mutators.Length == 0 ? null : mutators);
 
-            // Closing is the honest response: the answer arrives as a chat line and, if accepted, as
-            // a match. Nothing here is worth staring at while that happens.
             challengeSent = true;
             TryClose();
             return true;
@@ -349,15 +300,12 @@ namespace canevents.src.Gui.Native
         public override void OnGuiClosed()
         {
             base.OnGuiClosed();
-            // Escape and the cross both land here, which is why this is not in OnDismiss.
+            // Escape and the cross skip OnDismiss.
             if (!challengeSent) OnCancelled?.Invoke();
             challengeSent = false;
         }
 
-        /// <summary>
-        /// Re-runs the layout once the dialog is actually open. Compose() is called from OpenFor,
-        /// before TryOpen, and a layout built then is not necessarily the one the open dialog gets.
-        /// </summary>
+        // Layout composed before TryOpen is not always the one the open dialog ends up with.
         public override void OnGuiOpened()
         {
             base.OnGuiOpened();
@@ -368,17 +316,13 @@ namespace canevents.src.Gui.Native
         {
             base.OnRenderGUI(deltaTime);
 
-            // A dynamic text rather than a recompose per toggle: flipping a switch would otherwise
-            // rebuild the dialog under the pointer just to rewrite one line.
+            // Switches don't recompose, so the summary is refreshed here.
             string text = SummaryText();
             if (text == lastSummary) return;
             SingleComposer?.GetDynamicText("summary")?.SetNewText(text);
             lastSummary = text;
         }
 
-        // Terms
-
-        /// <summary>The mutator wire strings the current knobs amount to. Empty = a plain duel.</summary>
         private string[] BuildMutators()
         {
             var mutators = new List<string>();
@@ -386,15 +330,14 @@ namespace canevents.src.Gui.Native
             if (noShields) mutators.Add(EventMutators.NoShields);
             if (friendlyFire) mutators.Add(EventMutators.FriendlyFire);
 
-            // Random beats a forced set when both are on: one term must win, and "random" is the one
-            // the player flipped a switch for.
+            // Random wins over a forced set.
             if (randomLoadout) mutators.Add(EventMutators.RandomLoadout);
             else if (forcedLoadout != null) mutators.Add(EventMutators.Loadout + ":" + forcedLoadout);
 
             if (healthIdx > 0) mutators.Add(EventMutators.Health + ":" + HealthValues[healthIdx]);
             if (speedIdx > 0) mutators.Add(EventMutators.Speed + ":" + SpeedValues[speedIdx]);
 
-            // A knob hidden because the server forbids it must not survive in the state behind it.
+            // Drop anything the server disabled, even if the field is still set.
             return mutators.Where(m => MutatorAllowed(m.Split(':')[0])).ToArray();
         }
 
@@ -431,10 +374,7 @@ namespace canevents.src.Gui.Native
             => values.Select(v => (int)Math.Round(
                 float.Parse(v, CultureInfo.InvariantCulture) * 100) + "%").ToArray();
 
-        /// <summary>
-        /// Records how tall the composed stake card actually is. True when that differs from what
-        /// this pass was built with, meaning everything below the card is in the wrong place.
-        /// </summary>
+        // True when the real height differs and the dialog needs another compose.
         private bool MeasureList()
         {
             var list = SingleComposer?.GetCellList<EventCardRow>("stake");

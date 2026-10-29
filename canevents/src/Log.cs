@@ -3,10 +3,7 @@ using Vintagestory.API.Common;
 
 namespace canevents.src
 {
-    /// <summary>
-    /// A logger carrying its subsystem prefix ("[bots]", "[arena]"), so the tag is a property of the
-    /// component instead of hand-typed into every format string. Deliberately thin.
-    /// </summary>
+    // Logger with a subsystem prefix like "[bots]".
     public sealed class Log
     {
         private readonly ILogger logger;
@@ -18,7 +15,7 @@ namespace canevents.src
             prefix = "[" + tag + "] ";
         }
 
-        /// <summary>A logger tagged for one subsystem. Null-safe: no logger, no output, no crash.</summary>
+        // Null logger is fine, output is just dropped.
         public static Log For(ILogger logger, string tag) => new Log(logger, tag);
 
         public void Notification(string message, params object[] args)
@@ -33,8 +30,7 @@ namespace canevents.src
         public void Debug(string message, params object[] args)
             => logger?.VerboseDebug(prefix + message, args);
 
-        /// <summary>Runs something that must not take its caller down, logging what broke: one failing
-        /// part must never strand a match.</summary>
+        // Logs and swallows, so one failing step can't strand a match.
         public void Safely(string what, Action action)
         {
             try { action(); }

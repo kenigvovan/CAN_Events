@@ -3,24 +3,17 @@ using System.Linq;
 
 namespace canevents.src.Network
 {
-    /// <summary>
-    /// House format for a variable-length list on the wire: one string, pieces separated by ';'.
-    /// Used where a per-row list (a match's slots, a tournament's event codes) doesn't fit the
-    /// parallel flat arrays the messages otherwise use. Item sets keep their own packer
-    /// (<see cref="EventManagers.events.ItemSetUtil"/>), which also carries a quantity per entry.
-    /// </summary>
+    // A per-row list on the wire as one ';'-separated string, where parallel flat arrays don't fit.
+    // Item sets have their own packer with quantities (ItemSetUtil).
     public static class PackedList
     {
         public const char Separator = ';';
 
-        /// <summary>Packs a list; nulls become empty pieces, so slot positions are preserved.</summary>
+        // Nulls become empty pieces, so slot positions are preserved.
         public static string Pack(IEnumerable<string> values)
             => values == null ? "" : string.Join(Separator.ToString(), values.Select(v => v ?? ""));
 
-        /// <summary>
-        /// Unpacks into the pieces as sent, empty entries included - an empty piece is a real value
-        /// (an unfilled bracket slot), not padding to be dropped.
-        /// </summary>
+        // Empty pieces kept: an empty piece is a real value (an unfilled bracket slot).
         public static List<string> Unpack(string packed)
         {
             var result = new List<string>();
@@ -29,7 +22,7 @@ namespace canevents.src.Network
             return result;
         }
 
-        /// <summary>Unpacks and drops the empty pieces, for lists where position carries no meaning.</summary>
+        // For lists where position carries no meaning.
         public static List<string> UnpackNonEmpty(string packed)
             => Unpack(packed).Where(s => !string.IsNullOrEmpty(s)).ToList();
     }

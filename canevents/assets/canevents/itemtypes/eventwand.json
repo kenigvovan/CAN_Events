@@ -1,0 +1,10 @@
+{
+  "code": "eventwand",
+  "class": "ItemEventWand",
+  "shape": { "base": "game:item/stick" },
+  "textures": {
+    "oak": { "base": "game:block/metal/plate/gold" }
+  },
+  "creativeinventory": { "general": [ "*" ] },
+  "maxstacksize": 1
+}

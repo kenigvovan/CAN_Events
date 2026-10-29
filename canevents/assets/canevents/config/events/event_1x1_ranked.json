@@ -16,6 +16,7 @@
         ]
     },
     "behaviors": [
+        { "name": "ArenaProtection", "attributes": {} },
         {
             "name": "FullPartyRequired",
             "attributes": {

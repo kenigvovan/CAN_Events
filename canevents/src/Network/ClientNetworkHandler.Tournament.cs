@@ -1,79 +1,91 @@
 using System;
+using System.Collections.Generic;
+using canevents.src.Tournaments;
 
 namespace canevents.src.Network
 {
-    // Client cache for tournament state: like every other panel feed, the last snapshot is kept and
-    // an event tells the GUI to recompose - nothing polls.
     public partial class ClientNetworkHandler
     {
-        /// <summary>Last tournament list the server sent (null until requested).</summary>
         public readonly ServerState<TournamentListMsg> TournamentList = new ServerState<TournamentListMsg>();
 
-        /// <summary>Last bracket snapshot, for whichever tournament the client last opened.</summary>
+        // Whichever bracket was opened last.
         public readonly ServerState<TournamentBracketMsg> TournamentBracket = new ServerState<TournamentBracketMsg>();
 
-        /// <summary>The ready check currently being asked of this player, or null.</summary>
-        public TournamentReadyRequestMsg PendingTournamentReady { get; private set; }
         public event Action<TournamentReadyRequestMsg> OnTournamentReadyRequested;
         public event Action<TournamentReadyClosedMsg> OnTournamentReadyClosed;
 
-        private void OnTournamentReadyRequest(TournamentReadyRequestMsg msg)
-        {
-            PendingTournamentReady = msg;
-            OnTournamentReadyRequested?.Invoke(msg);
-        }
+        private void OnTournamentReadyRequest(TournamentReadyRequestMsg msg) => OnTournamentReadyRequested?.Invoke(msg);
 
-        // Named apart from the event it raises: a handler and an event cannot share a name.
-        private void HandleTournamentReadyClosed(TournamentReadyClosedMsg msg)
-        {
-            if (PendingTournamentReady != null
-                && PendingTournamentReady.TournamentId == msg.TournamentId
-                && PendingTournamentReady.MatchId == msg.MatchId)
-            {
-                PendingTournamentReady = null;
-            }
-            OnTournamentReadyClosed?.Invoke(msg);
-        }
+        private void HandleTournamentReadyClosed(TournamentReadyClosedMsg msg) => OnTournamentReadyClosed?.Invoke(msg);
 
-        /// <summary>Clears the pending prompt when the dialog is dismissed without answering.</summary>
-        public void DismissTournamentReady() => PendingTournamentReady = null;
+        // Last list that included history; broadcasts overwrite TournamentList with active ones only.
+        public TournamentListMsg TournamentHistory { get; private set; }
+
+        // The reply has no history flag, so the next list while this is > 0 counts as the answer.
+        private int pendingHistoryLists;
 
         public void RequestTournamentList(bool includeHistory = false)
-            => clientChannel.SendPacket(new RequestTournamentListMsg { IncludeHistory = includeHistory });
+        {
+            if (includeHistory) pendingHistoryLists++;
+            Send(new RequestTournamentListMsg { IncludeHistory = includeHistory });
+        }
+
+        private void OnTournamentList(TournamentListMsg msg)
+        {
+            // Finished entries only appear in history lists.
+            bool hasHistory = HasFinished(msg);
+            if (pendingHistoryLists > 0 || hasHistory)
+            {
+                if (pendingHistoryLists > 0) pendingHistoryLists--;
+                TournamentHistory = msg;
+            }
+            TournamentList.Set(msg);
+        }
+
+        private static bool HasFinished(TournamentListMsg list)
+        {
+            if (list == null) return false;
+            for (int i = 0; i < list.Count; i++)
+                if (IsFinished(list.StateAt(i))) return true;
+            return false;
+        }
+
+        private static bool IsFinished(int state)
+            => state == (int)TournamentState.Finished || state == (int)TournamentState.Cancelled;
+
+        // Finished and cancelled, from the current list first, then the history list.
+        public List<(TournamentListMsg list, int index)> TournamentHistoryEntries()
+        {
+            var result = new List<(TournamentListMsg, int)>();
+            var seen = new HashSet<long>();
+            foreach (var list in new[] { TournamentList.Value, TournamentHistory })
+            {
+                if (list == null) continue;
+                for (int i = 0; i < list.Count; i++)
+                    if (IsFinished(list.StateAt(i)) && seen.Add(list.Ids[i])) result.Add((list, i));
+            }
+            return result;
+        }
 
         public void RequestTournamentBracket(long tournamentId)
-            => clientChannel.SendPacket(new RequestTournamentBracketMsg { TournamentId = tournamentId });
+            => Send(new RequestTournamentBracketMsg { TournamentId = tournamentId });
 
         public void SendTournamentSignup(long tournamentId, bool join, string teamName = null)
-            => clientChannel.SendPacket(new TournamentSignupMsg
+            => Send(new TournamentSignupMsg
             {
                 TournamentId = tournamentId,
                 Join = join,
                 TeamName = teamName
             });
 
-        /// <summary>Stores the class this player will use for the whole tournament.</summary>
         public void SendTournamentLoadout(long tournamentId, string setName)
-            => clientChannel.SendPacket(new TournamentSignupMsg
-            {
-                TournamentId = tournamentId,
-                Join = true,
-                LoadoutOnly = true,
-                LoadoutSet = setName
-            });
+            => Send(new TournamentLoadoutMsg { TournamentId = tournamentId, SetName = setName });
 
-        /// <summary>Renames an entry that already exists, without re-joining.</summary>
         public void SendTournamentTeamName(long tournamentId, string teamName)
-            => clientChannel.SendPacket(new TournamentSignupMsg
-            {
-                TournamentId = tournamentId,
-                Join = true,
-                RenameOnly = true,
-                TeamName = teamName
-            });
+            => Send(new TournamentRenameMsg { TournamentId = tournamentId, TeamName = teamName });
 
         public void SendTournamentReady(long tournamentId, int matchId, bool accept)
-            => clientChannel.SendPacket(new TournamentReadyResponseMsg
+            => Send(new TournamentReadyResponseMsg
             {
                 TournamentId = tournamentId,
                 MatchId = matchId,
@@ -81,6 +93,6 @@ namespace canevents.src.Network
             });
 
         public void SendTournamentAdminAction(TournamentAdminActionMsg msg)
-            => clientChannel.SendPacket(msg);
+            => Send(msg);
     }
 }

@@ -5,37 +5,24 @@ using Vintagestory.API.Server;
 
 namespace canevents.src.Scoring
 {
-    /// <summary>One thing somebody is owed and was not online to receive.</summary>
     public class QueuedPayout
     {
         public string Uid { get; set; }
         public List<RewardItem> Items { get; set; }
         public long QueuedUnix { get; set; }
 
-        /// <summary>What this is: "prize", "refund", "reward", "participation". Shown to nobody;
-        /// it is there to make a stuck payout readable in the file and in the log.</summary>
+        // "prize", "refund", "reward", "participation". Diagnostics only.
         public string Reason { get; set; }
 
-        /// <summary>Where it came from - an event code or a tournament id. Diagnostics only.</summary>
+        // Event code or tournament id. Diagnostics only.
         public string Source { get; set; }
 
     }
 
-    /// <summary>
-    /// Items owed to players who were offline when the payout happened, handed over on their next
-    /// login (ModConfig/canevents/payouts.json).
-    ///
-    /// Rewards are dealt out at the very end of a match, which is exactly when a losing player is
-    /// most likely to have already closed the game - and a reward that needs its owner present is a
-    /// reward that quietly evaporates.
-    ///
-    /// Tournaments keep their own queue (TournamentStore.Pending) rather than using this one, and
-    /// that is deliberate: their debts are written in the SAME transaction that empties the prize
-    /// pot, so a crash can never leave a pot that is gone and a debt that was never recorded.
-    /// </summary>
+    // Items owed to offline players, given on next login (ModConfig/canevents/payouts.json).
+    // Tournaments use TournamentStore.Pending instead, written in the same save as the pot.
     public class PayoutQueue : JsonFileStore<List<QueuedPayout>>
     {
-        // The base keeps only the logger, and delivery needs the world to resolve item codes.
         private readonly ICoreServerAPI sapi;
 
         public PayoutQueue(ICoreServerAPI sapi) : base(sapi, "payouts.json", "PayoutQueue")
@@ -46,13 +33,13 @@ namespace canevents.src.Scoring
         public void Queue(string uid, List<RewardItem> items, string reason, string source = null)
         {
             if (string.IsNullOrEmpty(uid) || items == null || items.Count == 0) return;
-            // A bot has no inventory, and a row for one would sit in the file for good.
+            // Bots never log in, the row would stay forever.
             if (Bots.BotIdentity.IsBot(uid)) return;
 
             Queue(new QueuedPayout
             {
                 Uid = uid,
-                Items = CloneItems(items),
+                Items = PayoutDelivery.Clone(items),
                 QueuedUnix = UnixTime.Now,
                 Reason = reason,
                 Source = source
@@ -69,8 +56,7 @@ namespace canevents.src.Scoring
             }
         }
 
-        /// <summary>Takes (and removes) everything owed to this player. Removed before delivery on
-        /// purpose - a second login must not pay twice - so a failed delivery is re-queued instead.</summary>
+        // Removed before delivery so a second login can't pay twice; failures are re-queued.
         public List<QueuedPayout> Take(string uid)
         {
             var mine = new List<QueuedPayout>();
@@ -89,10 +75,7 @@ namespace canevents.src.Scoring
             return mine;
         }
 
-        /// <summary>
-        /// Hands over everything owed. Each row is tried on its own and put back if it throws, so one
-        /// unresolvable item code cannot swallow the rest of what somebody is owed.
-        /// </summary>
+        // Per row, so one bad item code doesn't block the rest.
         public int Deliver(IServerPlayer player, string context = "payout")
         {
             if (player == null) return 0;
@@ -102,28 +85,25 @@ namespace canevents.src.Scoring
 
             foreach (var p in owed)
             {
-                try
+                if (p.Items == null) continue;
+                if (PayoutDelivery.TryGiveAll(sapi, player, p.Items, context, out int given, out var e))
                 {
-                    foreach (var item in p.Items)
-                        EventManagers.InventoryUtil.GiveByCode(sapi, player, item.Code, item.Quantity, context);
                     delivered++;
+                    continue;
                 }
-                catch (Exception e)
+
+                sapi.World.Logger.Error("[canevents] Payout for {0} ({1}) failed after {2} of {3} item(s), "
+                    + "rest re-queued: {4}", player.PlayerName, p.Reason, given, p.Items.Count, e.Message);
+                Queue(new QueuedPayout
                 {
-                    sapi.World.Logger.Error("[canevents] Payout for {0} ({1}) failed, re-queued: {2}",
-                        player.PlayerName, p.Reason, e.Message);
-                    Queue(p);
-                }
+                    Uid = p.Uid,
+                    Items = PayoutDelivery.Remainder(p.Items, given),
+                    QueuedUnix = p.QueuedUnix,
+                    Reason = p.Reason,
+                    Source = p.Source
+                });
             }
             return delivered;
-        }
-
-        private static List<RewardItem> CloneItems(List<RewardItem> items)
-        {
-            var copy = new List<RewardItem>(items.Count);
-            foreach (var it in items)
-                if (it != null) copy.Add(new RewardItem { Code = it.Code, Quantity = it.Quantity });
-            return copy;
         }
     }
 }

@@ -12,45 +12,42 @@ using Vintagestory.GameContent;
 
 namespace canevents.src.EventManagers.eventBehavior
 {
-    /// <summary>
-    /// Gives the match's bot uids actual bodies (spawn point, weapon, death handling) and removes
-    /// them at the end. The roster already contains them via Bots.BotFiller.
-    ///
-    /// Attributes:
-    ///   health          (float, 15)   - max health per bot
-    ///   meleeDamage     (float, 2)    - bare-handed damage; a looted weapon overrides it
-    ///   weapons         (string[])    - one is picked per bot; empty = bare-handed
-    ///   announceDeaths  (bool, true)  - whether a bot dying is worth a broadcast line
-    /// </summary>
+    // Spawns bodies for bot uids already on the roster (BotFiller) and despawns them at the end.
+    // Attributes:
+    //   health          (float, 15)
+    //   meleeDamage     (float, 2)    bare-handed damage, a weapon overrides it
+    //   weapons         (string[])    one random per bot, empty = bare-handed
+    //   announceDeaths  (bool, true)
     public class ArenaBotsEB : CANEventBehavior
     {
-        // Long enough for the death animation, short enough that nobody swings at a corpse.
+        // Enough for the death animation.
         private const int CorpseLingerMs = 4000;
+
+        // Roughly a player's respawn screen.
+        private const int OpenMatchRespawnMs = 3000;
 
         private float botHealth = 15f;
         private float botMeleeDamage = 2f;
         private readonly List<string> weapons = new List<string>();
         private bool announceDeaths = true;
-        // Same attribute name and wardrobe the players get - see EventOutfit.
+        // Same format as for players, see EventOutfit.
         private List<string[]> outfits = new List<string[]>();
 
-        /// <summary>The mode's wardrobe when it has one; then it, not this behavior, decides what
-        /// each bot wears. Null when the event has no outfit-owning mode.</summary>
+        // Mode's wardrobe if it has one, null otherwise.
         private EventManagers.eventBehavior.Shared.IOutfitWardrobe wardrobe;
 
         private Bots.ArenaBotManager botManager;
-        private EntityDeathDelegate deathHandler;
 
         public ArenaBotsEB(string name, JsonObject attributes, RunningEvent runningEvent)
             : base(name, attributes, runningEvent) { }
 
-        public override string Name { get => "ArenaBots"; set { } }
+        public override string Name => BehaviorNames.ArenaBots;
 
         public override void Initialize()
         {
             botHealth = Config.Float("health", 15f);
             botMeleeDamage = Config.Float("meleeDamage", 2f);
-            announceDeaths = Config.Bool("announceDeaths", true);
+            announceDeaths = Config.Bool(BehaviorConfigKeys.AnnounceDeaths, true);
             outfits = EventManagers.eventBehavior.Shared.EventOutfit.Parse(Attributes);
 
             weapons.Clear();
@@ -64,9 +61,8 @@ namespace canevents.src.EventManagers.eventBehavior
                 }
             }
 
-            // EventOutfit reads "outfits" straight off Attributes; declared here so WarnUnknown
-            // does not report it.
-            Config.Has("outfits");
+            // Read by EventOutfit, marked here so WarnUnknown doesn't complain.
+            Config.Has(BehaviorConfigKeys.Outfits);
             Config.WarnUnknown();
         }
 
@@ -74,10 +70,8 @@ namespace canevents.src.EventManagers.eventBehavior
         {
             botManager = runningEvent.Bots;
 
-            // Bots wear what the players wear. When the mode owns a wardrobe, its deal covers the
-            // bots too (they are on the roster), so take both the outfits and the per-uid pick from
-            // it: dressing bots separately can put one in the same clothes as a player, which in a
-            // hidden-role mode is a false clue. Only when no mode owns one do we dress on our own.
+            // Use the mode's wardrobe if it has one, so bots don't duplicate a player's outfit
+            // (matters in hidden-role modes).
             wardrobe = runningEvent.GetBehavior<EventManagers.eventBehavior.Shared.IOutfitWardrobe>();
             if (wardrobe?.Wardrobe == null || wardrobe.Wardrobe.Count == 0)
             {
@@ -85,54 +79,67 @@ namespace canevents.src.EventManagers.eventBehavior
                 outfits = EventManagers.eventBehavior.Shared.EventOutfit.GetEffectiveOutfits(
                     runningEvent.Event?.Code, runningEvent.OutfitManager, outfits);
             }
-
-            // No per-match death hook exists for non-players, so the global one is filtered down to
-            // this match's bots. Detached in OnEnd or it keeps eliminating into a finished match.
-            deathHandler = OnAnyEntityDeath;
-            runningEvent.sapi.Event.OnEntityDeath += deathHandler;
         }
 
         public override void OnStart()
         {
-            var world = runningEvent.sapi.World;
-
             foreach (var uid in runningEvent.ParticipantsBefore)
             {
                 if (!Bots.BotIdentity.IsBot(uid)) continue;
-
-                var pos = ResolveSpawn(uid);
-                if (pos == null)
-                {
-                    world.Logger.Warning("[bots] No spawn point for bot {0}; it stays out of the match.", uid);
-                    runningEvent.EliminatePlayer(uid);
-                    continue;
-                }
-
-                // From the uid, not a counter, so scoreboard/bracket/kill feed agree on the name.
-                string name = Bots.BotIdentity.NameOfUid(uid);
-                // Weapon handed out from the callback: with an unloaded arena chunk there is no body
-                // to put a sword in until the chunk arrives.
-                string botUid = uid;
-                bool spawning = botManager.Spawn(uid, name, pos, botHealth, botMeleeDamage, body =>
-                {
-                    if (weapons.Count > 0)
-                        botManager.GiveWeapon(botUid, weapons[world.Rand.Next(weapons.Count)]);
-                    EventManagers.eventBehavior.Shared.EventOutfit.Dress(
-                        body, runningEvent.sapi,
-                        wardrobe?.Wardrobe ?? outfits,
-                        botUid,
-                        wardrobe?.OutfitIndexOf(botUid) ?? -1);
-                });
-
-                // No entity type: the match still runs, it just runs without this bot.
-                if (!spawning) runningEvent.EliminatePlayer(uid);
+                if (!SpawnBody(uid)) runningEvent.EliminatePlayer(uid);
             }
         }
 
-        // Server-side positions every ~10s: diagnostic for "I hit them but the server finds no
-        // entity near me". Matching positions = client ghost bodies; diverging = movement desync.
+        // A body at the bot's spawn, armed and dressed. False when it can't be placed at all.
+        public bool SpawnBody(string uid)
+        {
+            var world = runningEvent.sapi.World;
+            var pos = ResolveSpawn(uid);
+            if (pos == null)
+            {
+                world.Logger.Warning("[bots] No spawn point for bot {0}; it stays out of the match.", uid);
+                return false;
+            }
+
+            string name = Bots.BotIdentity.NameOfUid(uid);
+            // Gear in the callback: the body may only exist after the chunk loads.
+            return botManager.Spawn(uid, name, pos, botHealth, botMeleeDamage, body =>
+            {
+                if (weapons.Count > 0)
+                    botManager.GiveWeapon(uid, weapons[world.Rand.Next(weapons.Count)]);
+                EventManagers.eventBehavior.Shared.EventOutfit.Dress(
+                    body, runningEvent.sapi,
+                    wardrobe?.Wardrobe ?? outfits,
+                    uid,
+                    wardrobe?.OutfitIndexOf(uid) ?? -1);
+            });
+        }
+
+        // Round modes, between rounds: a survivor walks back to its spawn healed, a fallen bot gets a new body.
+        public void ResetForRound(string uid)
+        {
+            var body = (botManager ?? runningEvent.Bots).EntityOf(uid);
+            if (body == null)
+            {
+                SpawnBody(uid);
+                return;
+            }
+
+            var pos = ResolveSpawn(uid);
+            if (pos != null) body.TeleportToDouble(pos.X + 0.5, pos.Y, pos.Z + 0.5);
+            var health = body.GetBehavior<EntityBehaviorHealth>();
+            if (health != null)
+            {
+                health.Health = health.MaxHealth;
+                health.MarkDirty();
+            }
+        }
+
+        // Periodic position log, for debugging client/server bot desync.
         private float posLogAccum;
         private float chunkCheckAccum;
+
+        public override bool WantsTick => true;
 
         public override void OnTick(float dt)
         {
@@ -145,6 +152,8 @@ namespace canevents.src.EventManagers.eventBehavior
                 foreach (var uid in botManager.LiveUids) VerifyChunkRegistration(botManager.EntityOf(uid));
             }
 
+            // Position dump is for chasing stuck bots; off unless diagnostics are on.
+            if (runningEvent.sapi.ModLoader.GetModSystem<canevents>()?.config?.diagnosticsLogging != true) return;
             posLogAccum += dt;
             if (posLogAccum < 10f) return;
             posLogAccum = 0f;
@@ -154,10 +163,7 @@ namespace canevents.src.EventManagers.eventBehavior
                 var body = botManager.EntityOf(uid);
                 if (body == null) continue;
 
-                // State and AlwaysActive separate the two causes of "the bots just stand there":
-                // a sleeping entity (nobody in simulation range) vs a running AI with no target.
                 var taskAi = body.GetBehavior<EntityBehaviorTaskAI>();
-                // Debug, not Notification: fires every 10s per bot.
                 runningEvent.sapi.World.Logger.Debug(
                     "[bots] pos {0} id={1} at {2} alive={3} state={4} alwaysActive={5} task={6}",
                     body.GetName(), body.EntityId, body.Pos.AsBlockPos, body.Alive,
@@ -166,14 +172,8 @@ namespace canevents.src.EventManagers.eventBehavior
             }
         }
 
-        /// <summary>
-        /// Makes sure a bot is listed in its chunk's entity array, and re-registers it if not.
-        /// Lookups walk chunk.Entities, so a body missing from that list cannot be hit at all. The
-        /// engine re-files entities once a second, but only when the chunk index changed AND the
-        /// target chunk is loaded, leaving bots that passed through an unloaded chunk stranded.
-        /// The repair triggers that same pass by pointing InChunkIndex3d elsewhere; it only runs
-        /// when the entity is genuinely absent, so it cannot double-register.
-        /// </summary>
+        // A bot missing from chunk.Entities can't be hit. The engine only re-files an entity when its
+        // chunk index changes and the chunk is loaded, so we fake a change via InChunkIndex3d.
         private void VerifyChunkRegistration(Entity body)
         {
             if (body == null || !body.Alive) return;
@@ -185,15 +185,14 @@ namespace canevents.src.EventManagers.eventBehavior
             int cz = (int)body.Pos.Z / size;
 
             var chunk = sapi.WorldManager.GetChunk(cx, cy, cz);
-            if (chunk?.Entities == null) return;   // not loaded: nothing to register into yet
+            if (chunk?.Entities == null) return;   // not loaded
 
             for (int i = 0; i < chunk.Entities.Length && i < chunk.EntitiesCount; i++)
             {
                 if (chunk.Entities[i]?.EntityId == body.EntityId) return;
             }
 
-            // Any index other than the current chunk's makes the engine re-file it; a neighbour
-            // rather than a bogus value, so the "remove from old chunk" step hits a real list.
+            // Use a real neighbor index so the "remove from old chunk" step doesn't break.
             long decoyIndex = sapi.WorldManager.ChunkIndex3D(cx + 1, cy, cz);
             long realIndex = sapi.WorldManager.ChunkIndex3D(cx, cy, cz);
             if (decoyIndex == realIndex) decoyIndex = sapi.WorldManager.ChunkIndex3D(cx, cy, cz + 1);
@@ -206,33 +205,30 @@ namespace canevents.src.EventManagers.eventBehavior
 
         public override void OnEnd()
         {
-            if (deathHandler != null)
-            {
-                runningEvent.sapi.Event.OnEntityDeath -= deathHandler;
-                deathHandler = null;
-            }
             botManager?.DespawnAll();
         }
 
-        // Same spawn rule players get, so bots and players are laid out identically (EventSpawns).
-        private BlockPos ResolveSpawn(string uid)
+        // Open match: one bot taken out (its roster seat is the caller's business).
+        public void Despawn(string uid)
         {
-            if (!EventSpawns.TryGetTeamSpawn(runningEvent, uid, out var spawn)) return null;
-            return new BlockPos(spawn.x, spawn.y ?? 0, spawn.z, 0);
+            var manager = botManager ?? runningEvent.Bots;
+            var body = manager.EntityOf(uid);
+            manager.Forget(uid);
+            if (body?.World != null)
+                runningEvent.sapi.World.DespawnEntity(body, new EntityDespawnData { Reason = EnumDespawnReason.Removed });
         }
 
-        private void OnAnyEntityDeath(Entity entity, DamageSource source)
+        // Same resolver as players use.
+        private BlockPos ResolveSpawn(string uid) => EventSpawns.Resolve(runningEvent, uid);
+
+        // Called from CANEventManager.OnEntityDeath after all behaviors saw the death. Bots don't respawn
+        // mid-match; round modes bring them back between rounds (ResetForRound).
+        public void AfterBotDeath(string uid, Entity entity, DamageSource source)
         {
-            string uid = Bots.BotMatchLink.UidOf(entity);
-            if (uid == null || !Bots.BotIdentity.IsBot(uid)) return;
-            // Bots of other matches fire the same global event; the roster check filters them out.
-            if (!runningEvent.IsActive(uid)) return;
+            (botManager ?? runningEvent.Bots).Forget(uid);
 
-            botManager?.Forget(uid);
-
-            // Delayed removal: a body removed the same tick it died stays rendered client-side, and
-            // swings at that ghost cannot be matched server-side. Explicit DespawnEntity because
-            // Spawn disables auto-despawn.
+            // Delayed: removing on the death tick leaves a ghost body on the client.
+            // Spawn disables auto-despawn, so despawn explicitly.
             var deathSource = source;
             runningEvent.sapi.Event.RegisterCallback(_ =>
             {
@@ -241,31 +237,36 @@ namespace canevents.src.EventManagers.eventBehavior
                         new EntityDespawnData { Reason = EnumDespawnReason.Death, DamageSourceForDeath = deathSource });
             }, CorpseLingerMs);
 
-            string killerName = ResolveKillerName(source);
-            if (announceDeaths)
+            if (runningEvent.EventState != EventState.Running || !runningEvent.IsActive(uid)) return;
+
+            // Open match: a bot comes back at its team's spawn like a player would.
+            if (runningEvent.IsOpenMatch)
             {
-                string botName = entity.GetName();
-                EventBroadcaster.Broadcast(runningEvent,
-                    Lang.Get("canevents:bot-eliminated", botName, killerName));
-                runningEvent.NetworkHandler?.SendKillFeed(runningEvent, killerName, botName, "eliminated");
+                runningEvent.sapi.Event.RegisterCallback(_ =>
+                {
+                    if (runningEvent.EventState == EventState.Running && runningEvent.IsActive(uid)) SpawnBody(uid);
+                }, OpenMatchRespawnMs);
+                return;
             }
 
-            // Same call the player death path ends in; flips ShouldFinish once one side is left.
+            if (announceDeaths && !runningEvent.Behaviors.Any(b => b.AnnouncesDeaths))
+            {
+                string killerName = ResolveKillerName(uid, source);
+                string botName = runningEvent.NameOf(uid);
+                Announce("canevents:bot-eliminated", botName, killerName);
+                EventBroadcaster.KillFeed(runningEvent, killerName, botName, "eliminated");
+            }
+
             runningEvent.EliminatePlayer(uid);
         }
 
-        private string ResolveKillerName(DamageSource source)
+        private string ResolveKillerName(string victimUid, DamageSource source)
         {
-            // A hidden-role mode names nobody: this path builds its own feed and chat line, so
-            // without asking, the first bot the murderer cuts down announces who they are.
+            // Hidden-role modes (murder mystery) must not reveal the killer.
             if (runningEvent.Scorer?.HidesKillerIdentity == true)
                 return Lang.Get("canevents:killer-someone");
 
-            var cause = source?.GetCauseEntity();
-            if (cause == null) return Lang.Get("canevents:killer-the-arena");
-
-            if (cause is EntityPlayer player) return player.Player?.PlayerName ?? player.GetName();
-            return cause.GetName();
+            return KillAttribution.Resolve(runningEvent, victimUid, source).KillerName;
         }
     }
 }

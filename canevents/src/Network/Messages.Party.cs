@@ -4,9 +4,7 @@ namespace canevents.src.Network
 {
     // Party messages
 
-    /// <summary>Party actions a client can request, as one message with a discriminator rather than
-    /// eight message types. ProtoBuf sends the underlying int, so never renumber or reorder these -
-    /// add new actions at the end.</summary>
+    // ProtoBuf sends the underlying int: never renumber or reorder, add new actions at the end.
     public enum PartyAction
     {
         Create = 0,
@@ -19,7 +17,6 @@ namespace canevents.src.Network
         RequestState = 7
     }
 
-    /// <summary>Client-initiated party action.</summary>
     [ProtoContract]
     public class PartyActionMsg
     {
@@ -28,7 +25,7 @@ namespace canevents.src.Network
         [ProtoMember(3)] public string InviterName; // for accept/decline
     }
 
-    /// <summary>Server pushes the recipient's current party state (or empty if none).</summary>
+    // Recipient's current party, empty if none.
     [ProtoContract]
     public class PartyStateMsg
     {
@@ -58,7 +55,7 @@ namespace canevents.src.Network
         [ProtoMember(3)] public float SecondsRemaining;
     }
 
-    /// <summary>Server tells client about a transient operation result (toast).</summary>
+    // Result toast.
     [ProtoContract]
     public class PartyOperationResultMsg
     {

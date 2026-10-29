@@ -8,18 +8,18 @@ using Vintagestory.API.Server;
 
 namespace canevents.src.Network
 {
-    // Duels: challenge, answer, and the list of who can be challenged. Open to every player - a duel
-    // needs no privilege, and each request is validated against server state by DuelManager.
+    // No privilege needed; DuelManager validates each request.
     public partial class ServerNetworkHandler
     {
-        /// <summary>Set from canevents.cs once the driver exists; null on a server with duels off.</summary>
+        // null when duels are off.
         public DuelManager Duels { get; set; }
 
         private void RegisterDuelHandlers()
         {
-            SetHandler<DuelChallengeMsg>(OnDuelChallenge);
-            SetHandler<DuelResponseMsg>(OnDuelResponse);
-            SetHandler<RequestDuelTargetsMsg>((player, _) => SendDuelTargets(player));
+            Handle<DuelChallengeMsg>(ProtocolChannel.Main, false, OnDuelChallenge);
+            Handle<DuelResponseMsg>(ProtocolChannel.Main, false, OnDuelResponse);
+            Handle<RequestDuelTargetsMsg>(ProtocolChannel.Main, false, (player, _) => SendDuelTargets(player),
+                minIntervalMs: 500);
         }
 
         private void OnDuelChallenge(IServerPlayer player, DuelChallengeMsg msg)
@@ -35,11 +35,13 @@ namespace canevents.src.Network
         {
             if (Duels == null || msg == null) return;
 
-            var (_, message) = msg.Accept ? Duels.Accept(player) : Duels.Decline(player);
+            // By id, so a stale popup can't answer a newer challenge.
+            var (_, message) = msg.Accept
+                ? Duels.Accept(player, msg.ChallengeId)
+                : Duels.Decline(player, msg.ChallengeId);
             player.SendMessage(0, message, EnumChatType.Notification);
         }
 
-        /// <summary>Shows the challenge prompt to one player.</summary>
         public void SendDuelPrompt(IServerPlayer player, DuelChallenge challenge, string challengerName)
         {
             if (player == null || challenge == null) return;
@@ -64,18 +66,13 @@ namespace canevents.src.Network
             }, player);
         }
 
-        /// <summary>Takes the prompt off one player's screen.</summary>
         public void SendDuelClosed(IServerPlayer player, long challengeId)
         {
             if (player == null) return;
             serverChannel.SendPacket(new DuelClosedMsg { ChallengeId = challengeId }, player);
         }
 
-        /// <summary>
-        /// Who this player could challenge right now: online, not busy, not themselves, not in their
-        /// own party. Side sizes ride along so the browser can show "2v2" and grey out a row whose
-        /// side does not match the viewer's.
-        /// </summary>
+        // Online, free, not self, not in own party.
         private void SendDuelTargets(IServerPlayer player)
         {
             if (Duels == null || player == null) return;
@@ -94,7 +91,7 @@ namespace canevents.src.Network
             {
                 if (other.PlayerUID == player.PlayerUID) continue;
                 if (ownSet.Contains(other.PlayerUID)) continue;
-                if (eventManager.IsBusy(other.PlayerUID)) continue;
+                if (!eventManager.PlayerState.IsFree(other.PlayerUID)) continue;
 
                 names.Add(other.PlayerName);
                 sizes.Add(SideSizeOf(other));
@@ -105,13 +102,11 @@ namespace canevents.src.Network
 
             int yourSideSize = SideSizeOf(player);
 
-            // The mode picker's contents, computed by the same rules that will judge the challenge -
-            // a mode offered here can never bounce as "bad mode" later.
+            // Same rules as the challenge check. Set names go through TryGetSelectableSets (hidden roles).
             var modes = Duels.DuellableEvents(yourSideSize).Select(ev => new DuelModeMsg
             {
                 Code = ev.Code,
-                LoadoutSetNames = ev.Behaviors.OfType<ILoadoutProvider>().FirstOrDefault()
-                    ?.GetLoadoutSetNames(ev.Code, eventManager.LoadoutManager)
+                LoadoutSetNames = TryGetSelectableSets(ev, out var setNames, out _, out _) ? setNames : null
             }).ToArray();
 
             serverChannel.SendPacket(new DuelTargetListMsg
@@ -127,7 +122,7 @@ namespace canevents.src.Network
             }, player);
         }
 
-        // A player brings their whole party, or just themselves.
+        // Party size, or 1.
         private int SideSizeOf(IServerPlayer player)
         {
             var roster = eventManager.PartyRosterOf(player, out _);

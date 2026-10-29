@@ -2,17 +2,25 @@ using System;
 
 namespace canevents.src
 {
-    /// <summary>
-    /// Countdown strings shared by both sides: the server writes them into chat, the client draws the
-    /// same shape on the HUD, and a signup window announced as "5:00" must not read as "5m 00s" ten
-    /// seconds later on the panel.
-    ///
-    /// Distinct from <c>GuiItemUtil.FormatShortDuration</c> on purpose: that one is the admin panel's
-    /// "3m 20s" phrasing and is client-only.
-    /// </summary>
+    // Shared by server chat and client HUD so both format the same way.
     public static class TimeText
     {
-        /// <summary>"4:32" over a minute, "45s" under it. Negative is clamped to zero.</summary>
+        // Coarse: "3d 4h", "2h 10m", "45m", "20s".
+        public static string Duration(long seconds)
+        {
+            if (seconds < 0) seconds = 0;
+            if (seconds < 60) return seconds + "s";
+            if (seconds < 3600) return (seconds / 60) + "m";
+            if (seconds < 86400)
+            {
+                long h = seconds / 3600, m = (seconds % 3600) / 60;
+                return m == 0 ? h + "h" : h + "h " + m + "m";
+            }
+            long d = seconds / 86400, hours = (seconds % 86400) / 3600;
+            return hours == 0 ? d + "d" : d + "d " + hours + "h";
+        }
+
+        // "4:32" or "45s".
         public static string Short(float seconds)
         {
             int s = Math.Max(0, (int)Math.Round(seconds));

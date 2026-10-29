@@ -15,175 +15,288 @@ namespace canevents.src.Network
 {
     public partial class ServerNetworkHandler
     {
-        public const string ChannelName = "canevents";
-
-        // Limits for client-supplied data (defense-in-depth; admin handlers are also privilege-gated).
+        // Limits for client-supplied data.
         private const int MaxLoadoutSetName = 64;
         private const int MaxLoadoutItems = 100;
         private const int MaxLoadoutItemCodeLen = 256;
         private const int MaxItemQuantity = 100;
-        private const int MaxCageDim = 128;
-        private const int MinCageDim = 1;
 
         private ICoreServerAPI sapi;
+
         private IServerNetworkChannel serverChannel;
+
+        private IServerNetworkChannel adminChannel;
+
         private CANEventManager eventManager;
         private readonly PlayerDelegate _onPlayerNowPlaying;
         private readonly PlayerDelegate _onPlayerDisconnect;
 
         public Scoring.MatchHistory MatchHistory { get; set; }
 
-        // Default key for the main Events Browser dialog, pushed to each client on join;
-        // set from Config.mainDialogHotkey in StartServerSide.
+        // From Config.mainDialogHotkey, sent to clients on join.
         public string MainDialogHotkey { get; set; } = "K";
+
+        // From Config.diagnosticsLogging. Turns on client trace logging for players who join.
+        public bool DiagnosticsLogging { get; set; }
 
         public ServerNetworkHandler(ICoreServerAPI sapi, CANEventManager eventManager)
         {
             this.sapi = sapi;
             this.eventManager = eventManager;
 
-            serverChannel = sapi.Network.RegisterChannel(ChannelName);
-            CanEventsProtocol.RegisterAll(serverChannel);
+            serverChannel = sapi.Network.RegisterChannel(CanEventsProtocol.MainChannelName);
+            CanEventsProtocol.Register(serverChannel, ProtocolChannel.Main);
+            adminChannel = sapi.Network.RegisterChannel(CanEventsProtocol.AdminChannelName);
+            CanEventsProtocol.Register(adminChannel, ProtocolChannel.Admin);
+            sapi.World.Logger.Notification(CanEventsProtocol.Summary());
 
             _onPlayerNowPlaying = OnPlayerNowPlaying;
-            _onPlayerDisconnect = OnPlayerDisconnect;
+            _onPlayerDisconnect = player =>
+            {
+                ForgetClientProtocol(player);
+                ForgetThrottles(player);
+                OnPlayerDisconnect(player);
+            };
             sapi.Event.PlayerNowPlaying  += _onPlayerNowPlaying;
             sapi.Event.PlayerDisconnect  += _onPlayerDisconnect;
 
-            // Admin-only: the privilege is enforced here, at registration.
-            SetAdminHandler<RequestLoadoutListMsg>(OnRequestLoadoutList);
-            SetAdminHandler<SaveLoadoutFromInvMsg>(OnSaveLoadoutFromInv);
-            SetAdminHandler<SaveLoadoutMsg>(OnSaveLoadout);
-            SetAdminHandler<DeleteLoadoutSetMsg>(OnDeleteLoadoutSet);
-            SetAdminHandler<ImportInlineSetsMsg>(OnImportInlineSets);
+            Handle<ProtocolHandshakeMsg>(ProtocolChannel.Main, false, OnClientHandshake);
 
-            SetAdminHandler<SetCagePosMsg>(OnSetCagePos);
-            SetAdminHandler<ClearCagePosMsg>(OnClearCagePos);
-            SetAdminHandler<PlatformEditStartMsg>(OnPlatformEditStart);
-            SetAdminHandler<PlatformEditStopMsg>(OnPlatformEditStop);
-            SetAdminHandler<PlatformFillShapeMsg>(OnPlatformFillShape);
-            SetAdminHandler<PlatformFloodFillMsg>(OnPlatformFloodFill);
-            SetAdminHandler<RequestSchematicListMsg>(OnRequestSchematicList);
-            SetAdminHandler<CreateTemplateFromSchematicMsg>(OnCreateTemplateFromSchematic);
-            SetAdminHandler<RequestPlaceListMsg>(OnPlaceListRequest);
-            SetAdminHandler<CreatePlaceMsg>(OnCreatePlace);
-            SetAdminHandler<AddSpawnPointMsg>(OnAddSpawnPoint);
-            SetAdminHandler<SetPlaceBoundsMsg>(OnSetPlaceBounds);
-            SetAdminHandler<MoveSpawnPointMsg>(OnMoveSpawnPoint);
-            SetAdminHandler<TeleportToPlaceMsg>(OnTeleportToPlace);
-            SetAdminHandler<RemoveSpawnPointMsg>(OnRemoveSpawnPoint);
-            SetAdminHandler<DeletePlaceMsg>(OnDeletePlace);
-            SetAdminHandler<TogglePlaceMsg>(OnTogglePlace);
-            SetAdminHandler<RequestTemplateListMsg>(OnRequestTemplateList);
-            SetAdminHandler<PlaceTemplateMsg>(OnPlaceTemplate);
-            SetAdminHandler<RemovePlaceWithRestoreMsg>(OnRemovePlaceWithRestore);
-            SetAdminHandler<TplActionMsg>(OnTplAction);
-            SetAdminHandler<RequestAdminEventListMsg>(OnRequestAdminEventList);
-            SetAdminHandler<ToggleEventEnabledMsg>(OnToggleEventEnabled);
-            SetAdminHandler<AdminActionMsg>(OnAdminAction);
-            SetAdminHandler<RequestScheduleStateMsg>(OnRequestScheduleState);
-            SetAdminHandler<RequestEventRewardConfigMsg>(OnRequestEventRewardConfig);
-            SetAdminHandler<EventRewardConfigMsg>(OnSaveEventRewardConfig);
-            SetAdminHandler<RequestRewardLimitsMsg>(OnRequestRewardLimits);
-            SetAdminHandler<RewardLimitsMsg>(OnSaveRewardLimits);
-            SetAdminHandler<SetCtfPostMsg>(OnSetCtfPost);
-            SetAdminHandler<ClearCtfPostsMsg>(OnClearCtfPosts);
-            SetAdminHandler<SetHgZoneMsg>(OnSetHgZone);
-            SetAdminHandler<AddHgLootMsg>(OnAddHgLoot);
-            SetAdminHandler<ClearHgLootMsg>(OnClearHgLoot);
-            SetAdminHandler<ListHgLootMsg>(OnListHgLoot);
-            SetAdminHandler<RequestHgSetupMsg>(OnRequestHgSetup);
-            SetAdminHandler<RemoveHgLootMsg>(OnRemoveHgLoot);
-            SetAdminHandler<SetHgLootTierMsg>(OnSetHgLootTier);
-            SetAdminHandler<GenerateHgLayoutMsg>(OnGenerateHgLayout);
-            SetAdminHandler<HgPreviewMsg>(OnHgPreview);
-            SetAdminHandler<SaveHgConfigMsg>(OnSaveHgConfig);
-            SetAdminHandler<AddMmPickupMsg>(OnAddMmPickup);
-            SetAdminHandler<ClearMmPickupsMsg>(OnClearMmPickups);
-            SetAdminHandler<RemoveMmPickupMsg>(OnRemoveMmPickup);
-            SetAdminHandler<ListMmPickupsMsg>(OnListMmPickups);
-            SetAdminHandler<RequestMmConfigMsg>(OnRequestMmConfig);
-            SetAdminHandler<SaveMmConfigMsg>(OnSaveMmConfig);
+            const ProtocolChannel admin = ProtocolChannel.Admin;
+            Handle<RequestLoadoutListMsg>(admin, true, OnRequestLoadoutList);
+            Handle<SaveLoadoutMsg>(admin, true, OnSaveLoadout);
+            Handle<DeleteLoadoutSetMsg>(admin, true, OnDeleteLoadoutSet);
+            Handle<ImportInlineSetsMsg>(admin, true, OnImportInlineSets);
 
-            // Open to any player: each of these validates against server state instead.
-            SetHandler<JoinEventRequestMsg>(OnJoinRequest);
-            SetHandler<LeaveEventRequestMsg>(OnLeaveRequest);
-            SetHandler<RequestEventListMsg>(OnEventListRequest);
-            SetHandler<RequestMatchHistoryMsg>(OnRequestMatchHistory);
-            SetHandler<RequestLeaderboardMsg>(OnLeaderboardRequest);
-            SetHandler<PartyActionMsg>(OnPartyAction);
-            SetHandler<LoadoutPickResponseMsg>(OnLoadoutPickResponse);
-            SetHandler<ClearLoadoutDefaultMsg>(OnClearLoadoutDefault);
-            SetHandler<RequestLoadoutDefaultsMsg>(OnRequestLoadoutDefaults);
-            SetHandler<RequestTournamentListMsg>(OnRequestTournamentList);
-            SetHandler<RequestTournamentBracketMsg>(OnRequestTournamentBracket);
-            SetHandler<TournamentSignupMsg>(OnTournamentSignup);
-            SetHandler<TournamentReadyResponseMsg>(OnTournamentReadyResponse);
-            SetAdminHandler<TournamentAdminActionMsg>(OnTournamentAdminAction);
+            Handle<SetCagePosMsg>(admin, true, OnSetCagePos);
+            Handle<ClearCagePosMsg>(admin, true, OnClearCagePos);
+            Handle<PlatformEditStartMsg>(admin, true, OnPlatformEditStart);
+            Handle<PlatformEditStopMsg>(admin, true, OnPlatformEditStop);
+            Handle<PlatformFillShapeMsg>(admin, true, OnPlatformFillShape);
+            Handle<PlatformFloodFillMsg>(admin, true, OnPlatformFloodFill);
+            Handle<RequestSchematicListMsg>(admin, true, OnRequestSchematicList);
+            Handle<CreateTemplateFromSchematicMsg>(admin, true, OnCreateTemplateFromSchematic);
+            Handle<RequestPlaceListMsg>(admin, true, OnPlaceListRequest);
+            Handle<CreatePlaceMsg>(admin, true, OnCreatePlace);
+            Handle<AddSpawnPointMsg>(admin, true, OnAddSpawnPoint);
+            Handle<SetPlaceBoundsMsg>(admin, true, OnSetPlaceBounds);
+            Handle<MoveSpawnPointMsg>(admin, true, OnMoveSpawnPoint);
+            Handle<TeleportToPlaceMsg>(admin, true, OnTeleportToPlace);
+            Handle<TeleportToHgLootSpotMsg>(admin, true, OnTeleportToHgLootSpot);
+            Handle<RemoveSpawnPointMsg>(admin, true, OnRemoveSpawnPoint);
+            Handle<DeletePlacesMsg>(admin, true, OnDeletePlaces);
+            Handle<TogglePlaceMsg>(admin, true, OnTogglePlace);
+            Handle<BulkEditPlacesMsg>(admin, true, OnBulkEditPlaces);
+            Handle<EditPlaceInfoMsg>(admin, true, OnEditPlaceInfo);
+            Handle<RequestTemplateListMsg>(admin, true, OnRequestTemplateList);
+            Handle<PlaceTemplateMsg>(admin, true, OnPlaceTemplate);
+            Handle<RemovePlaceWithRestoreMsg>(admin, true, OnRemovePlaceWithRestore);
+            Handle<TplActionMsg>(admin, true, OnTplAction);
+            Handle<RequestAdminEventListMsg>(admin, true, OnRequestAdminEventList);
+            Handle<ToggleEventEnabledMsg>(admin, true, OnToggleEventEnabled);
+            Handle<AdminActionMsg>(admin, true, OnAdminAction);
+            Handle<RequestScheduleStateMsg>(admin, true, OnRequestScheduleState);
+            Handle<RequestEventRewardConfigMsg>(admin, true, OnRequestEventRewardConfig);
+            Handle<EventRewardConfigMsg>(admin, true, OnSaveEventRewardConfig);
+            Handle<RequestRewardLimitsMsg>(admin, true, OnRequestRewardLimits);
+            Handle<RewardLimitsMsg>(admin, true, OnSaveRewardLimits);
+            Handle<SetCtfPostMsg>(admin, true, OnSetCtfPost);
+            Handle<ClearCtfPostsMsg>(admin, true, OnClearCtfPosts);
+            Handle<SetParkourCheckpointMsg>(admin, true, OnSetParkourCheckpoint);
+            Handle<RemoveParkourCheckpointMsg>(admin, true, OnRemoveParkourCheckpoint);
+            Handle<SetParkourCheckpointIndexMsg>(admin, true, OnSetParkourCheckpointIndex);
+            Handle<SetParkourLivesMsg>(admin, true, OnSetParkourLives);
+            Handle<SetKothHillMsg>(admin, true, OnSetKothHill);
+            Handle<SetWaitingRoomMsg>(admin, true, OnSetWaitingRoom);
+            Handle<PadEditMsg>(admin, true, OnPadEdit);
+            Handle<SetHgZoneMsg>(admin, true, OnSetHgZone);
+            Handle<AddHgLootMsg>(admin, true, OnAddHgLoot);
+            Handle<ClearHgLootMsg>(admin, true, OnClearHgLoot);
+            Handle<RequestHgSetupMsg>(admin, true, OnRequestHgSetup);
+            Handle<RemoveHgLootMsg>(admin, true, OnRemoveHgLoot);
+            Handle<SetHgLootTierMsg>(admin, true, OnSetHgLootTier);
+            Handle<GenerateHgLayoutMsg>(admin, true, OnGenerateHgLayout);
+            Handle<HgPreviewMsg>(admin, true, OnHgPreview);
+            Handle<SaveHgConfigMsg>(admin, true, OnSaveHgConfig);
+            Handle<AddMmPickupMsg>(admin, true, OnAddMmPickup);
+            Handle<ClearMmPickupsMsg>(admin, true, OnClearMmPickups);
+            Handle<RemoveMmPickupMsg>(admin, true, OnRemoveMmPickup);
+            Handle<RequestMmConfigMsg>(admin, true, OnRequestMmConfig);
+            Handle<SaveMmConfigMsg>(admin, true, OnSaveMmConfig);
+            Handle<TournamentAdminActionMsg>(admin, true, OnTournamentAdminAction);
 
-            // Gated on the mod's own spectate privilege rather than controlserver, so a moderator can
-            // be given the broadcaster role without the rest of the admin surface.
-            RegisterSpectateHandlers();
-
-            // Handing out that privilege, on the other hand, is admin-only.
             RegisterAccessHandlers();
 
-            // Duels need no privilege at all: challenging someone is ordinary play.
+            RegisterInventoryAuditHandlers();
+
+            RegisterServerSettingsHandlers();
+
+            RegisterEventSettingsHandlers();
+
+            const ProtocolChannel main = ProtocolChannel.Main;
+            Handle<JoinEventRequestMsg>(main, false, OnJoinRequest);
+            Handle<LeaveEventRequestMsg>(main, false, OnLeaveRequest);
+            // Snapshots are rebuilt per request, so throttle them.
+            Handle<RequestEventListMsg>(main, false, OnEventListRequest, minIntervalMs: 500);
+            Handle<RequestMatchHistoryMsg>(main, false, OnRequestMatchHistory, minIntervalMs: 1000);
+            Handle<RequestLeaderboardMsg>(main, false, OnLeaderboardRequest, minIntervalMs: 1000);
+            Handle<PartyActionMsg>(main, false, OnPartyAction);
+            Handle<LoadoutPickResponseMsg>(main, false, OnLoadoutPickResponse);
+            Handle<ClearLoadoutDefaultMsg>(main, false, OnClearLoadoutDefault);
+            Handle<RequestLoadoutDefaultsMsg>(main, false, OnRequestLoadoutDefaults);
+            Handle<RequestTournamentListMsg>(main, false, OnRequestTournamentList, minIntervalMs: 1000);
+            Handle<RequestTournamentBracketMsg>(main, false, OnRequestTournamentBracket);
+            Handle<TournamentSignupMsg>(main, false, OnTournamentSignup);
+            Handle<TournamentRenameMsg>(main, false, OnTournamentRename);
+            Handle<TournamentLoadoutMsg>(main, false, OnTournamentLoadout);
+            Handle<TournamentReadyResponseMsg>(main, false, OnTournamentReadyResponse);
+
+            // Own spectate privilege, not controlserver.
+            RegisterSpectateHandlers();
+
             RegisterDuelHandlers();
 
-            // Same for confirming your own queued match.
             RegisterReadyHandlers();
+            RegisterTeamPickHandlers();
+            RegisterShopHandlers();
         }
 
         private void OnPlayerNowPlaying(IServerPlayer player)
         {
+            // Before anything else is sent.
+            BeginProtocolCheck(player);
+
             if (_partyManager != null) SendPartyState(player);
             serverChannel.SendPacket(new ClientConfigSyncMsg
             {
                 MainDialogHotkey = MainDialogHotkey,
-                MaySpectate = MaySpectate(player)
+                MaySpectate = MaySpectate(player),
+                Diagnostics = DiagnosticsLogging
             }, player);
         }
 
-        /// <summary>
-        /// Registers a handler that only admins may reach. The privilege check lives at registration
-        /// rather than in the handler's first line, so a new handler cannot silently forget it.
-        /// Handlers keep their own redundant check as well.
-        /// </summary>
-        private void SetAdminHandler<T>(NetworkClientMessageHandler<T> handler)
-            => SetHandler<T>((player, msg) =>
-            {
-                if (!RequireAdmin(player)) return;
-                handler(player, msg);
-            });
+        private IServerNetworkChannel ChannelOf(ProtocolChannel channel)
+            => channel == ProtocolChannel.Admin ? adminChannel : serverChannel;
 
-        /// <summary>
-        /// Registers a packet handler with its errors contained.
-        ///
-        /// The engine does NOT catch these: <c>ServerNetworkChannel.OnPacket</c> invokes the handler
-        /// straight, so anything thrown here unwinds into the server's packet loop. Every handler in
-        /// this class reads data a client chose to send, which is exactly where a malformed value or
-        /// a stale id is most likely to blow up - and one client's bad packet must not be able to
-        /// disturb everyone else's.
-        ///
-        /// Registration is the place for it rather than each handler's body: a handler added later
-        /// gets the guard without its author having to remember.
-        /// </summary>
-        private void SetHandler<T>(NetworkClientMessageHandler<T> handler)
-            => serverChannel.SetMessageHandler<T>((player, msg) =>
+        // All server handlers go through here. Admin gate is enforced at registration.
+        // ServerNetworkChannel.OnPacket doesn't catch, so exceptions are caught here.
+        // minIntervalMs > 0: early requests are coalesced, the newest runs when the interval ends.
+        private void Handle<T>(ProtocolChannel channel, bool adminOnly, NetworkClientMessageHandler<T> handler,
+            int minIntervalMs = 0)
+        {
+            if (channel == ProtocolChannel.Admin && !adminOnly)
+                throw new InvalidOperationException("[canevents] " + typeof(T).Name
+                    + " is on the admin channel but was registered without the admin gate.");
+
+            void Run(IServerPlayer player, T msg)
             {
                 try
                 {
+                    if (!MayHandle(player, typeof(T), adminOnly)) return;
                     handler(player, msg);
                 }
                 catch (Exception e)
                 {
                     LogHandlerFailure(typeof(T), player, e);
                 }
-            });
+            }
 
-        // Last time each packet type reported a failure, so a client looping a bad packet cannot turn
-        // the log file into the denial of service the try/catch just prevented.
+            ChannelOf(channel).SetMessageHandler<T>((player, msg) =>
+            {
+                if (minIntervalMs > 0 && player != null)
+                {
+                    string uid = player.PlayerUID;
+                    // Player may have left by the time the deferred run fires.
+                    if (!TryTakeThrottleSlot(uid, typeof(T), minIntervalMs, () =>
+                        {
+                            if (sapi.World.PlayerByUid(uid) is IServerPlayer p
+                                && p.ConnectionState == EnumClientState.Playing)
+                                Run(p, msg);
+                        }))
+                        return;
+                }
+                Run(player, msg);
+            });
+        }
+
+        // Per player and packet type, cleared on disconnect.
+        private sealed class ThrottleState
+        {
+            public long LastRunMs = long.MinValue / 2;
+            public Action Pending;
+        }
+
+        private readonly Dictionary<string, Dictionary<Type, ThrottleState>> throttles =
+            new Dictionary<string, Dictionary<Type, ThrottleState>>();
+
+        // False = request parked as Pending, replacing any older one.
+        private bool TryTakeThrottleSlot(string uid, Type type, int minIntervalMs, Action deferred)
+        {
+            long now = sapi.World.ElapsedMilliseconds;
+            ThrottleState state;
+            long wait;
+            lock (throttles)
+            {
+                if (!throttles.TryGetValue(uid, out var byType))
+                    throttles[uid] = byType = new Dictionary<Type, ThrottleState>();
+                if (!byType.TryGetValue(type, out state))
+                    byType[type] = state = new ThrottleState();
+
+                wait = state.LastRunMs + minIntervalMs - now;
+                if (wait <= 0 && state.Pending == null)
+                {
+                    state.LastRunMs = now;
+                    return true;
+                }
+
+                bool alreadyScheduled = state.Pending != null;
+                state.Pending = deferred;
+                if (alreadyScheduled) return false;
+            }
+
+            sapi.Event.RegisterCallback(_ => FlushThrottle(uid, type, state), (int)Math.Max(1, wait));
+            return false;
+        }
+
+        private void FlushThrottle(string uid, Type type, ThrottleState state)
+        {
+            Action run;
+            lock (throttles)
+            {
+                // Player left (maybe rejoined) while this waited.
+                if (!throttles.TryGetValue(uid, out var byType)
+                    || !byType.TryGetValue(type, out var current) || current != state) return;
+                run = state.Pending;
+                state.Pending = null;
+                if (run == null) return;
+                state.LastRunMs = sapi.World.ElapsedMilliseconds;
+            }
+            run();
+        }
+
+        private void ForgetThrottles(IServerPlayer player)
+        {
+            if (player == null) return;
+            lock (throttles) throttles.Remove(player.PlayerUID);
+        }
+
+        private bool MayHandle(IServerPlayer player, Type packetType, bool adminOnly)
+        {
+            if (player == null) return false;
+
+            if (packetType == typeof(ProtocolHandshakeMsg)) return true;
+
+            if (adminOnly)
+            {
+                if (!RequireAdmin(player)) return false;
+                return RequireConfirmedProtocol(player, packetType);
+            }
+
+            // Unconfirmed is allowed: requests can arrive before the handshake.
+            return !IsProtocolMismatched(player);
+        }
+
+        // Rate-limits error logging per packet type.
         private readonly Dictionary<Type, long> lastHandlerErrorMs = new Dictionary<Type, long>();
 
         private const long HandlerErrorLogIntervalMs = 10000;
@@ -200,29 +313,34 @@ namespace canevents.src.Network
                 packetType.Name, player?.PlayerName ?? "?", HandlerErrorLogIntervalMs / 1000, e);
         }
 
-        private void Reply(IServerPlayer player, bool success, string message, long placeId = 0)
+        // Defaults to the admin channel; player-facing handlers pass Main.
+        private void Reply(IServerPlayer player, bool success, string message, long placeId = 0,
+            ProtocolChannel channel = ProtocolChannel.Admin)
         {
-            serverChannel.SendPacket(
+            ChannelOf(channel).SendPacket(
                 new PlaceOperationResultMsg { Success = success, Message = message, PlaceId = placeId }, player);
         }
 
-        private void ReplyOk(IServerPlayer player, string message, long placeId = 0)
-            => Reply(player, true, message, placeId);
+        private void ReplyOk(IServerPlayer player, string message, long placeId = 0,
+            ProtocolChannel channel = ProtocolChannel.Admin)
+            => Reply(player, true, message, placeId, channel);
 
-        private void ReplyFail(IServerPlayer player, string message)
-            => Reply(player, false, message);
+        private void ReplyFail(IServerPlayer player, string message,
+            ProtocolChannel channel = ProtocolChannel.Admin)
+            => Reply(player, false, message, 0, channel);
 
         public void Dispose()
         {
             sapi.Event.PlayerNowPlaying  -= _onPlayerNowPlaying;
             sapi.Event.PlayerDisconnect  -= _onPlayerDisconnect;
 
-            // Every subscription this handler makes is undone here; anything left attached
-            // survives a hot-reload and fires into a dead channel.
             UnwirePartyManager();
             UnhookPlatformEditing();
-            StopHgPreviewTick();
+            eventManager?.HungerGamesSetup?.StopAllPreviews();
             RestoreAllCagePreviews();
+
+            // Pending throttle callbacks then find nothing and do nothing.
+            lock (throttles) throttles.Clear();
         }
 
     }

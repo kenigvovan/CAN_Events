@@ -5,21 +5,17 @@ using Vintagestory.API.MathTools;
 
 namespace canevents.src.Gui
 {
-    /// <summary>
-    /// Draws the Hunger Games storm border as a translucent blue dome, client-side: the server
-    /// sends only the shrink segment and the radius is interpolated per frame. One unit hemisphere
-    /// mesh is uploaded once and scaled per frame, drawn with the engine's block-highlight shader
-    /// so fog and depth behave like vanilla highlights with no texture plumbing.
-    /// </summary>
+    // HG storm dome: unit hemisphere scaled per frame, drawn with the vanilla blockhighlights shader.
     public class HgZoneDomeRenderer : IRenderer
     {
         private readonly ICoreClientAPI capi;
         private readonly ClientNetworkHandler networkHandler;
 
         private MeshRef domeMesh;
+        private MeshRef skirtMesh;
         private readonly Matrixf modelView = new Matrixf();
 
-        // Same translucent blue as the old block-highlight wall (these ints are ABGR).
+        // ABGR
         private static readonly int DomeColor = ColorUtil.ToRgba(64, 255, 130, 40);
 
         public HgZoneDomeRenderer(ICoreClientAPI capi, ClientNetworkHandler networkHandler)
@@ -28,9 +24,7 @@ namespace canevents.src.Gui
             this.networkHandler = networkHandler;
         }
 
-        // MUST run in the OIT stage: the blockhighlights shader writes to the order-independent
-        // transparency accumulation buffers (see OIT() in blockhighlights.fsh), which are only
-        // bound during that pass. In any other stage the dome is written into nowhere.
+        // OIT stage only: blockhighlights.fsh writes to OIT buffers, bound only in that pass.
         public double RenderOrder => 0.95;
         public int RenderRange => 999;
 
@@ -42,36 +36,46 @@ namespace canevents.src.Gui
             var camPos = capi.World?.Player?.Entity?.CameraPos;
             if (camPos == null) return;
 
-            // Same interpolator as the HUD's distance readout, so wall and readout agree.
             float radius = HgZoneInterpolator.RadiusAt(zone,
                 (capi.ElapsedMilliseconds - networkHandler.HgZoneReceivedMs) / 1000f);
             if (radius <= 0.1f) return;
 
-            if (domeMesh == null) domeMesh = BuildUnitDome();
+            if (domeMesh == null)
+                ClientTrace.Step("HG dome mesh upload", () => domeMesh = BuildUnitDome());
+            if (skirtMesh == null)
+                ClientTrace.Step("HG dome skirt upload", () => skirtMesh = BuildUnitSkirt());
 
             var rpi = capi.Render;
             var prog = rpi.GetEngineShader(EnumShaderProgram.Blockhighlights);
             prog.Use();
+            prog.UniformMatrix("projectionMatrix", rpi.CurrentProjectionMatrix);
+
+            // OIT pass sets its own blend state. No culling, viewer can be inside.
+            rpi.GlDisableCullFace();
 
             modelView.Set(rpi.CameraMatrixOriginf)
                 .Translate(zone.X - camPos.X, zone.Y - camPos.Y, zone.Z - camPos.Z)
                 .Scale(radius, radius, radius);
-            prog.UniformMatrix("projectionMatrix", rpi.CurrentProjectionMatrix);
             prog.UniformMatrix("modelViewMatrix", modelView.Values);
-
-            // No blend toggling: the OIT pass has its own accumulation blend state, as vanilla's
-            // highlight renderer assumes. Both faces: viewers can be inside or outside.
-            rpi.GlDisableCullFace();
             rpi.RenderMesh(domeMesh);
+
+            // The zone is X/Z only, so the wall goes down to the dimension's floor; terrain hides the buried part.
+            double depth = zone.Y % BlockPos.DimensionBoundary;
+            if (depth > 0)
+            {
+                modelView.Set(rpi.CameraMatrixOriginf)
+                    .Translate(zone.X - camPos.X, zone.Y - camPos.Y, zone.Z - camPos.Z)
+                    .Scale(radius, (float)depth, radius);
+                prog.UniformMatrix("modelViewMatrix", modelView.Values);
+                rpi.RenderMesh(skirtMesh);
+            }
+
             rpi.GlEnableCullFace();
 
             prog.Stop();
         }
 
-        /// <summary>
-        /// Unit upper hemisphere (radius 1, base at y=0), vertex-coloured, no UVs: the same
-        /// vertex layout BlockHighlight meshes use, which is what the shader expects.
-        /// </summary>
+        // Vertex colours, no UVs: the layout BlockHighlight meshes use.
         private MeshRef BuildUnitDome()
         {
             const int latBands = 16, lonBands = 48;
@@ -106,10 +110,36 @@ namespace canevents.src.Gui
             return capi.Render.UploadMesh(mesh);
         }
 
+        // Unit cylinder wall from y=0 down to y=-1, same ring as the dome's base.
+        private MeshRef BuildUnitSkirt()
+        {
+            const int lonBands = 48;
+            var mesh = new MeshData((lonBands + 1) * 2, lonBands * 6, false, false, true, false);
+
+            for (int b = 0; b <= lonBands; b++)
+            {
+                double lon = b * 2.0 * Math.PI / lonBands;
+                float x = (float)Math.Cos(lon), z = (float)Math.Sin(lon);
+                mesh.AddVertexSkipTex(x, 0f, z, DomeColor);
+                mesh.AddVertexSkipTex(x, -1f, z, DomeColor);
+            }
+
+            for (int b = 0; b < lonBands; b++)
+            {
+                int top0 = b * 2, bot0 = top0 + 1, top1 = top0 + 2, bot1 = top0 + 3;
+                mesh.AddIndex(top0); mesh.AddIndex(bot0); mesh.AddIndex(top1);
+                mesh.AddIndex(top1); mesh.AddIndex(bot0); mesh.AddIndex(bot1);
+            }
+
+            return capi.Render.UploadMesh(mesh);
+        }
+
         public void Dispose()
         {
             domeMesh?.Dispose();
             domeMesh = null;
+            skirtMesh?.Dispose();
+            skirtMesh = null;
         }
     }
 }

@@ -11,6 +11,8 @@
         ]
     },
     "behaviors": [
+        { "name": "ArenaProtection", "attributes": {} },
+        { "name": "TeamMarkers", "attributes": {} },
         {
             "name": "FullPartyRequired",
             "attributes": {

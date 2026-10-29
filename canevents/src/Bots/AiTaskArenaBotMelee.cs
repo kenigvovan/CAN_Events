@@ -5,11 +5,7 @@ using Vintagestory.GameContent;
 
 namespace canevents.src.Bots
 {
-    /// <summary>
-    /// Melee task that only targets opponents in the same match, and scales damage with the held
-    /// weapon (vanilla reads one fixed number from JSON). Base damage rides on the entity so each
-    /// event can field tougher bots without a second entity type.
-    /// </summary>
+    // Targets only match opponents; damage uses the held weapon (vanilla uses a fixed JSON value).
     public class AiTaskArenaBotMelee : AiTaskMeleeAttack
     {
         private readonly float configuredDamage;
@@ -21,8 +17,7 @@ namespace canevents.src.Bots
             configuredDamage = damage;
             weaponDamageMultiplier = taskConfig["weaponDamageMultiplier"].AsFloat(1f);
 
-            // Vanilla hardcodes the search radius; a bot already up against its opponent needs a
-            // more forgiving one.
+            // Vanilla hardcodes it, too short for bots.
             attackRange = taskConfig["attackRange"].AsFloat(attackRange);
         }
 
@@ -37,14 +32,16 @@ namespace canevents.src.Bots
 
         private float ResolveDamage()
         {
-            // Bare-handed damage: whatever this event set for its bots, else the entity's own default.
             float unarmed = entity.WatchedAttributes.GetFloat(BotMatchLink.DamageAttribute, configuredDamage);
 
+            // Same stat as player melee, so mode buffs (Juggernaut) apply to bots.
+            float statMul = entity.Stats.GetBlended("meleeWeaponsDamage");
+
             var held = entity.RightHandItemSlot?.Itemstack?.Item;
-            if (held == null) return unarmed;
+            if (held == null) return unarmed * statMul;
 
             float weapon = held.AttackPower * weaponDamageMultiplier;
-            return weapon > unarmed ? weapon : unarmed;
+            return (weapon > unarmed ? weapon : unarmed) * statMul;
         }
     }
 }

@@ -7,34 +7,33 @@ using Vintagestory.API.Server;
 
 namespace canevents.src.EventPlacesManagers
 {
-    /// <summary>
-    /// Keeps an arena's chunks in memory for as long as a match is using it: chunks stay loaded only
-    /// near a PLAYER, so an all-bot match would have its ground unload underneath it.
-    /// Pins are counted per column, so matches sharing a column don't unload each other's ground.
-    /// </summary>
+    // Chunks only stay loaded near a player, so bot-only matches would lose their ground.
+    // Pins are ref-counted per column.
     public static class ArenaChunkPin
     {
-        private const int MaxColumns = 64;   // a runaway bounds must not pin half the world
+        private const int MaxColumns = 64;   // cap for runaway bounds
 
         private static readonly Dictionary<long, int> pinCounts = new Dictionary<long, int>();
 
-        /// <summary>
-        /// Drops every pin without unloading anything (the world is going away). The counts are static
-        /// and would otherwise outlive the world in-process, leaving stale pins that can never be released.
-        /// </summary>
+        // Static counts would otherwise outlive the world in-process.
         public static void Reset()
         {
             lock (pinCounts) pinCounts.Clear();
         }
 
-        /// <summary>
-        /// Pins every chunk column the arena covers. Returns the columns to hand back to
-        /// <see cref="Release"/>; the caller keeps them so a changed arena cannot orphan a pin.
-        /// </summary>
+        // Caller keeps the returned columns for Release, so a changed arena can't orphan a pin.
         public static List<Vec2i> Pin(ICoreServerAPI sapi, EventPlace place)
         {
             var columns = ColumnsOf(place);
             if (sapi == null || columns.Count == 0) return columns;
+
+            // Non-zero dims: load only. keepLoaded/unload only work in dim 0 and keys would collide.
+            int dim = PlaceSummaryFormatter.Dimension(place);
+            if (dim != 0)
+            {
+                foreach (var c in columns) DimensionChunks.Request(sapi, c.X, c.Y, dim);
+                return new List<Vec2i>();
+            }
 
             lock (pinCounts)
             {
@@ -49,28 +48,14 @@ namespace canevents.src.EventPlacesManagers
             return columns;
         }
 
-        /// <summary>
-        /// How long an arena stays loaded after its match ends, so post-match work (rewards, corpses,
-        /// teleport home) still has ground under it.
-        /// </summary>
+        // Post-match work (rewards, corpses, teleport home) still needs the ground.
         private const int LingerSeconds = 60;
 
-        /// <summary>Re-check interval while somebody is still standing in the arena.</summary>
         private const int RetrySeconds = 30;
 
-        /// <summary>
-        /// How far around a column somebody still counts as "there", in chunk columns. One column is
-        /// 32 blocks: checking only the exact column meant an admin looking at the arena from the
-        /// next one over did not register, and the ground vanished in front of them. Unloading is
-        /// unconditional (WorldAPI.UnloadChunkColumn drops the chunks whoever is standing on them),
-        /// so this check is the only thing protecting anyone nearby.
-        /// </summary>
+        // UnloadChunkColumn drops chunks even under a player, so keep a margin around anyone nearby.
         private const int NearbyColumns = 2;
 
-        /// <summary>
-        /// Drops this match's claim. A column is let go only once the last claim is gone, the linger has
-        /// passed and nobody stands in it - unloading is unconditional and would drop the world under them.
-        /// </summary>
         public static void Release(ICoreServerAPI sapi, List<Vec2i> columns)
         {
             if (sapi == null || columns == null) return;
@@ -96,13 +81,10 @@ namespace canevents.src.EventPlacesManagers
         {
             sapi.Event.RegisterCallback(_ =>
             {
-                // Re-pinned in the meantime - another match took this arena, leave it alone.
+                // Re-pinned by another match meanwhile.
                 lock (pinCounts) if (pinCounts.ContainsKey(Key(column))) return;
 
-                // Waits as long as it takes, with no deadline. There used to be one, after which the
-                // column went regardless - which is exactly the case that matters: an admin standing
-                // in the arena after a bot match, looking at it. Nothing is leaked by waiting: the
-                // moment they walk away, the next check unloads it.
+                // No deadline: keep waiting while someone is near.
                 if (SomeoneNear(sapi, column))
                 {
                     ScheduleUnload(sapi, column, RetrySeconds);
@@ -126,19 +108,16 @@ namespace canevents.src.EventPlacesManagers
                 var pos = p?.Entity?.Pos;
                 if (pos == null) continue;
 
-                // Integer division, so a negative coordinate rounds towards zero rather than down -
-                // hence the floor. Getting this wrong puts the boundary in the wrong place west and
-                // north of the origin, where most test worlds are not, which is how it survives.
                 int px = (int)Math.Floor(pos.X / size);
                 int pz = (int)Math.Floor(pos.Z / size);
 
+                // Dimension ignored: all dims share the X/Z map chunk that unloading drops.
                 if (Math.Abs(px - column.X) <= NearbyColumns && Math.Abs(pz - column.Y) <= NearbyColumns)
                     return true;
             }
             return false;
         }
 
-        /// <summary>The columns an arena occupies: its bounds when it has them, else its spawn points.</summary>
         private static List<Vec2i> ColumnsOf(EventPlace place)
         {
             var columns = new List<Vec2i>();
@@ -148,10 +127,10 @@ namespace canevents.src.EventPlacesManagers
 
             if (place.HasBounds && place.BoundsMin != null && place.BoundsMax != null)
             {
-                int minX = Math.Min(place.BoundsMin.X, place.BoundsMax.X) / size;
-                int maxX = Math.Max(place.BoundsMin.X, place.BoundsMax.X) / size;
-                int minZ = Math.Min(place.BoundsMin.Z, place.BoundsMax.Z) / size;
-                int maxZ = Math.Max(place.BoundsMin.Z, place.BoundsMax.Z) / size;
+                int minX = Column(Math.Min(place.BoundsMin.X, place.BoundsMax.X), size);
+                int maxX = Column(Math.Max(place.BoundsMin.X, place.BoundsMax.X), size);
+                int minZ = Column(Math.Min(place.BoundsMin.Z, place.BoundsMax.Z), size);
+                int maxZ = Column(Math.Max(place.BoundsMin.Z, place.BoundsMax.Z), size);
 
                 for (int x = minX; x <= maxX && columns.Count < MaxColumns; x++)
                     for (int z = minZ; z <= maxZ && columns.Count < MaxColumns; z++)
@@ -160,7 +139,7 @@ namespace canevents.src.EventPlacesManagers
                 if (columns.Count > 0) return columns;
             }
 
-            // No bounds: pin the spawn columns plus neighbours, since a fight drifts a few blocks.
+            // No bounds: spawn columns plus neighbours.
             if (place.spawnPositions != null)
             {
                 foreach (var pos in place.spawnPositions)
@@ -169,7 +148,7 @@ namespace canevents.src.EventPlacesManagers
                     for (int dx = -1; dx <= 1; dx++)
                         for (int dz = -1; dz <= 1; dz++)
                         {
-                            var c = new Vec2i(pos.X / size + dx, pos.Z / size + dz);
+                            var c = new Vec2i(Column(pos.X, size) + dx, Column(pos.Z, size) + dz);
                             if (columns.Count >= MaxColumns) return columns;
                             if (!columns.Contains(c)) columns.Add(c);
                         }
@@ -177,6 +156,10 @@ namespace canevents.src.EventPlacesManagers
             }
             return columns;
         }
+
+        // Floor, not int division: -5/32 must be -1, not 0.
+        private static int Column(int blockCoordinate, int size)
+            => (int)Math.Floor((double)blockCoordinate / size);
 
         private static long Key(Vec2i c) => ((long)c.X << 32) ^ (uint)c.Y;
     }

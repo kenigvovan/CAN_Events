@@ -2,30 +2,20 @@ using System;
 using System.IO;
 using canevents.src.Scoring;
 using Newtonsoft.Json.Linq;
-using Vintagestory.API.Config;
 
 namespace canevents.src.EventManagers
 {
-    /// <summary>
-    /// Edits the event JSON files under ModConfig/canevents/events in place: find the file whose
-    /// "code" matches (case-insensitively), parse it, apply the caller's change, write it back
-    /// atomically. An unparseable neighbour is skipped rather than aborting the edit.
-    /// </summary>
+    // In-place edits of the event JSON files under ModConfig/canevents/events, written back atomically.
     public class EventConfigStore
     {
         private readonly string directory;
 
-        /// <param name="directory">Defaults to the mod's own event config folder.</param>
         public EventConfigStore(string directory = null)
         {
-            this.directory = directory ?? Path.Combine(GamePaths.ModConfig, "canevents", "events");
+            this.directory = directory ?? ModPaths.Events;
         }
 
-        /// <summary>
-        /// Applies <paramref name="edit"/> to the event file with this code and saves it.
-        /// <paramref name="edit"/> returns null when it succeeded, or a message describing why the
-        /// file can't take the change - in which case nothing is written.
-        /// </summary>
+        // edit returns null on success, else the reason; nothing is written then.
         public bool Edit(string code, Func<JObject, string> edit, out string error)
         {
             error = null;
@@ -41,7 +31,8 @@ namespace canevents.src.EventManagers
                     try { obj = JObject.Parse(File.ReadAllText(file)); }
                     catch { continue; } // skip an unparseable file rather than abort the whole edit
 
-                    var fileCode = obj["code"]?.Value<string>();
+                    // Any casing of the key: the loader reads "Code" as happily as "code".
+                    var fileCode = obj.GetValue("code", StringComparison.OrdinalIgnoreCase)?.Value<string>();
                     if (string.IsNullOrEmpty(fileCode)
                         || !fileCode.Equals(code, StringComparison.OrdinalIgnoreCase)) continue;
 
@@ -56,5 +47,27 @@ namespace canevents.src.EventManagers
             }
             catch (Exception e) { error = e.Message; return false; }
         }
+
+        // The behavior's "attributes" object is created when missing; every other key is kept.
+        public bool EditBehaviorAttributes(string code, string behaviorName, Action<JObject> edit, out string error)
+            => Edit(code, obj =>
+            {
+                var behs = (obj["behaviors"] ?? obj["Behaviors"]) as JArray;
+                if (behs == null) return "no behaviors array";
+
+                JObject beh = null;
+                foreach (var b in behs)
+                {
+                    if (b is not JObject bo) continue;
+                    var name = (bo["name"] ?? bo["Name"])?.Value<string>();
+                    if (string.Equals(name, behaviorName, StringComparison.OrdinalIgnoreCase)) { beh = bo; break; }
+                }
+                if (beh == null) return "no " + behaviorName + " behavior";
+
+                string key = beh["Attributes"] != null && beh["attributes"] == null ? "Attributes" : "attributes";
+                if (beh[key] is not JObject attr) { attr = new JObject(); beh[key] = attr; }
+                edit(attr);
+                return null;
+            }, out error);
     }
 }

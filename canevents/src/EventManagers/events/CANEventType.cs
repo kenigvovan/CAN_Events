@@ -16,8 +16,7 @@ namespace canevents.src.EventManagers.events
         public string Code { get; set; }
         [JsonProperty]
         public bool Enabled { get; set; } = true;
-        // Whether this event counts toward ranking (leaderboard, Elo). Rewards are independent,
-        // configured per event via Reward.
+        // Counts toward leaderboard / Elo. Rewards don't depend on it.
         [JsonProperty]
         public bool Rated { get; set; } = true;
         [JsonProperty]
@@ -27,16 +26,18 @@ namespace canevents.src.EventManagers.events
         [JsonProperty]
         public string[] EventPlaceTypes { get; set; }
 
-        // Optional per-event reward override; unset fields fall back to global Config.
+        // "Match found" to teleport. Null = global countdownSeconds; at least 10s with a loadout popup.
+        [JsonProperty]
+        public int? CountdownSeconds { get; set; }
+
         [JsonProperty]
         public RewardSpec Reward { get; set; }
 
-        // Optional per-event entry fee / wager pool; null = no fee.
+        // Null = no fee.
         [JsonProperty]
         public EntryFeeSpec EntryFee { get; set; }
 
-        // Optional match modifiers, e.g. ["noarmor", "health:0.5", "loadout:Archer"]. Validated
-        // against EventMutators on load; unknown entries are dropped with a log warning.
+        // e.g. ["noarmor", "health:0.5", "loadout:Archer"]. Unknown entries are dropped on load.
         [JsonProperty]
         public string[] Mutators { get; set; }
 

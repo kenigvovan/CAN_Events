@@ -1,0 +1,68 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Atlas scenarios: each test class boots a real headless Vintage Story server with the mod loaded. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <!-- Local Atlas checkout. Override with -p:AtlasRoot=... when it lives elsewhere. -->
+    <AtlasRoot Condition="'$(AtlasRoot)' == ''">..\..\libs\1.22\Atlas-main\Atlas-main</AtlasRoot>
+    <!-- canevents depends on canparty; it is not a project here, so its release zip is staged.
+         Default: whatever canparty_*.zip is in the game's Mods folder, so a new release needs no edit here. -->
+    <CanPartyModsDir>$(APPDATA)\VintagestoryData\Mods</CanPartyModsDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="$(AtlasRoot)\src\Atlas.XUnit\Atlas.XUnit.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="VintagestoryAPI">
+      <HintPath>$(VINTAGE_STORY)\VintagestoryAPI.dll</HintPath>
+    </Reference>
+    <Reference Include="VintagestoryLib">
+      <HintPath>$(VINTAGE_STORY)\VintagestoryLib.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- Health and hunger behaviors; the game provides it at run time. -->
+    <Reference Include="VSEssentials">
+      <HintPath>$(VINTAGE_STORY)\Mods\VSEssentials.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- Place data is JObject; Atlas.E2E.targets copies the game's build over the NuGet one. -->
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>$(VINTAGE_STORY)\Lib\Newtonsoft.Json.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- Staged into every test server as a folder mod (modinfo.json is in its output). -->
+    <ProjectReference Include="..\canevents\canevents.csproj">
+      <AtlasMod>true</AtlasMod>
+    </ProjectReference>
+  </ItemGroup>
+
+  <Target Name="CopyCanPartyMod" AfterTargets="Build">
+    <ItemGroup Condition="'$(CanPartyMod)' == ''">
+      <_CanPartyZip Include="$(CanPartyModsDir)\canparty_*.zip" />
+    </ItemGroup>
+    <!-- Batched over the matches, so with several zips the last one in name order wins. -->
+    <PropertyGroup Condition="'$(CanPartyMod)' == '' And '@(_CanPartyZip)' != ''">
+      <_CanPartyPick>%(_CanPartyZip.FullPath)</_CanPartyPick>
+    </PropertyGroup>
+    <PropertyGroup Condition="'$(CanPartyMod)' == ''">
+      <CanPartyMod>$(_CanPartyPick)</CanPartyMod>
+    </PropertyGroup>
+    <Error Condition="'$(CanPartyMod)' == '' Or !Exists('$(CanPartyMod)')"
+           Text="canparty mod not found (looked for canparty_*.zip in '$(CanPartyModsDir)'). Pass -p:CanPartyMod=path\to\canparty.zip." />
+    <Message Importance="normal" Text="canparty for the test servers: $(CanPartyMod)" />
+    <Copy SourceFiles="$(CanPartyMod)" DestinationFiles="$(OutDir)deps\canparty.zip" SkipUnchangedFiles="true" />
+  </Target>
+
+  <Import Project="$(AtlasRoot)\build\Atlas.E2E.targets" />
+</Project>

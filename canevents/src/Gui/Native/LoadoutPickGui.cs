@@ -8,14 +8,7 @@ using Vintagestory.API.Config;
 
 namespace canevents.src.Gui.Native
 {
-    /// <summary>
-    /// "Choose your class". One dialog, several entry points - they differ only in where the answer
-    /// is sent:
-    ///
-    /// - Queue-time: confirming sends the join request with the chosen set.
-    /// - Match-start: the server asks (LoadoutPickRequestMsg) with a countdown; when it runs out the
-    ///   match starts with the default, so the dialog closes itself rather than accept a late confirm.
-    /// </summary>
+    // Class picker for queue join, tournament, and match start (server request with a countdown).
     public class LoadoutPickGui : GuiDialog
     {
         private readonly ClientNetworkHandler networkHandler;
@@ -25,7 +18,7 @@ namespace canevents.src.Gui.Native
 
         // Match-start mode.
         private LoadoutPickRequestMsg pickRequest;
-        private double pickShownAt;
+        private readonly CountdownClock pickClock;
         private bool alwaysUse;
 
         private string[] setNames = new string[0];
@@ -34,22 +27,17 @@ namespace canevents.src.Gui.Native
 
         private const double CardWidth = 470;
 
-        /// <summary>
-        /// Height the card list turned out to be, carried from one composition to the next. Starts at
-        /// a guess because nothing is measured yet; the first pass corrects it, and everything below
-        /// the list is positioned from it.
-        /// </summary>
+        // Card list height from the previous compose; 260 is a first-pass guess.
         private double measuredListHeight = 260;
 
-        // Guards the single recompose the measurement triggers, so it cannot recurse.
         private bool measuring;
 
         public LoadoutPickGui(ICoreClientAPI capi, ClientNetworkHandler networkHandler) : base(capi)
         {
             this.networkHandler = networkHandler;
+            pickClock = new CountdownClock(capi);
         }
 
-        // Opened programmatically from the browser or by a server packet, never by a key.
         public override string ToggleKeyCombinationCode => null;
 
         public void OpenForQueue(EventListEntryMsg ev)
@@ -68,14 +56,7 @@ namespace canevents.src.Gui.Native
             TryOpen();
         }
 
-        /// <summary>
-        /// Tournament entry point: same class list as the queue, but confirming stores the pick
-        /// against the tournament - a bracket is several matches and the choice is made once.
-        /// </summary>
-        /// <param name="allowed">
-        /// Classes the organiser permits; empty means all. Filtered here rather than rejected after
-        /// the pick.
-        /// </param>
+        // allowed empty means all classes.
         public void OpenForTournament(EventListEntryMsg ev, long tournamentId, List<string> allowed)
         {
             if (allowed != null && allowed.Count > 0 && ev?.LoadoutSets != null)
@@ -83,7 +64,7 @@ namespace canevents.src.Gui.Native
                 var filtered = ev.LoadoutSets.Where(s => allowed.Contains(s.Name)).ToArray();
                 if (filtered.Length > 0)
                 {
-                    // A shallow copy: the browser's own list must keep every class for the queue.
+                    // Copy so the browser's entry keeps every class.
                     ev = new EventListEntryMsg
                     {
                         GameModeCode = ev.GameModeCode,
@@ -105,41 +86,34 @@ namespace canevents.src.Gui.Native
 
             queueEvent = null;
             pickRequest = msg;
-            pickShownAt = capi.ElapsedMilliseconds / 1000.0;
-            // Pre-tick when a default was used before - already what the player asked for.
+            pickClock.Restart(msg.TimeoutSeconds);
             alwaysUse = !string.IsNullOrEmpty(msg.CurrentDefault);
 
             setNames = new string[msg.Sets.Length];
             setStacks = new List<ItemStack>[msg.Sets.Length];
             selected = 0;
-            for (int i = 0; i < msg.Sets.Length; i++)
+            string preselect = msg.Preselected ?? msg.CurrentDefault;
+            ClientTrace.Step("LoadoutPickGui resolve " + msg.Sets.Length + " sets", () =>
             {
-                setNames[i] = msg.Sets[i].Name;
-                setStacks[i] = GuiItemUtil.ResolvePacked(capi, msg.Sets[i].ItemCodes);
-                if (setNames[i] == msg.CurrentDefault) selected = i;
-            }
+                for (int i = 0; i < msg.Sets.Length; i++)
+                {
+                    setNames[i] = msg.Sets[i].Name;
+                    setStacks[i] = GuiItemUtil.ResolvePacked(capi, msg.Sets[i].ItemCodes);
+                    if (setNames[i] == preselect) selected = i;
+                }
+            });
 
-            Compose();
-            TryOpen();
+            ClientTrace.Step("LoadoutPickGui open (match start)", () => { Compose(); TryOpen(); });
         }
 
         private void Compose()
         {
             string eventCode = (queueEvent?.GameModeCode ?? pickRequest?.EventCode ?? "").ToUpperInvariant();
 
-            var bgBounds = ElementBounds.Fill.WithFixedPadding(GuiStyle.ElementToDialogPadding);
-            bgBounds.BothSizing = ElementSizing.FitToChildren;
-            var dialogBounds = ElementStdBounds.AutosizedMainDialog.WithAlignment(EnumDialogArea.CenterMiddle);
+            var composer = DialogShell.Begin(capi, "canevents-loadoutpick",
+                Lang.Get("canevents:gui-pick-title", eventCode), OnClose);
 
-            var composer = capi.Gui
-                .CreateCompo("canevents-loadoutpick", dialogBounds)
-                .AddShadedDialogBG(bgBounds)
-                .AddDialogTitleBar(Lang.Get("canevents:gui-pick-title", eventCode), OnClose)
-                .BeginChildElements(bgBounds);
-
-            // bgBounds children start 20px below the dialog top but the title bar is 31px tall, so at
-            // y=0 the first line sits on top of it.
-            double y = 14;
+            double y = DialogShell.BodyTop;
 
             if (pickRequest != null && pickRequest.TimeoutSeconds > 0f)
             {
@@ -148,7 +122,6 @@ namespace canevents.src.Gui.Native
                 y += 30;
             }
 
-            // The fee is charged at match start, so it belongs next to the decision to join.
             if (!string.IsNullOrEmpty(queueEvent?.EntryFeeItems))
             {
                 composer.AddStaticText(
@@ -158,10 +131,7 @@ namespace canevents.src.Gui.Native
                 y += 30;
             }
 
-            // Classes as cards, same look as the event list; the chosen one is marked by accent and
-            // badge. The kit is a row of item icons with the inventory tooltip on hover - spelled-out
-            // names wrapped onto four lines and still got cut. One card per row: the item lists need
-            // the full width.
+            // One card per row; item icon lists need the full width.
             var cards = new EventCardRow[setNames.Length];
             for (int i = 0; i < setNames.Length; i++)
             {
@@ -177,27 +147,14 @@ namespace canevents.src.Gui.Native
                 });
             }
 
-            // No clip and no scrollbar: the list shows every class and the dialog grows to fit.
-            //
-            // It used to be a fixed-height viewport, and that is what cut the last class in half -
-            // the clip edge fell wherever the constant put it, regardless of where cards ended. Three
-            // attempts to compute a better constant failed, because the height a card needs is not
-            // knowable before it is composed, and the snap-to-boundary trick copied from the browser
-            // turns out to be dead there too (it pins MinListHeight to MaxListHeight, so its own
-            // adjustment never fires).
-            //
-            // A class list is three to six entries. Sizing the dialog to them costs a taller window
-            // in the rare case of many classes; the alternative cost an invisible one every time.
-            // Height from the previous pass. FixedUnder and every y below read fixedHeight at the
-            // moment they are called, and the cell list only measures itself later, during Compose -
-            // so on the first pass everything under the list stacks on top of it. The measurement is
-            // taken afterwards and the dialog is composed once more with it (see MeasureList).
+            // No clip: dialog grows to fit. The cell list measures itself only during Compose,
+            // so use the previous pass's height and recompose once (see MeasureList).
             var listBounds = ElementBounds.Fixed(0, y, CardWidth, measuredListHeight);
 
             composer.AddCellList(listBounds,
                 (row, bounds) => new EventTileRow(capi, row, bounds), cards, "sets");
 
-            // Cell padding has to be set before Compose(), when the list builds its cell bounds.
+            // Padding must be set before Compose(), when the list builds its cell bounds.
             var setList = composer.GetCellList<EventCardRow>("sets");
             setList.unscaledCellSpacing = 6;
             setList.UnscaledCellVerPadding = 0;
@@ -221,13 +178,23 @@ namespace canevents.src.Gui.Native
                 ElementBounds.Fixed(EnumDialogArea.LeftFixed, 140, y, 0, 0).WithFixedPadding(10, 4),
                 EnumButtonStyle.Normal);
 
+            string shopEvent = queueEvent?.GameModeCode ?? pickRequest?.EventCode;
+            if (ShopPreview != null && HasShop(shopEvent))
+            {
+                composer.AddSmallButton(Lang.Get("canevents:gui-pick-shop"), () =>
+                {
+                    ShopPreview.Show(shopEvent, setNames.Length > selected ? setNames[selected] : null);
+                    return true;
+                }, ElementBounds.Fixed(EnumDialogArea.LeftFixed, 280, y, 0, 0).WithFixedPadding(10, 4),
+                EnumButtonStyle.Small);
+            }
+
             SingleComposer = composer.EndChildElements().Compose();
 
-            // Restore the switch state - Compose() runs again on every selection change.
+            // Compose() reruns on every selection change.
             if (pickRequest != null) SingleComposer.GetSwitch("alwaysuse")?.SetValue(alwaysUse);
 
-            // Now that the cards have been measured, lay the dialog out again around their real
-            // height. Guarded, and settles immediately: the second pass measures the same cards.
+            // Second pass measures the same cards, so this settles after one recompose.
             if (!measuring && MeasureList())
             {
                 measuring = true;
@@ -236,11 +203,7 @@ namespace canevents.src.Gui.Native
             }
         }
 
-        /// <summary>
-        /// Records how tall the composed card list actually is. True when that differs from what this
-        /// pass was built with, meaning everything below the list is in the wrong place and the
-        /// dialog has to be composed again.
-        /// </summary>
+        // True when the real height differs and the dialog needs another compose.
         private bool MeasureList()
         {
             var list = SingleComposer?.GetCellList<EventCardRow>("sets");
@@ -283,30 +246,27 @@ namespace canevents.src.Gui.Native
 
         private void OnClose() => TryClose();
 
-        /// <summary>Raised when a queue-time pick is dismissed without confirming. Wired to reopen
-        /// the browser, which stepped aside for this dialog.</summary>
+        public ShopPreviewGui ShopPreview;
+
+        // The match-start request carries no shop flag; the lobby entry of the same event does.
+        private bool HasShop(string eventCode)
+            => queueEvent?.HasShop == true
+               || networkHandler.EventList.Value?.Events?.Any(e => e.EventId == 0 && e.GameModeCode == eventCode && e.HasShop) == true;
+
+        // Reopens the browser after a dismissed queue pick.
         public Action OnQueuePickCancelled;
 
-        /// <summary>
-        /// Re-runs the layout once the dialog is actually open. Compose() is called from the Open*
-        /// methods, before TryOpen, and a layout built then is not necessarily the one the open
-        /// dialog ends up with.
-        /// </summary>
+        // Layout composed before TryOpen is not always the one the open dialog ends up with.
         public override void OnGuiOpened()
         {
             base.OnGuiOpened();
             Compose();
         }
 
-        // The one funnel every way out goes through (Cancel, the cross, Escape, the countdown), which
-        // is why dismissal logic lives here and not in OnClose - Escape never calls OnClose.
+        // Every exit path ends here; Escape never calls OnClose.
         public override void OnGuiClosed()
         {
             base.OnGuiClosed();
-
-            // Dismissing a match-start pick means "start me with the default"; otherwise the request
-            // is re-offered on the next packet.
-            if (pickRequest != null) networkHandler.DismissLoadoutPick();
 
             // A dismissed tournament pick changes nothing and must not reopen the browser.
             bool wasQueuePick = queueEvent != null && tournamentPickId == 0;
@@ -321,17 +281,13 @@ namespace canevents.src.Gui.Native
             base.OnRenderGUI(deltaTime);
             if (pickRequest == null || pickRequest.TimeoutSeconds <= 0f) return;
 
-            // Past the server-side window the match has started with the default, so close instead of
-            // leaving a mouse-grabbing dialog at "0s". The margin lets a last-frame confirm land.
-            if (Remaining() <= -0.5f) { OnClose(); return; }
+            // Server already started with the default; CountdownClock leaves a small margin.
+            if (pickClock.Expired) { OnClose(); return; }
 
             SingleComposer?.GetDynamicText("countdown")?.SetNewText(CountdownText());
         }
 
-        private float Remaining()
-            => pickRequest.TimeoutSeconds - (float)(capi.ElapsedMilliseconds / 1000.0 - pickShownAt);
-
         private string CountdownText()
-            => Lang.Get("canevents:gui-match-starts-in", Math.Max(0, (int)Remaining()));
+            => Lang.Get(pickRequest?.CountdownLangKey ?? "canevents:gui-match-starts-in", pickClock.SecondsLeft);
     }
 }

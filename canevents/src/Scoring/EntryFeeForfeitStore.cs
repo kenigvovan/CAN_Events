@@ -4,34 +4,45 @@ using Vintagestory.API.Server;
 
 namespace canevents.src.Scoring
 {
-    // One stake forfeited by a mid-match disconnect: the exact escrow charged at queue time, tagged
-    // with the match it was committed to.
     public class ForfeitRecord
     {
         public long MatchId { get; set; }
         public List<RewardItem> Items { get; set; }
+
+        // Null on old records.
+        public string EventCode { get; set; }
+
+        // Match ids only persist on world save and can repeat after a crash.
+        public long RecordedUnix { get; set; }
     }
 
-    // Persistent parking for stakes forfeited by mid-match disconnects, keyed by UID (one wager at a
-    // time). Needed because an offline player's escrow ModData is unreachable (PlayerByUid returns null),
-    // so OnDisconnect grabs the stake while it still can; a record left behind is refunded on reconnect.
+    // Stakes of mid-match disconnects, by uid. Offline players' ModData is unreachable, so we grab
+    // the stake on disconnect.
     public class EntryFeeForfeitStore : JsonFileStore<Dictionary<string, ForfeitRecord>>
     {
+        private readonly long sessionStartUnix = UnixTime.Now;
+
         public EntryFeeForfeitStore(ICoreServerAPI sapi)
             : base(sapi, "entryfeeforfeits.json", "EntryFeeForfeitStore") { }
 
-        /// <summary>Parks a forfeited stake, overwriting any prior record for the player.</summary>
-        public void Record(string uid, long matchId, List<RewardItem> items)
+        public void Record(string uid, long matchId, List<RewardItem> items, string eventCode = null)
         {
             if (string.IsNullOrEmpty(uid) || items == null || items.Count == 0) return;
             lock (lockObj)
             {
-                Data[uid] = new ForfeitRecord { MatchId = matchId, Items = items };
+                Data[uid] = new ForfeitRecord
+                {
+                    MatchId = matchId,
+                    Items = items,
+                    EventCode = eventCode,
+                    RecordedUnix = UnixTime.Now
+                };
                 Save();
             }
         }
 
-        /// <summary>The player's parked forfeit, or null when they hold none.</summary>
+        public bool IsFromThisRun(ForfeitRecord rec) => rec != null && rec.RecordedUnix >= sessionStartUnix;
+
         public ForfeitRecord Peek(string uid)
         {
             if (string.IsNullOrEmpty(uid)) return null;
@@ -39,7 +50,6 @@ namespace canevents.src.Scoring
                 return Data.TryGetValue(uid, out var rec) ? rec : null;
         }
 
-        /// <summary>Drops a player's parked forfeit (realized into a pot or refunded).</summary>
         public void Remove(string uid)
         {
             if (string.IsNullOrEmpty(uid)) return;
@@ -47,13 +57,19 @@ namespace canevents.src.Scoring
                 if (Data.Remove(uid)) Save();
         }
 
-        /// <summary>Snapshot of every parked forfeit committed to the given match.</summary>
-        public List<(string uid, ForfeitRecord rec)> ForMatch(long matchId)
+        // Pre-crash records with a reused id are skipped; they get refunded on reconnect.
+        public List<(string uid, ForfeitRecord rec)> ForMatch(long matchId, string eventCode)
         {
             var result = new List<(string, ForfeitRecord)>();
             lock (lockObj)
                 foreach (var kv in Data)
-                    if (kv.Value.MatchId == matchId) result.Add((kv.Key, kv.Value));
+                {
+                    var rec = kv.Value;
+                    if (rec == null || rec.MatchId != matchId || !IsFromThisRun(rec)) continue;
+                    if (rec.EventCode != null && eventCode != null
+                        && !string.Equals(rec.EventCode, eventCode, System.StringComparison.OrdinalIgnoreCase)) continue;
+                    result.Add((kv.Key, rec));
+                }
             return result;
         }
     }

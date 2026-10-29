@@ -4,18 +4,11 @@ using Vintagestory.API.Datastructures;
 
 namespace canevents.src.Bots
 {
-    /// <summary>
-    /// Makes an event able to field bots without every mode's config declaring ArenaBots. Bot uids
-    /// in a mode lacking that behavior produce a match full of ghosts: nobody can be killed, so it
-    /// never ends and blocks its arena until the time limit. Fixed by grafting the behavior onto a
-    /// throwaway copy of the event, leaving the config files untouched.
-    /// </summary>
+    // Without ArenaBots, bot uids have no bodies and the match can't end until the time limit.
+    // So we add the behavior to a clone of the event when it's missing.
     public static class BotMatchSupport
     {
-        /// <summary>
-        /// The event as-is when it can already spawn bots, otherwise a copy that can (so a normal
-        /// human match is never cloned).
-        /// </summary>
+        // Returns ev itself if it already has ArenaBots.
         public static CANEvent EnsureBotsCanSpawn(CANEvent ev)
         {
             if (ev == null) return null;
@@ -23,14 +16,11 @@ namespace canevents.src.Bots
 
             var clone = ev.Clone();
             clone.Behaviors.Add(new EventManagers.eventBehavior.ArenaBotsEB(
-                "ArenaBots", DefaultAttributes(), null));
+                BehaviorNames.ArenaBots, DefaultAttributes(), null));
             return clone;
         }
 
-        /// <summary>
-        /// Stats from the shipped Hunger Games bot config. Weapon codes are copied from it, not
-        /// guessed: an invented code does not resolve and the bot fights bare-handed.
-        /// </summary>
+        // Copied from the shipped Hunger Games bot config.
         public static JsonObject DefaultAttributes()
         {
             var token = JObject.Parse(@"{

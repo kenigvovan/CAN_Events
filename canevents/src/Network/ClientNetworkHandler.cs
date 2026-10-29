@@ -13,22 +13,20 @@ using Vintagestory.API.Server;
 
 namespace canevents.src.Network
 {
-    // Client-side network handler, split across ClientNetworkHandler.*.cs by topic, mirroring the
-    // server's NetworkHandler.*.cs. This file owns the channel, message registration and live
-    // match state; each topic file keeps its cached state, handler and senders together.
-
     public partial class ClientNetworkHandler
     {
         private ICoreClientAPI capi;
-        private IClientNetworkChannel clientChannel;
 
-        // Client-side state consumed by the GUI, keyed by EventId.
+        // Both channels are opened on every client; the server gates the admin one.
+        private IClientNetworkChannel clientChannel;
+        private IClientNetworkChannel adminChannel;
+
+        // Keyed by EventId.
         private Dictionary<long, EventStateUpdateMsg> EventStates = new Dictionary<long, EventStateUpdateMsg>();
         private Dictionary<long, ScoreboardUpdateMsg> Scoreboards = new Dictionary<long, ScoreboardUpdateMsg>();
         private Dictionary<long, List<KillFeedMsg>> KillFeeds = new Dictionary<long, List<KillFeedMsg>>();
         public long ActiveEventId { get; private set; }
 
-        // Delegate to the active event, so the HUD needs no per-event lookups.
         public EventStateUpdateMsg CurrentEventState =>
             ActiveEventId != 0 && EventStates.TryGetValue(ActiveEventId, out var s) ? s : null;
         public ScoreboardUpdateMsg CurrentScoreboard =>
@@ -38,20 +36,15 @@ namespace canevents.src.Network
 
         public EventResultMsg LastResult { get; private set; }
 
-        // Server-fed snapshots the GUI recomposes from. Each carries its own Changed event -
-        // see ServerState<T> for why they are not property+event pairs.
         public readonly ServerState<EventListMsg> EventList = new ServerState<EventListMsg>();
 
-        /// <summary>Client clock when the event list last arrived. The list is pushed on changes, not
-        /// on a timer, so anything time-based in it has to be aged against this.</summary>
+        // The list is pushed on change, so timers in it are aged against this.
         private long eventListReceivedMs;
 
-        /// <summary>Seconds since the event list arrived, for ageing the figures inside it.</summary>
         public double SecondsSinceEventList()
             => eventListReceivedMs == 0 ? 0 : (capi.ElapsedMilliseconds - eventListReceivedMs) / 1000.0;
 
-        /// <summary>The queue entry this player is standing in, or null. Only one at a time: joining a
-        /// second queue is refused server-side.</summary>
+        // Server allows one queue at a time.
         public EventListEntryMsg QueuedEntry()
         {
             var events = EventList.Value?.Events;
@@ -62,7 +55,6 @@ namespace canevents.src.Network
             return null;
         }
 
-        /// <summary>Who may spectate and who is barred from the queue; admin panel only.</summary>
         public readonly ServerState<PlayerAccessListMsg> PlayerAccess = new ServerState<PlayerAccessListMsg>();
         public readonly ServerState<TemplateListMsg> TemplateList = new ServerState<TemplateListMsg>();
         public readonly ServerState<LeaderboardMsg> Leaderboard = new ServerState<LeaderboardMsg>();
@@ -72,14 +64,31 @@ namespace canevents.src.Network
         public event Action<KillFeedMsg> OnKillFeedReceived;
         public event Action<EventResultMsg> OnResultReceived;
 
-        /// <summary>uid -> team index of the flag that player carries; empty outside a CTF match.
-        /// Replaced wholesale rather than mutated - the flag renderer reads it every frame and a
-        /// half-updated dictionary would show a flag on someone who just scored.</summary>
+        // uid -> flag team. Swapped as a whole, never mutated: the renderer reads it every frame.
         public IReadOnlyDictionary<string, int> CtfCarriers { get; private set; }
             = new Dictionary<string, int>();
 
-        /// <summary>Latest storm-zone segment + arrival time (client clock), so the dome renderer can
-        /// interpolate the radius locally. Null (or Active=false) outside a Hunger Games match.</summary>
+        // uid -> team for the pennants over heads; swapped whole like CtfCarriers.
+        public IReadOnlyDictionary<string, int> TeamMarkers { get; private set; }
+            = new Dictionary<string, int>();
+        private long teamMarkersEventId;
+        public bool TeamMarkersOnHead { get; private set; }
+
+        // A clear from an earlier match must not wipe the pennants of the one now on.
+        private void OnTeamMarkers(TeamMarkersMsg msg)
+        {
+            int n = Math.Min(msg?.Uids?.Length ?? 0, msg?.Teams?.Length ?? 0);
+            if (n == 0 && msg != null && msg.EventId != teamMarkersEventId) return;
+
+            var map = new Dictionary<string, int>();
+            for (int i = 0; i < n; i++)
+                if (!string.IsNullOrEmpty(msg.Uids[i])) map[msg.Uids[i]] = msg.Teams[i];
+            teamMarkersEventId = msg?.EventId ?? 0;
+            TeamMarkersOnHead = msg?.OnHead ?? false;
+            TeamMarkers = map;
+        }
+
+        // Received time is used to interpolate the radius.
         public HgZoneStateMsg HgZone { get; private set; }
         public long HgZoneReceivedMs { get; private set; }
 
@@ -101,19 +110,26 @@ namespace canevents.src.Network
         {
             this.capi = capi;
 
-            clientChannel = capi.Network.RegisterChannel(ServerNetworkHandler.ChannelName);
-            CanEventsProtocol.RegisterAll(clientChannel);
+            clientChannel = capi.Network.RegisterChannel(CanEventsProtocol.MainChannelName);
+            CanEventsProtocol.Register(clientChannel, ProtocolChannel.Main);
+            adminChannel = capi.Network.RegisterChannel(CanEventsProtocol.AdminChannelName);
+            CanEventsProtocol.Register(adminChannel, ProtocolChannel.Admin);
+            capi.Logger.Notification(CanEventsProtocol.Summary());
 
+            SetHandler<ProtocolHandshakeMsg>(OnServerHandshake);
             SetHandler<ScheduleStateMsg>(ScheduleState.Set);
             SetHandler<ClientConfigSyncMsg>(OnClientConfigSync);
             SetHandler<EventRewardConfigMsg>(EventRewardConfig.Set);
             SetHandler<RewardLimitsMsg>(RewardLimits.Set);
+            SetHandler<ServerSettingsMsg>(ServerSettings.Set);
+            SetHandler<EventSettingsMsg>(EventSettings.Set);
             SetHandler<AdminEventListMsg>(AdminEventList.Set);
             SetHandler<LoadoutListMsg>(msg => ItemSetList(msg?.Kind).Set(msg));
             SetHandler<PlatformEditStateMsg>(PlatformEditState.Set);
             SetHandler<MatchHistoryMsg>(MatchHistoryData.Set);
             SetHandler<SchematicListMsg>(SchematicList.Set);
             SetHandler<CtfCarriersMsg>(OnCtfCarriers);
+            SetHandler<TeamMarkersMsg>(OnTeamMarkers);
             SetHandler<HgZoneStateMsg>(m => { HgZone = m; HgZoneReceivedMs = capi.ElapsedMilliseconds; });
             SetHandler<HgSetupMsg>(HgSetup.Set);
             SetHandler<MmConfigMsg>(MmConfig.Set);
@@ -127,6 +143,7 @@ namespace canevents.src.Network
                 EventList.Set(msg);
             });
             SetHandler<PlaceListMsg>(OnPlaceList);
+            SetHandler<PadListMsg>(PadList.Set);
             SetHandler<PlaceOperationResultMsg>(OnPlaceResult);
             SetHandler<TemplateListMsg>(TemplateList.Set);
             SetHandler<LeaderboardMsg>(Leaderboard.Set);
@@ -135,7 +152,7 @@ namespace canevents.src.Network
             SetHandler<PartyOperationResultMsg>(OnPartyResult);
             SetHandler<LoadoutPickRequestMsg>(OnLoadoutPickRequest);
             SetHandler<LoadoutDefaultsListMsg>(LoadoutDefaults.Set);
-            SetHandler<TournamentListMsg>(TournamentList.Set);
+            SetHandler<TournamentListMsg>(OnTournamentList);
             SetHandler<TournamentBracketMsg>(TournamentBracket.Set);
             SetHandler<TournamentReadyRequestMsg>(OnTournamentReadyRequest);
             SetHandler<TournamentReadyClosedMsg>(HandleTournamentReadyClosed);
@@ -145,29 +162,56 @@ namespace canevents.src.Network
             RegisterSpectateHandlers();
             RegisterDuelHandlers();
             RegisterReadyHandlers();
+            RegisterTeamPickHandlers();
+            RegisterShopHandlers();
+            RegisterInventoryAuditHandlers();
         }
 
-        /// <summary>
-        /// Registers a packet handler with its errors contained. Same reasoning as the server side:
-        /// the engine invokes handlers straight, so a throw here unwinds into the client's packet
-        /// loop. The data is trusted here - it comes from the server - but a version mismatch or a
-        /// half-populated snapshot should degrade one panel, not drop the player out of the game.
-        /// </summary>
-        private void SetHandler<T>(NetworkServerMessageHandler<T> handler)
-            => clientChannel.SetMessageHandler<T>(msg =>
-            {
-                try
-                {
-                    handler(msg);
-                }
-                catch (Exception e)
-                {
-                    LogHandlerFailure(typeof(T), e);
-                }
-            });
+        private IClientNetworkChannel ChannelOf(ProtocolChannel channel)
+            => channel == ProtocolChannel.Admin ? adminChannel : clientChannel;
 
-        // Muted per packet type, so a server looping a packet the client cannot digest does not fill
-        // the log with the same stack trace.
+        // Sets the handler on every channel the type is on. The engine doesn't catch, so we do.
+        private void SetHandler<T>(NetworkServerMessageHandler<T> handler)
+        {
+            foreach (var channel in CanEventsProtocol.ChannelsOf(typeof(T)))
+            {
+                ChannelOf(channel).SetMessageHandler<T>(msg =>
+                {
+                    try
+                    {
+                        handler(msg);
+                    }
+                    catch (Exception e)
+                    {
+                        LogHandlerFailure(typeof(T), e);
+                    }
+                });
+            }
+        }
+
+        private void Send<T>(T msg) => ChannelOf(CanEventsProtocol.ChannelFor<T>()).SendPacket(msg);
+
+        // Server ignores this client while versions differ.
+        public bool ProtocolMismatch { get; private set; }
+
+        private void OnServerHandshake(ProtocolHandshakeMsg msg)
+        {
+            if (msg == null) return;
+
+            string ourVersion = capi.ModLoader.GetMod("canevents")?.Info?.Version ?? "?";
+            Send(new ProtocolHandshakeMsg { ProtocolVersion = CanEventsProtocol.Version, ModVersion = ourVersion });
+
+            ProtocolMismatch = msg.ProtocolVersion != CanEventsProtocol.Version;
+            if (!ProtocolMismatch) return;
+
+            capi.Logger.Error("[canevents] Network protocol mismatch: this client is mod {0} (protocol v{1}), "
+                + "the server is mod {2} (protocol v{3}). Install the server's version of the mod.",
+                ourVersion, CanEventsProtocol.Version, msg.ModVersion ?? "?", msg.ProtocolVersion);
+            capi.ShowChatMessage(Vintagestory.API.Config.Lang.Get("canevents:protocol-mismatch-client",
+                ourVersion, CanEventsProtocol.Version, msg.ModVersion ?? "?", msg.ProtocolVersion));
+        }
+
+        // Rate-limits error logging per packet type.
         private readonly Dictionary<Type, long> lastHandlerErrorMs = new Dictionary<Type, long>();
 
         private const long HandlerErrorLogIntervalMs = 10000;
@@ -183,65 +227,71 @@ namespace canevents.src.Network
                 packetType.Name, HandlerErrorLogIntervalMs / 1000, e);
         }
 
-        /// <summary>Last admin-configured default key for the main dialog (null until received).</summary>
         public string MainDialogHotkey { get; private set; }
-        /// <summary>Fires when the server pushes the main-dialog default key on join.</summary>
         public event Action<string> OnMainDialogHotkeyReceived;
 
         private void OnClientConfigSync(ClientConfigSyncMsg msg)
         {
             if (msg == null) return;
             MainDialogHotkey = msg.MainDialogHotkey;
-            // Known from join onward, so the browser can offer the Watch button before the player has
-            // ever asked to spectate. Refreshed by every spectate reply after that.
             SpectatePrivileged = msg.MaySpectate;
+            // Only ever enables tracing, never disables it.
+            if (msg.Diagnostics) ClientTrace.SetEnabled(true);
             OnMainDialogHotkeyReceived?.Invoke(msg.MainDialogHotkey);
         }
 
         public readonly ServerState<LoadoutDefaultsListMsg> LoadoutDefaults = new ServerState<LoadoutDefaultsListMsg>();
 
-        /// <summary>Last reward/entry-fee config the server sent for the admin editor (null until requested).</summary>
         public readonly ServerState<EventRewardConfigMsg> EventRewardConfig = new ServerState<EventRewardConfigMsg>();
 
-        // Latest HG setup snapshot for the place the panel last asked about (tiers, overview, spots).
         public readonly ServerState<HgSetupMsg> HgSetup = new ServerState<HgSetupMsg>();
 
-        // Latest Murder Mystery settings for the place the panel last asked about.
         public readonly ServerState<MmConfigMsg> MmConfig = new ServerState<MmConfigMsg>();
 
         public void SendRequestEventRewardConfig(string eventCode)
-            => clientChannel.SendPacket(new RequestEventRewardConfigMsg { EventCode = eventCode });
+            => Send(new RequestEventRewardConfigMsg { EventCode = eventCode });
 
         public void SendSaveEventRewardConfig(EventRewardConfigMsg msg)
-            => clientChannel.SendPacket(msg);
+            => Send(msg);
 
-        /// <summary>Last global reward/anti-farm limits the server sent (null until requested).</summary>
         public readonly ServerState<RewardLimitsMsg> RewardLimits = new ServerState<RewardLimitsMsg>();
 
         public void SendRequestRewardLimits()
-            => clientChannel.SendPacket(new RequestRewardLimitsMsg());
+            => Send(new RequestRewardLimitsMsg());
 
         public void SendSaveRewardLimits(RewardLimitsMsg msg)
-            => clientChannel.SendPacket(msg);
+            => Send(msg);
+
+        public readonly ServerState<ServerSettingsMsg> ServerSettings = new ServerState<ServerSettingsMsg>();
+
+        public void SendRequestServerSettings()
+            => Send(new RequestServerSettingsMsg());
+
+        // Server replies with a toast and the full list.
+        public void SendSetServerSetting(string key, string value)
+            => Send(new SetServerSettingMsg { Key = key, Value = value });
+
+        public readonly ServerState<EventSettingsMsg> EventSettings = new ServerState<EventSettingsMsg>();
+
+        public void SendRequestEventSettings(string eventCode)
+            => Send(new RequestEventSettingsMsg { EventCode = eventCode });
+
+        // Server replies with a toast and the event's full list.
+        public void SendSetEventSetting(string eventCode, string behavior, string key, string value)
+            => Send(new SetEventSettingMsg { EventCode = eventCode, Behavior = behavior, Key = key, Value = value });
 
         public void RequestLoadoutDefaults()
         {
-            clientChannel.SendPacket(new RequestLoadoutDefaultsMsg());
+            Send(new RequestLoadoutDefaultsMsg());
         }
 
-        // Match-start loadout pick
-        public LoadoutPickRequestMsg PendingLoadoutPick { get; private set; }
         public event Action<LoadoutPickRequestMsg> OnLoadoutPickRequested;
 
-        private void OnLoadoutPickRequest(LoadoutPickRequestMsg msg)
-        {
-            PendingLoadoutPick = msg;
-            OnLoadoutPickRequested?.Invoke(msg);
-        }
+        private void OnLoadoutPickRequest(LoadoutPickRequestMsg msg) => OnLoadoutPickRequested?.Invoke(msg);
 
         public void SendLoadoutPickResponse(long eventId, string eventCode, string setName, bool makeDefault, string registrationGuid = null)
         {
-            clientChannel.SendPacket(new LoadoutPickResponseMsg
+            Send(new LoadoutPickResponseMsg
             {
                 EventId = eventId,
                 EventCode = eventCode,
@@ -249,71 +299,63 @@ namespace canevents.src.Network
                 MakeDefault = makeDefault,
                 RegistrationGuid = registrationGuid
             });
-            PendingLoadoutPick = null;
         }
 
         public void SendClearLoadoutDefault(string eventCode)
         {
-            clientChannel.SendPacket(new ClearLoadoutDefaultMsg { EventCode = eventCode });
+            Send(new ClearLoadoutDefaultMsg { EventCode = eventCode });
         }
-
-        /// <summary>Locally dismisses the match-start class picker without sending a response, for when
-        /// the server-side timeout already elapsed or the player closed the window.</summary>
-        public void DismissLoadoutPick() => PendingLoadoutPick = null;
 
         public readonly ServerState<TplSessionStateMsg> TplSession = new ServerState<TplSessionStateMsg>();
 
         public void SendTplAction(TplAction action, string templateCode = null)
         {
-            clientChannel.SendPacket(new TplActionMsg { Action = action, TemplateCode = templateCode });
+            Send(new TplActionMsg { Action = action, TemplateCode = templateCode });
         }
-
-        // Send methods (client → server)
 
         public void SendJoinRequest(string eventCode, string loadoutSet = null)
         {
-            clientChannel.SendPacket(new JoinEventRequestMsg { EventCode = eventCode, LoadoutSet = loadoutSet });
+            Send(new JoinEventRequestMsg { EventCode = eventCode, LoadoutSet = loadoutSet });
         }
 
         public void SendLeaveRequest()
         {
-            clientChannel.SendPacket(new LeaveEventRequestMsg());
+            Send(new LeaveEventRequestMsg());
         }
 
         public void SendLeaveRequest(string eventCode)
         {
-            clientChannel.SendPacket(new LeaveEventRequestMsg { EventCode = eventCode });
+            Send(new LeaveEventRequestMsg { EventCode = eventCode });
         }
 
         public void RequestEventList()
         {
-            clientChannel.SendPacket(new RequestEventListMsg());
+            Send(new RequestEventListMsg());
         }
 
-        // Admin event enable/disable
         public readonly ServerState<AdminEventListMsg> AdminEventList = new ServerState<AdminEventListMsg>();
 
         public readonly ServerState<ScheduleStateMsg> ScheduleState = new ServerState<ScheduleStateMsg>();
 
         public void RequestAdminEventList()
         {
-            clientChannel.SendPacket(new RequestAdminEventListMsg());
+            Send(new RequestAdminEventListMsg());
         }
 
         public void SendToggleEventEnabled(string code)
         {
-            clientChannel.SendPacket(new ToggleEventEnabledMsg { Code = code });
+            Send(new ToggleEventEnabledMsg { Code = code });
         }
 
         public void RequestScheduleState()
         {
-            clientChannel.SendPacket(new RequestScheduleStateMsg());
+            Send(new RequestScheduleStateMsg());
         }
 
         public void SendAdminAction(AdminAction action, string eventCode = null, int intValue = 0,
             BotMatchMode botMode = BotMatchMode.Play)
         {
-            clientChannel.SendPacket(new AdminActionMsg
+            Send(new AdminActionMsg
             {
                 Action = action,
                 EventCode = eventCode,
@@ -324,23 +366,22 @@ namespace canevents.src.Network
 
         public void RequestTemplateList()
         {
-            clientChannel.SendPacket(new RequestTemplateListMsg());
+            Send(new RequestTemplateListMsg());
         }
 
         public void SendPlaceTemplate(string templateCode)
         {
-            clientChannel.SendPacket(new PlaceTemplateMsg { TemplateCode = templateCode });
+            Send(new PlaceTemplateMsg { TemplateCode = templateCode });
         }
 
         public readonly ServerState<MatchHistoryMsg> MatchHistoryData = new ServerState<MatchHistoryMsg>();
 
         public void RequestMatchHistory()
         {
-            clientChannel.SendPacket(new RequestMatchHistoryMsg());
+            Send(new RequestMatchHistoryMsg());
         }
 
-        // One list per item-set kind (loadouts, outfits - see ItemSetKinds), each its own
-        // ServerState so the admin panel's two editors never overwrite each other's list.
+        // One state per ItemSetKinds kind, so the loadout and outfit editors don't clash.
         private readonly Dictionary<string, ServerState<LoadoutListMsg>> itemSetLists
             = new Dictionary<string, ServerState<LoadoutListMsg>>();
 
@@ -355,25 +396,16 @@ namespace canevents.src.Network
             return state;
         }
 
-        /// <summary>The loadout list, for the many call sites that only ever want that one.</summary>
         public ServerState<LoadoutListMsg> LoadoutList => ItemSetList(EventManagers.ItemSetKinds.Loadout);
 
         public void RequestLoadoutList(string kind = null)
         {
-            clientChannel.SendPacket(new RequestLoadoutListMsg { Kind = kind });
-        }
-
-        public void SendSaveLoadoutFromInv(string eventCode, string setName, string kind = null)
-        {
-            clientChannel.SendPacket(new SaveLoadoutFromInvMsg
-            {
-                EventCode = eventCode, SetName = setName, Kind = kind
-            });
+            Send(new RequestLoadoutListMsg { Kind = kind });
         }
 
         public void SendDeleteLoadoutSet(string eventCode, string setName, string kind = null)
         {
-            clientChannel.SendPacket(new DeleteLoadoutSetMsg
+            Send(new DeleteLoadoutSetMsg
             {
                 EventCode = eventCode, SetName = setName, Kind = kind
             });
@@ -381,29 +413,28 @@ namespace canevents.src.Network
 
         public void SendImportInlineSets(string eventCode, string kind = null)
         {
-            clientChannel.SendPacket(new ImportInlineSetsMsg { EventCode = eventCode, Kind = kind });
+            Send(new ImportInlineSetsMsg { EventCode = eventCode, Kind = kind });
         }
 
         public void SendSaveLoadout(string eventCode, string setName, string[] codes, int[] quantities,
-            string kind = null)
+            string kind = null, string[] ids = null, UpgradeStepMsg[] upgrades = null)
         {
-            clientChannel.SendPacket(new SaveLoadoutMsg
+            Send(new SaveLoadoutMsg
             {
                 EventCode = eventCode,
                 SetName = setName,
                 ItemCodes = codes,
                 ItemQuantities = quantities,
+                ItemIds = ids,
+                Upgrades = upgrades,
                 Kind = kind
             });
         }
-
-        // Handlers
 
         private void OnStateUpdate(EventStateUpdateMsg msg)
         {
             EventStates[msg.EventId] = msg;
 
-            // Track the event the player is actively participating in.
             if (msg.EventState == EventManagers.EventState.Running
                 || msg.EventState == EventManagers.EventState.LocationFound
                 || msg.EventState == EventManagers.EventState.SearchingForLocation)
@@ -416,6 +447,7 @@ namespace canevents.src.Network
                 EventStates.Remove(msg.EventId);
                 Scoreboards.Remove(msg.EventId);
                 KillFeeds.Remove(msg.EventId);
+                DropShopFor(msg.EventId);
                 if (ActiveEventId == msg.EventId)
                     ActiveEventId = 0;
             }
@@ -450,6 +482,7 @@ namespace canevents.src.Network
             EventStates.Remove(msg.EventId);
             Scoreboards.Remove(msg.EventId);
             KillFeeds.Remove(msg.EventId);
+            DropShopFor(msg.EventId);
             if (ActiveEventId == msg.EventId)
                 ActiveEventId = 0;
             OnResultReceived?.Invoke(msg);
@@ -459,12 +492,12 @@ namespace canevents.src.Network
 
         public void RequestSchematicList()
         {
-            clientChannel.SendPacket(new RequestSchematicListMsg());
+            Send(new RequestSchematicListMsg());
         }
 
         public void SendCreateTemplateFromSchematic(string schematicName, string templateCode, string[] placeTypes, bool onDemand)
         {
-            clientChannel.SendPacket(new CreateTemplateFromSchematicMsg
+            Send(new CreateTemplateFromSchematicMsg
             {
                 SchematicName = schematicName,
                 TemplateCode = templateCode,
@@ -475,18 +508,18 @@ namespace canevents.src.Network
 
         public void RequestLeaderboard(string eventCode = null)
         {
-            clientChannel.SendPacket(new RequestLeaderboardMsg { EventCode = eventCode });
+            Send(new RequestLeaderboardMsg { EventCode = eventCode });
         }
 
         public void RequestPlayerAccess()
         {
-            clientChannel.SendPacket(new RequestPlayerAccessMsg());
+            Send(new RequestPlayerAccessMsg());
         }
 
-        /// <summary>Change one player's access. Either a uid (a row in the list) or a typed name.</summary>
+        // Pass a uid (list row) or a typed name.
         public void SendPlayerAccessAction(PlayerAccessAction action, string uid = null, string name = null)
         {
-            clientChannel.SendPacket(new PlayerAccessActionMsg
+            Send(new PlayerAccessActionMsg
             {
                 Action = action,
                 PlayerUid = uid,

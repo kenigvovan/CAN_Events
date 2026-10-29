@@ -19,82 +19,55 @@ namespace canevents.src.EventManagers.eventBehavior
         public SpleefEB(string name, JsonObject attributes, RunningEvent runningEvent)
             : base(name, attributes, runningEvent) { }
 
-        public override string Name { get => "Spleef"; set { } }
+        public override string Name => BehaviorNames.Spleef;
 
-        public override void Initialize()
+        protected override void ReadModeConfig()
         {
-            base.Initialize();
             toolCode        = Config.String("toolCode", "game:shovel-iron");
             meltDelay       = Config.Float("meltDelay", 0f);
             hitMeltDelay    = Config.Float("hitMeltDelay", 0f);
-            ParsePrefightSeconds();
-            Config.WarnUnknown();
         }
 
         protected override void AfterPlatformPlaced(List<BlockPos> positions)
         {
-            // Both timers need the BE: the break handler PreventDefaults every dig on a spleef block,
-            // so without a BE to melt it a hitMeltDelay-only config left the platform unbreakable.
-            // With only hitMeltDelay the BEs spawn idle and start counting on the first hit.
+            // Break handler cancels digs on spleef blocks, so hitMeltDelay alone also needs the BE (idle until hit).
             if (meltDelay > 0f || hitMeltDelay > 0f)
-                SpawnMeltEntities(positions, startMelting: meltDelay > 0f);
+                SpawnMeltEntities(positions, meltDelay > 0f ? meltDelay : (float?)null);
         }
 
-        private void SpawnMeltEntities(IEnumerable<BlockPos> positions, bool startMelting)
+        protected override bool OnPlatformBlockHit(IServerPlayer player, BlockPos pos)
         {
-            var blockAccessor = runningEvent.sapi.World.BlockAccessor;
-            foreach (var pos in positions)
-            {
-                blockAccessor.SpawnBlockEntity("SpleefMelt", pos);
-                if (!startMelting) continue;
-                var entity = blockAccessor.GetBlockEntity(pos) as BlockEntities.BlockEntitySpleefMelt;
-                entity?.StartMelt(runningEvent.sapi, meltDelay);
-            }
-        }
+            // No hit timer: the dig breaks the block.
+            if (hitMeltDelay <= 0f) return false;
 
-        // The base already protects the block for everyone; this is only what a hit MEANS here.
-        protected override void OnPlatformBlockHit(IServerPlayer player, BlockPos pos)
-        {
-            if (hitMeltDelay <= 0f) return;
             var entity = runningEvent.sapi.World.BlockAccessor.GetBlockEntity(pos) as BlockEntities.BlockEntitySpleefMelt;
-            if (entity == null) return;
-            // Already counting down: pull the deadline in. Otherwise start fresh - this is the only
-            // melt trigger in a hitMeltDelay-only config.
+            if (entity == null) return true;
             if (entity.IsMelting) entity.ReduceDelay(hitMeltDelay);
             else entity.StartMelt(runningEvent.sapi, hitMeltDelay);
-        }
-
-        // TPThereAndBack teleports players into the cage earlier in OnStart; the base runs the
-        // caged countdown and calls OnCageOpened when it expires.
-        public override void OnStart()
-        {
-            base.OnStart();   // platform protection
-            StartPrefight();
-        }
-
-        public override void OnTick(float dt)
-        {
-            if (TickPrefight(dt)) return;   // suppresses fall checks while caged
-
-            base.OnTick(dt);
+            return true;
         }
 
         protected override void OnCageOpened()
         {
-            foreach (var plGuid in runningEvent.ParticipantsBefore)
+            // Own gear is not restored after, so a handed-out shovel would leave the arena.
+            if (runningEvent.KeepOwnGear)
             {
-                // Only who is actually in play: a pre-start dropout is never teleported in, so a
-                // shovel handed to them would be minted outside the match.
-                if (!runningEvent.IsActive(plGuid)) continue;
-                var player = runningEvent.sapi.World.PlayerByUid(plGuid) as IServerPlayer;
-                if (player == null) continue;
-                var shovel = runningEvent.sapi.World.GetItem(new AssetLocation(toolCode));
-                if (shovel != null)
-                    InventoryUtil.Give(runningEvent.sapi, player, new ItemStack(shovel, 1), "spleef-tool");
+                log.Notification("KeepOwnGear: no spleef tool handed out.");
+                return;
+            }
+
+            var shovel = runningEvent.sapi.World.GetItem(new AssetLocation(toolCode));
+            if (shovel == null) return;
+
+            // Pre-start dropouts were never teleported in.
+            foreach (var player in runningEvent.ActiveOnlineParticipants)
+            {
+                var stack = new ItemStack(shovel, 1);
+                Shared.IssuedGear.Mark(stack, player.PlayerName);
+                InventoryUtil.Give(runningEvent.sapi, player, stack, "spleef-tool");
             }
         }
 
-        // No Clone() override: Initialize() re-reads every field from Attributes, and RunningEvent
-        // always calls it after the base Activator clone.
+        // No Clone() override: RunningEvent calls Initialize() after cloning, which re-reads Attributes.
     }
 }

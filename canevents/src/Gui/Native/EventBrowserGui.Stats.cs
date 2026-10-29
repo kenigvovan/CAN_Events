@@ -5,7 +5,7 @@ using Vintagestory.API.Config;
 
 namespace canevents.src.Gui.Native
 {
-    // Leaderboard and History: the two read-only stat views.
+    // Leaderboard and History tabs.
     public partial class EventBrowserGui
     {
         private long expandedHistoryEntry = -1;
@@ -20,7 +20,7 @@ namespace canevents.src.Gui.Native
             }
             else
             {
-                // MMR is per-event: meaningful (and sorted by) only on a single-event board.
+                // MMR is per-event, only shown on a single-event board.
                 bool showMmr = lb.FilteredEventCode != null;
 
                 for (int i = 0; i < lb.Entries.Length; i++)
@@ -43,7 +43,6 @@ namespace canevents.src.Gui.Native
             ComposeLeaderboardFilters();
         }
 
-        // Filter buttons under the list: "All" plus one per event the board knows about.
         private void ComposeLeaderboardFilters()
         {
             var lb = networkHandler.Leaderboard.Value;
@@ -61,7 +60,7 @@ namespace canevents.src.Gui.Native
             x += 70;
             foreach (var code in lb.AvailableEventCodes)
             {
-                // Past this point the buttons run off the dialog; the rest stay reachable via "All".
+                // Rest would run off the dialog.
                 if (x > DialogWidth - 120) break;
 
                 string filter = code;
@@ -79,7 +78,6 @@ namespace canevents.src.Gui.Native
         {
             var history = networkHandler.MatchHistoryData.Value;
 
-            // Finished tournaments answer the same question this tab does, so they head the list.
             ComposeTournamentHistory();
 
             if (history?.Entries == null || history.Entries.Length == 0)
@@ -108,7 +106,6 @@ namespace canevents.src.Gui.Native
                     detail.Append("   ").Append(entry.DurationSeconds / 60).Append("m ")
                           .Append(entry.DurationSeconds % 60).Append('s');
 
-                // Per-player scores are noise until asked for: the card expands on click.
                 bool expanded = expandedHistoryEntry == entry.TimestampUnix;
                 if (expanded && entry.Scores != null)
                 {
@@ -140,8 +137,7 @@ namespace canevents.src.Gui.Native
             });
         }
 
-        // Plain numbers: circled digits (U+2460..) are not in the game font and render as empty
-        // boxes. The top three are already distinguished by accent colour.
+        // Circled digits (U+2460..) are missing from the game font.
         private static string Medal(int rank) => (rank + 1) + ".";
 
         private static double[] MedalAccent(int rank) => rank switch

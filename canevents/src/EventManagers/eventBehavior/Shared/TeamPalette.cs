@@ -4,14 +4,10 @@ using Vintagestory.API.MathTools;
 
 namespace canevents.src.EventManagers.eventBehavior.Shared
 {
-    /// <summary>
-    /// The single team colour palette, in both forms the mod needs: packed RGBA for in-world
-    /// particles and a float vector for the ImGui HUD. Kept in one place so the zone ring and the
-    /// scoreboard can never disagree about who owns what.
-    /// </summary>
+    // Team colours for both particles (packed) and the HUD (Vector4).
     public static class TeamPalette
     {
-        // Blue, red, green, yellow, orange, purple: distinguishable at a glance and from neutral grey.
+        // Blue, red, green, yellow, orange, purple.
         private static readonly (float r, float g, float b)[] Teams =
         {
             (0.2f, 0.6f, 1.0f),
@@ -24,7 +20,7 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
 
         public static int Count => Teams.Length;
 
-        /// <summary>HUD colour for a team. Out-of-range ids wrap, negative ones read as white.</summary>
+        // Ids wrap; negative = white.
         public static Vector4 Rgba(int teamId)
         {
             if (teamId < 0) return new Vector4(1f, 1f, 1f, 1f);
@@ -32,7 +28,7 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
             return new Vector4(r, g, b, 1f);
         }
 
-        /// <summary>Particle colour for a team, in the engine's packed form.</summary>
+        // Particle colours are packed BGR.
         public static int Packed(int teamId)
         {
             if (teamId < 0) return ColorUtil.ToRgba(255, 255, 255, 255);
@@ -41,5 +37,23 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
         }
 
         private static int Byte(float c) => (int)Math.Round(Math.Min(1f, Math.Max(0f, c)) * 255f);
+
+        // Same order as Teams; used for typed team args, so English and stable.
+        private static readonly string[] Codes = { "blue", "red", "green", "yellow", "orange", "purple" };
+
+        public static string NameOf(int teamId)
+            => teamId < 0
+                ? "?"
+                : Vintagestory.API.Config.Lang.Get("canevents:team-color-" + Codes[teamId % Codes.Length])
+                  + (teamId >= Codes.Length ? " " + (teamId + 1) : "");
+
+        // "red", "2" (1-based) -> index; -1 if neither.
+        public static int Parse(string arg)
+        {
+            if (string.IsNullOrWhiteSpace(arg)) return -1;
+            arg = arg.Trim().ToLowerInvariant();
+            if (int.TryParse(arg, out int n)) return n >= 1 ? n - 1 : -1;
+            return Array.IndexOf(Codes, arg);
+        }
     }
 }

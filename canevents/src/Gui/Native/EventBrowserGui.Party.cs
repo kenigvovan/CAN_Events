@@ -5,32 +5,27 @@ using Vintagestory.API.Config;
 
 namespace canevents.src.Gui.Native
 {
-    // Group tab: invites, roster, leader actions, and the saved class defaults underneath.
+    // Group tab.
     public partial class EventBrowserGui
     {
         private string[] inviteCandidates = new string[0];
         private int inviteIndex;
 
-        /// <summary>Member whose kick is armed and waiting for the confirming second click.</summary>
+        // Uid waiting for the confirming second click.
         private string kickArmed;
 
-        /// <summary>
-        /// Engine waypoint icon marking the group leader. A drawn vector, not a character: the game
-        /// font has no glyph for a unicode star and renders an empty box.
-        /// </summary>
+        // Waypoint icon; the game font has no unicode star glyph.
         private const string LeaderIcon = "wpStar1";
 
         private void ComposePartyTab()
         {
             var state = networkHandler.PartyState.Value;
 
-            // Result of the last group action, coloured so a failure does not read as a confirmation.
             var result = networkHandler.LastPartyResult;
             if (result != null && !string.IsNullOrEmpty(result.Message))
                 AddCard(result.Message, accent: result.Success ? Palette.Go : Palette.Stop);
 
-            // Invites come first, whether or not you are in a group. Two cards each (accept, decline)
-            // because a tile carries only one action.
+            // Two cards per invite: a tile carries only one action.
             if (state?.PendingInvitesForMe != null && state.PendingInvitesForMe.Length > 0)
             {
                 AddHeader(Lang.Get("canevents:gui-section-invites"));
@@ -47,7 +42,6 @@ namespace canevents.src.Gui.Native
                 }
             }
 
-            // Size and leader go in the heading; a whole tile for them pushed the roster below the fold.
             AddHeader(state != null && state.InParty
                 ? Lang.Get("canevents:gui-party-heading", state.Members?.Length ?? 0, state.MaxSize,
                     state.Members?.FirstOrDefault(m => m.IsLeader)?.Name ?? "?")
@@ -71,16 +65,13 @@ namespace canevents.src.Gui.Native
             {
                 foreach (var m in state.Members)
                 {
-                    // Only what the row does not already say: the icon marks the leader, so the detail
-                    // line is just whether the OTHERS are online.
                     bool isSelf = m.Uid == state.SelfUid;
                     string detail = isSelf ? null
                         : Lang.Get(m.Online ? "canevents:gui-member-online" : "canevents:gui-member-offline");
 
                     var accent = m.IsLeader ? Palette.Title : (m.Online ? Palette.Go : Palette.Idle);
 
-                    // Only the leader can kick, never themselves. Two clicks, because the tile's whole
-                    // face is the button and a stray click must not eject someone mid-queue.
+                    // Two-click kick: the whole tile is the button.
                     if (iAmLeader && m.Uid != state.SelfUid)
                     {
                         string target = m.Name;
@@ -105,7 +96,6 @@ namespace canevents.src.Gui.Native
             AddDefaultsCards();
             ComposeCards();
 
-            // Candidates for the invite dropdown: everyone online who is not already in.
             var memberUids = new HashSet<string>();
             if (state.Members != null) foreach (var m in state.Members) memberUids.Add(m.Uid);
             inviteCandidates = capi.World.AllOnlinePlayers
@@ -117,8 +107,7 @@ namespace canevents.src.Gui.Native
             ComposePartyControls(iAmLeader && memberCount < state.MaxSize && inviteCandidates.Length > 0);
         }
 
-        // Outside the scrolling list: these are the tab's actions, and a dropdown inside a clipped
-        // list draws through the clip.
+        // Outside the scroll list: a dropdown inside a clipped list draws through the clip.
         private void ComposePartyControls(bool inviteRow)
         {
             var state = networkHandler.PartyState.Value;
@@ -145,7 +134,6 @@ namespace canevents.src.Gui.Native
 
             if (!inviteRow)
             {
-                // Say why there is no invite row: not the leader, group full, or nobody else online.
                 if (state?.InParty == true)
                 {
                     string why = state.LeaderUid != state.SelfUid

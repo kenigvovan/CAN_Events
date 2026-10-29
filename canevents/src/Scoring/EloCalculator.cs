@@ -2,19 +2,14 @@ using System;
 
 namespace canevents.src.Scoring
 {
-    // Pure Elo math. A "side" is one Elo entity (solo player or whole team); its rating is the mean of
-    // its members' and every member shares the side's delta (team-average model). M-side matches use
-    // pairwise rank decomposition: a virtual 1v1 per pair, with K scaled by 1/(M-1) so a side's total
-    // swing stays comparable to a single 1v1. M=2 reduces to textbook Elo.
+    // Side rating = team mean, all members get the side's delta.
+    // M sides: pairwise virtual 1v1s with K/(M-1).
     public static class EloCalculator
     {
         public const int DefaultRating = 1000;
         public const int K = 32;
 
-        /// <summary>
-        /// Rating delta per side in an M-side match: sideRatings[i] are side i's member ratings,
-        /// sideRanks[i] its placement (lower = better, equal = tie). Apply each delta to every member.
-        /// </summary>
+        // Ranks: lower is better, equal = tie.
         public static int[] ComputeRanked(int[][] sideRatings, int[] sideRanks)
         {
             int m = sideRatings?.Length ?? 0;
@@ -42,9 +37,7 @@ namespace canevents.src.Scoring
             return deltas;
         }
 
-        /// <summary>
-        /// 2-team convenience over <see cref="ComputeRanked"/>. scoreA: 1.0 = A won, 0.0 = A lost, 0.5 = draw.
-        /// </summary>
+        // scoreA: 1 = A won, 0 = A lost, 0.5 = draw.
         public static (int deltaA, int deltaB) Compute(int[] teamARatings, int[] teamBRatings, double scoreA)
         {
             int[] ranks = scoreA > 0.5 ? new[] { 0, 1 }

@@ -4,21 +4,31 @@ using Vintagestory.API.Datastructures;
 
 namespace canevents.src.EventManagers.events
 {
-    /// <summary>
-    /// Reads a behavior's configuration and reports what it cannot find. A raw
-    /// <c>Attributes["maxPartySize"].AsInt(2)</c> is silent about a misspelt key: the default comes
-    /// back and the admin's setting does nothing. Here a fallback is logged at debug level, and
-    /// <see cref="WarnUnknown"/> flags JSON keys nothing asked for - where a typo surfaces.
-    /// </summary>
+    public enum SettingType { Int, Float, Bool, String }
+
+    // A scalar key a behavior read, with the fallback it would use.
+    public sealed class KnownSetting
+    {
+        public string Key;
+        public SettingType Type;
+        public object Fallback;
+    }
+
+    // Behavior config reader that tracks read keys, so WarnUnknown can flag typos. The typed reads
+    // also make the list of a behavior's settings, which the admin editor offers.
     public class BehaviorAttributes
     {
         private readonly JsonObject attributes;
         private readonly ILogger logger;
         private readonly string owner;
         private readonly HashSet<string> read = new HashSet<string>();
+        private readonly List<KnownSetting> known = new List<KnownSetting>();
+        private readonly HashSet<string> knownKeys = new HashSet<string>();
 
-        /// <summary>Legitimate keys nothing reads through here: the base class takes
-        /// RegisterGameTickListener in its constructor, and "comment" exists for people.</summary>
+        // In read order; a key read twice keeps its first type.
+        public IReadOnlyList<KnownSetting> Known => known;
+
+        // RegisterGameTickListener is retired (see WantsTick) but old configs still have it.
         private static readonly HashSet<string> AlwaysExpected =
             new HashSet<string> { "RegisterGameTickListener", "comment" };
 
@@ -29,12 +39,11 @@ namespace canevents.src.EventManagers.events
             this.owner = owner;
         }
 
-        public float Float(string key, float fallback) => Read(key, fallback, t => t.AsFloat(fallback));
-        public int Int(string key, int fallback) => Read(key, fallback, t => t.AsInt(fallback));
-        public bool Bool(string key, bool fallback) => Read(key, fallback, t => t.AsBool(fallback));
-        public string String(string key, string fallback = null) => Read(key, fallback, t => t.AsString(fallback));
+        public float Float(string key, float fallback) => Read(key, SettingType.Float, fallback, t => t.AsFloat(fallback));
+        public int Int(string key, int fallback) => Read(key, SettingType.Int, fallback, t => t.AsInt(fallback));
+        public bool Bool(string key, bool fallback) => Read(key, SettingType.Bool, fallback, t => t.AsBool(fallback));
+        public string String(string key, string fallback = null) => Read(key, SettingType.String, fallback, t => t.AsString(fallback));
 
-        /// <summary>The raw node, for the shapes that need their own parsing (tables, arrays).</summary>
         public JsonObject Raw(string key)
         {
             read.Add(key);
@@ -47,9 +56,10 @@ namespace canevents.src.EventManagers.events
             return attributes?[key]?.Exists == true;
         }
 
-        private T Read<T>(string key, T fallback, System.Func<JsonObject, T> convert)
+        private T Read<T>(string key, SettingType type, T fallback, System.Func<JsonObject, T> convert)
         {
             read.Add(key);
+            if (knownKeys.Add(key)) known.Add(new KnownSetting { Key = key, Type = type, Fallback = fallback });
             var node = attributes?[key];
             if (node?.Exists != true)
             {
@@ -59,8 +69,7 @@ namespace canevents.src.EventManagers.events
             return convert(node);
         }
 
-        /// <summary>Reports keys the JSON carries that nothing read - almost always a misspelling.
-        /// Called once after a behavior has finished initializing.</summary>
+        // Call once after the behavior has initialized.
         public void WarnUnknown()
         {
             if (!(attributes?.Token is Newtonsoft.Json.Linq.JObject obj)) return;

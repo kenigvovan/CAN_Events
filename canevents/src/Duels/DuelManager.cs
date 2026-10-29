@@ -10,15 +10,8 @@ using Vintagestory.API.Server;
 
 namespace canevents.src.Duels
 {
-    /// <summary>
-    /// Player-to-player challenges. Until now the only way into a match was the queue, which decides
-    /// who you play; two people standing next to each other had no way to just fight.
-    ///
-    /// A driver of its own rather than more surface on CANEventManager (already 1600 lines across
-    /// five files). It owns nothing but the outstanding challenges - once one is accepted the match
-    /// is handed to <see cref="CANEventManager.StartMatchFor"/>, the same entry the tournament driver
-    /// uses, and everything after that is the ordinary match machinery.
-    /// </summary>
+    // Player-to-player challenges. Only holds pending challenges; accepted ones go through
+    // CANEventManager.StartMatchFor like tournament matches.
     public class DuelManager
     {
         private readonly ICoreServerAPI sapi;
@@ -26,7 +19,6 @@ namespace canevents.src.Duels
         private readonly Config config;
         private readonly Log log;
 
-        // Outstanding challenges by id. Small by nature: one per pair, and they lapse in a minute.
         private readonly Dictionary<long, DuelChallenge> pending = new Dictionary<long, DuelChallenge>();
         private long nextId = 1;
 
@@ -42,14 +34,12 @@ namespace canevents.src.Duels
                 EventMutators.Normalize(config?.disabledMutators), StringComparer.OrdinalIgnoreCase);
         }
 
-        /// <summary>Mutators the config forbids, canonical keys. Read by the target-list packet so
-        /// the duel tab hides those knobs instead of offering terms the server would bounce.</summary>
+        // Canonical keys; sent to the client so the duel tab hides them.
         public IReadOnlyCollection<string> DisabledMutators { get; }
 
         public void Start()
         {
-            // One second is fine: the deadline is a minute, and nobody minds a challenge lapsing a
-            // beat late. Registered rather than Event.Timer so a mod reload can stop it.
+            // Tick listener rather than Event.Timer so Dispose can stop it.
             expiryListenerId = sapi.Event.RegisterGameTickListener(_ => ExpireStale(), 1000);
         }
 
@@ -59,15 +49,8 @@ namespace canevents.src.Duels
             expiryListenerId = -1;
         }
 
-        /// <summary>Server clock the deadlines are measured against.</summary>
         private long NowMs => sapi.World.ElapsedMilliseconds;
 
-        // Sending a challenge
-
-        /// <summary>
-        /// Creates a challenge from one player to another and prompts the target. Returns a localized
-        /// message either way, for the command and the packet handler to relay.
-        /// </summary>
         public (bool ok, string message) Challenge(IServerPlayer challenger, string targetName,
             DuelKind kind, string wagerPacked = null, string eventCode = null, string[] mutators = null)
         {
@@ -80,14 +63,12 @@ namespace canevents.src.Duels
             if (target.PlayerUID == challenger.PlayerUID)
                 return (false, Lang.Get("canevents:duel-not-yourself"));
 
-            // Sides are whole parties, and only a leader may commit their party to a fight - the same
-            // rule the queue enforces in AddToQueue.
+            // Sides are whole parties, only the leader can challenge (same as AddToQueue).
             if (!TryBuildSide(challenger, out var challengerSide, out string sideError))
                 return (false, sideError);
             if (!TryBuildSide(target, out var targetSide, out sideError))
                 return (false, sideError);
 
-            // Being in the same party is not a duel, it is a misunderstanding.
             if (challengerSide.Contains(target.PlayerUID))
                 return (false, Lang.Get("canevents:duel-same-party"));
 
@@ -95,15 +76,12 @@ namespace canevents.src.Duels
                 return (false, Lang.Get("canevents:duel-side-mismatch",
                     challengerSide.Count, targetSide.Count));
 
-            // Everyone has to be free, not just the two who are talking: a party member already in a
-            // match cannot be dragged into another one.
+            // Whole party must be free, not just the leaders.
             if (!AllAvailable(challengerSide, out string busyName))
                 return (false, Lang.Get("canevents:duel-side-busy", busyName));
             if (!AllAvailable(targetSide, out busyName))
                 return (false, Lang.Get("canevents:duel-side-busy", busyName));
 
-            // Refuse early rather than at accept time: an event that does not exist for this side
-            // size means the challenge could never have been played.
             bool modePinned = !string.IsNullOrWhiteSpace(eventCode);
             var template = modePinned
                 ? FindDuelEventByCode(eventCode, challengerSide.Count)
@@ -113,15 +91,11 @@ namespace canevents.src.Duels
                     ? Lang.Get("canevents:duel-bad-mode", eventCode, challengerSide.Count)
                     : Lang.Get("canevents:duel-no-event", challengerSide.Count));
 
-            // Terms are validated where they are set, not where they fire: an unknown mutator or a
-            // loadout the mode does not have must bounce the challenge, never start a wrong match.
             var parsedMutators = EventMutators.ParseAll(mutators, out var badMutators);
             if (badMutators.Count > 0)
                 return (false, Lang.Get("canevents:duel-bad-mutator", badMutators[0]));
 
-            // Named by its key, not its pretty label: the key is what an admin would look for in
-            // disabledMutators, and a label like "start health 100%" for a value-less mention reads
-            // like a setting rather than a switch.
+            // Reported by key, since that's what disabledMutators uses.
             var offLimits = parsedMutators.Keys.FirstOrDefault(DisabledMutators.Contains);
             if (offLimits != null)
                 return (false, Lang.Get("canevents:duel-mutator-disabled", offLimits));
@@ -135,8 +109,7 @@ namespace canevents.src.Duels
                     return (false, Lang.Get("canevents:duel-bad-loadout", forcedSet, template.Code));
             }
 
-            // Stake is settled before the challenge goes out: being told "you cannot afford this"
-            // after the opponent already accepted wastes their time and looks like a bug.
+            // Check affordability now, not after the opponent accepts.
             List<RewardItem> wager = null;
             if (kind == DuelKind.Wager)
             {
@@ -144,8 +117,7 @@ namespace canevents.src.Duels
                     return (false, wagerError);
             }
 
-            // One challenge per person at a time. A repeat replaces the old one rather than stacking,
-            // so a player cannot be buried under prompts.
+            // One challenge per person; a new one replaces the old.
             DropChallengesInvolving(challengerSide, "canevents:duel-cancelled-replaced");
             DropChallengesInvolving(targetSide, "canevents:duel-cancelled-replaced");
 
@@ -170,8 +142,6 @@ namespace canevents.src.Duels
             log.Notification("{0} challenged {1} ({2}, {3}v{3})",
                 challenger.PlayerName, target.PlayerName, kind, challengerSide.Count);
 
-            // The challenged player sees the head-to-head score on their prompt; the challenger
-            // gets the same courtesy here, the only message they receive.
             var (wins, losses, draws) = manager.HeadToHead
                 ?.ScoreFor(challenger.PlayerUID, target.PlayerUID) ?? (0, 0, 0);
             string sent = Lang.Get("canevents:duel-sent", target.PlayerName);
@@ -181,15 +151,12 @@ namespace canevents.src.Duels
             return (true, sent);
         }
 
-        // Answering
-
-        /// <summary>Accepts the challenge waiting for this player, and starts the match.</summary>
-        public (bool ok, string message) Accept(IServerPlayer player)
+        // Non-zero challengeId must match exactly, so a stale popup can't accept newer terms.
+        public (bool ok, string message) Accept(IServerPlayer player, long challengeId = 0)
         {
-            var challenge = PendingFor(player?.PlayerUID);
+            var challenge = PendingFor(player?.PlayerUID, challengeId);
             if (challenge == null) return (false, Lang.Get("canevents:duel-nothing-pending"));
 
-            // Only the challenged leader answers: their party is what is being committed.
             if (challenge.TargetUid != player.PlayerUID)
                 return (false, Lang.Get("canevents:duel-not-yours-to-answer"));
 
@@ -199,10 +166,10 @@ namespace canevents.src.Duels
             return StartDuel(challenge);
         }
 
-        /// <summary>Declines it. Works for either side, so the challenger can take theirs back.</summary>
-        public (bool ok, string message) Decline(IServerPlayer player)
+        // Either side can decline, so the challenger can withdraw.
+        public (bool ok, string message) Decline(IServerPlayer player, long challengeId = 0)
         {
-            var challenge = PendingFor(player?.PlayerUID);
+            var challenge = PendingFor(player?.PlayerUID, challengeId);
             if (challenge == null) return (false, Lang.Get("canevents:duel-nothing-pending"));
 
             pending.Remove(challenge.Id);
@@ -215,12 +182,9 @@ namespace canevents.src.Duels
             return (true, Lang.Get("canevents:duel-declined"));
         }
 
-        // Starting
-
         private (bool ok, string message) StartDuel(DuelChallenge challenge)
         {
-            // Re-checked at accept time, not trusted from creation: a minute is long enough for
-            // someone to join a match, leave their party or log off.
+            // Recheck, things may have changed since the challenge was sent.
             if (!AllAvailable(challenge.ChallengerSide, out string busyName)
                 || !AllAvailable(challenge.TargetSide, out busyName))
             {
@@ -228,8 +192,7 @@ namespace canevents.src.Duels
                 return (false, Lang.Get("canevents:duel-side-busy", busyName));
             }
 
-            // A pinned mode is re-resolved strictly: if it went away in the meantime, the duel is off
-            // rather than played as something else - these are the terms the target accepted.
+            // Pinned mode gone = no duel, never fall back to another mode.
             var template = challenge.ModePinned
                 ? FindDuelEventByCode(challenge.EventCode, challenge.SideSize)
                 : FindDuelEvent(challenge.SideSize);
@@ -241,9 +204,7 @@ namespace canevents.src.Duels
 
             var ev = BuildDuelEvent(template, challenge);
 
-            // Stakes before the match: both sides pay or neither does. Done here rather than at
-            // challenge time because the challenge may never be accepted, and money must not sit in
-            // escrow for a fight that is not happening.
+            // Charged on accept, not on challenge, so nothing sits in escrow for unaccepted duels.
             if (challenge.Kind == DuelKind.Wager && !ChargeBothStakes(challenge, ev.Code, out string feeError))
             {
                 NotifyBoth(challenge, feeError);
@@ -255,14 +216,13 @@ namespace canevents.src.Duels
             var re = manager.StartMatchFor(ev, teams, null, null, out string reason);
             if (re == null)
             {
-                // The match never started, so nobody owes anything - hand the stakes straight back.
                 if (challenge.Kind == DuelKind.Wager) RefundBothStakes(challenge);
 
                 NotifyBoth(challenge, Lang.Get("canevents:duel-start-failed", reason ?? "?"));
                 return (false, Lang.Get("canevents:duel-start-failed", reason ?? "?"));
             }
 
-            // A duel never moves the ladder, whatever event it borrowed. See DuelKind for why.
+            // Duels are never rated, see DuelKind.
             re.SuppressRating = true;
             if (challenge.Kind == DuelKind.Friendly) re.SuppressRewards = true;
 
@@ -273,18 +233,12 @@ namespace canevents.src.Duels
             return (true, Lang.Get("canevents:duel-started", NameOf(challenge.TargetUid)));
         }
 
-        /// <summary>
-        /// A throwaway copy of the event, tuned for this duel. Cloned rather than used directly so a
-        /// duel's terms never leak into the queue's copy of the same event - the same reason the
-        /// debug bot match clones.
-        /// </summary>
+        // Cloned so duel terms don't leak into the queue's event.
         private CANEvent BuildDuelEvent(CANEvent template, DuelChallenge challenge)
         {
             var ev = template.Clone();
             ev.Rated = false;
 
-            // The challenger's terms, on top of whatever the template already declared. Validated at
-            // challenge time; parsed again here only because the challenge stores the wire form.
             foreach (var kv in EventMutators.ParseAll(challenge.Mutators, out _))
                 ev.Mutators[kv.Key] = kv.Value;
 
@@ -295,19 +249,13 @@ namespace canevents.src.Duels
                 return ev;
             }
 
-            // Wager: the stake replaces whatever fee the borrowed event carried, and the whole pot
-            // goes to the winner - the house takes no cut of a fight between two players.
+            // Stake replaces the event fee, no rake.
             ev.Reward = null;
             ev.EntryFee = new EntryFeeSpec { Items = challenge.Wager, RakePercent = 0 };
             return ev;
         }
 
-        // Stakes
-
-        /// <summary>
-        /// Reads a stake the challenger typed or picked, and refuses one they cannot cover. Only the
-        /// leader of each side pays, so this is checked against them alone.
-        /// </summary>
+        // Only the leader pays, so only the challenger is checked.
         private bool TryReadWager(IServerPlayer challenger, string packed,
             out List<RewardItem> wager, out string error)
         {
@@ -321,8 +269,7 @@ namespace canevents.src.Duels
                 return false;
             }
 
-            // Coalesced first: "gear:4;gear:4" must be judged as eight, or the shortfall is minted
-            // at payout. Same reasoning as EntryFeeEscrow.Charge.
+            // Coalesce so "gear:4;gear:4" is checked as 8 (same as EntryFeeEscrow.Charge).
             if (!InventoryUtil.Has(challenger, ItemSetUtil.Coalesce(wager)))
             {
                 error = Lang.Get("canevents:duel-wager-cannot-afford",
@@ -333,11 +280,7 @@ namespace canevents.src.Duels
             return true;
         }
 
-        /// <summary>
-        /// Takes one stake from each side's leader, all or nothing. If the second leader cannot pay,
-        /// the first is refunded before anything else happens - a duel that never starts must not
-        /// leave one player lighter.
-        /// </summary>
+        // All or nothing: if the second leader can't pay, the first is refunded.
         private bool ChargeBothStakes(DuelChallenge challenge, string eventCode, out string error)
         {
             error = null;
@@ -367,7 +310,6 @@ namespace canevents.src.Duels
             return true;
         }
 
-        /// <summary>Hands both stakes back. Used when the match failed to start after they were taken.</summary>
         private void RefundBothStakes(DuelChallenge challenge)
         {
             foreach (var uid in new[] { challenge.ChallengerSide[0], challenge.TargetSide[0] })
@@ -375,11 +317,7 @@ namespace canevents.src.Duels
                     manager.RewardDistributor?.RefundEntryFeeEscrow(leader);
         }
 
-        /// <summary>
-        /// Every event these sides could actually play: right side size, at least two sides, enabled.
-        /// Searched rather than hardcoded to "1x1"/"2x2" so adding a mode to the config is enough to
-        /// make it duellable. Also feeds the mode picker in the duel tab.
-        /// </summary>
+        // Enabled events with 2+ sides that fit this side size. Also used by the duel tab mode picker.
         public IEnumerable<CANEvent> DuellableEvents(int sideSize)
         {
             foreach (var ev in manager.Events)
@@ -393,8 +331,7 @@ namespace canevents.src.Duels
             }
         }
 
-        /// <summary>The default mode at this size, unrated by preference. A rated-only size still
-        /// duels - the rating is suppressed on the running match either way.</summary>
+        // Prefers unrated; a rated event is fine too since rating is suppressed anyway.
         private CANEvent FindDuelEvent(int sideSize)
         {
             CANEvent ratedFallback = null;
@@ -406,17 +343,10 @@ namespace canevents.src.Duels
             return ratedFallback;
         }
 
-        /// <summary>The named event, if these sides can actually play it. Null bounces the challenge.</summary>
         private CANEvent FindDuelEventByCode(string code, int sideSize)
             => DuellableEvents(sideSize).FirstOrDefault(ev => ev.CodeEquals(code));
 
-        // Sides
-
-        /// <summary>
-        /// This player's side: their party if they lead one, otherwise just themselves. False when
-        /// they are in a party they do not lead - committing someone else's party to a fight is the
-        /// leader's call, exactly as it is for the queue.
-        /// </summary>
+        // Party if leader, solo if no party, false if a non-leader member.
         private bool TryBuildSide(IServerPlayer player, out List<string> side, out string error)
         {
             error = null;
@@ -435,7 +365,7 @@ namespace canevents.src.Duels
                 return false;
             }
 
-            // Leader first: a wager is paid and refunded by whoever leads.
+            // Leader first, wagers use side[0].
             side = new List<string> { player.PlayerUID };
             side.AddRange(roster.Where(uid => uid != player.PlayerUID));
             return true;
@@ -446,21 +376,12 @@ namespace canevents.src.Duels
             busyName = null;
             foreach (var uid in side)
             {
-                if (!(sapi.World.PlayerByUid(uid) is IServerPlayer player))
-                {
-                    busyName = NameOf(uid);
-                    return false;
-                }
-                if (manager.IsBusy(uid))
-                {
-                    busyName = player.PlayerName;
-                    return false;
-                }
+                if (manager.PlayerState.IsFree(uid)) continue;
+                busyName = NameOf(uid);
+                return false;
             }
             return true;
         }
-
-        // Bookkeeping
 
         private void ExpireStale()
         {
@@ -475,8 +396,6 @@ namespace canevents.src.Duels
             }
         }
 
-        /// <summary>Drops anything this player is part of. Called on disconnect: a challenge whose
-        /// side is gone can never be played.</summary>
         public void OnDisconnect(string playerUid)
         {
             foreach (var challenge in pending.Values.Where(c => c.Involves(playerUid)).ToList())
@@ -499,21 +418,20 @@ namespace canevents.src.Duels
             }
         }
 
-        /// <summary>The challenge this player can answer, or null.</summary>
-        private DuelChallenge PendingFor(string uid)
+        private DuelChallenge PendingFor(string uid, long challengeId = 0)
         {
             if (string.IsNullOrEmpty(uid)) return null;
+            if (challengeId > 0)
+                return pending.TryGetValue(challengeId, out var byId)
+                    && (byId.ChallengerUid == uid || byId.TargetUid == uid) ? byId : null;
             return pending.Values.FirstOrDefault(c => c.ChallengerUid == uid || c.TargetUid == uid);
         }
-
-        // Talking to clients
 
         private void PromptTarget(DuelChallenge challenge, IServerPlayer target, IServerPlayer challenger)
         {
             manager.NetworkHandler?.SendDuelPrompt(target, challenge, challenger.PlayerName);
 
-            // Chat as well as the popup: the popup can be dismissed, and the command still works
-            // until the deadline.
+            // Also in chat, the popup can be closed but the command still works.
             target.SendMessage(0, Lang.Get("canevents:duel-prompt-chat", challenger.PlayerName,
                 config.duelInviteTimeoutSeconds), EnumChatType.Notification);
         }
@@ -547,7 +465,6 @@ namespace canevents.src.Duels
                     StringComparison.OrdinalIgnoreCase));
         }
 
-        private string NameOf(string uid)
-            => sapi.World.PlayerByUid(uid)?.PlayerName ?? uid;
+        private string NameOf(string uid) => RunningEvent.NameOf(sapi, uid);
     }
 }

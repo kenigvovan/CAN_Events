@@ -3,13 +3,7 @@ using ProtoBuf;
 
 namespace canevents.src.Network
 {
-    // Tournament traffic. House style: parallel flat arrays instead of nested DTOs, and deeply
-    // nested config as a JSON string rather than a message shape (see HgSetupMsg for the precedent).
-
-    // Ready check
-
-    /// <summary>Server -> one player: your bracket match is up. The deadline is the server's; the
-    /// seconds here are only what the client counts down on screen.</summary>
+    // TimeoutSeconds is display only, the server owns the deadline.
     [ProtoContract]
     public class TournamentReadyRequestMsg
     {
@@ -23,7 +17,6 @@ namespace canevents.src.Network
         [ProtoMember(8)] public bool AlreadyReady;   // set on a re-send after reconnect
     }
 
-    /// <summary>Player -> server: accept the called match, or give it up.</summary>
     [ProtoContract]
     public class TournamentReadyResponseMsg
     {
@@ -32,7 +25,6 @@ namespace canevents.src.Network
         [ProtoMember(3)] public bool Accept;
     }
 
-    /// <summary>Server -> player: drop the popup (window closed, expired, opponent forfeited).</summary>
     [ProtoContract]
     public class TournamentReadyClosedMsg
     {
@@ -41,12 +33,10 @@ namespace canevents.src.Network
         [ProtoMember(3)] public string Reason;
     }
 
-    // Browsing
-
     [ProtoContract]
     public class RequestTournamentListMsg
     {
-        /// <summary>Also send the archived ones - asked for only when the history is being looked at.</summary>
+        // Include archived tournaments.
         [ProtoMember(1)] public bool IncludeHistory;
     }
 
@@ -64,11 +54,10 @@ namespace canevents.src.Network
         [ProtoMember(9)] public bool[] YouAreIn;
         [ProtoMember(10)] public long[] SignupDeadlineUnix;
         [ProtoMember(11)] public int[] TeamSizes;
-        /// <summary>When a scheduled Draft opens its signup. 0 = opened by hand, nothing to show.</summary>
+        // 0 = opened by hand.
         [ProtoMember(12)] public long[] OpenAtUnix;
 
-        // Read through these, never off the arrays directly: protobuf-net omits an array whose elements
-        // are all default, so a field the server filled in can arrive null or short on the client.
+        // Use these accessors: protobuf-net drops all-default arrays, so they can arrive null.
         public int Count => Ids?.Length ?? 0;
         public string NameAt(int i) => At(Names, i) ?? "#" + At(Ids, i);
         public int StateAt(int i) => At(States, i);
@@ -91,8 +80,7 @@ namespace canevents.src.Network
         [ProtoMember(1)] public long TournamentId;
     }
 
-    /// <summary>One tournament's whole bracket; entrants and matches are parallel arrays and the
-    /// client rebuilds the graph from the packed feed routes.</summary>
+    // Client rebuilds the bracket graph from MatchFeedsPacked.
     [ProtoContract]
     public class TournamentBracketMsg
     {
@@ -103,29 +91,26 @@ namespace canevents.src.Network
         [ProtoMember(4)] public string[] EntrantIds;
         [ProtoMember(5)] public string[] EntrantNames;
         [ProtoMember(6)] public int[] EntrantSeeds;
-        // Full roster of each side, for the detail line - the box only has room for the label.
+        // Full roster per side.
         [ProtoMember(30)] public string[] EntrantMembers;
 
         [ProtoMember(7)] public int[] MatchIds;
         [ProtoMember(8)] public int[] MatchRounds;
         [ProtoMember(9)] public int[] MatchSlots;
-        // One packed "id;id;id" per match - a node is not always a duel, so a fixed A/B pair cannot
-        // describe a Hunger Games heat. An empty piece is an unfilled slot.
+        // "id;id;id" per match, since a heat can have more than two sides. Empty = unfilled slot.
         [ProtoMember(10)] public string[] MatchSlotsPacked;
         [ProtoMember(12)] public string[] MatchWinner;
         [ProtoMember(13)] public int[] MatchStates;          // BracketMatchState
-        // Where each advancing place goes: "matchId:slot;matchId:slot", one entry per place. A
-        // knockout has one; a heat that sends two on has two, and they land in different nodes.
+        // "matchId:slot;matchId:slot", one entry per advancing place.
         [ProtoMember(14)] public string[] MatchFeedsPacked;
         [ProtoMember(15)] public int[] MatchAdvanceCount;
         [ProtoMember(16)] public bool[] MatchIsThirdPlace;
         [ProtoMember(17)] public string[] MatchEventCode;
         [ProtoMember(18)] public long[] MatchReadyDeadline;
         [ProtoMember(19)] public string[] MatchResultKind;
-        // Sides that forfeited or never showed up; they keep their slot so a walkover still reads
-        // as "X did not turn up" rather than a match against nobody.
+        // Sides that forfeited or didn't show; they keep their slot.
         [ProtoMember(31)] public string[] MatchAbsentPacked;
-        /// <summary>Classes allowed here; empty means the mode's full list. Shown to players.</summary>
+        // Empty = the mode's full list.
         [ProtoMember(32)] public string[] AllowedLoadouts;
 
         [ProtoMember(20)] public string PotPacked;
@@ -134,20 +119,33 @@ namespace canevents.src.Network
         [ProtoMember(23)] public string[] FinalPlacementEntrantIds;
         [ProtoMember(24)] public string EntryFeePacked;
         [ProtoMember(25)] public int RakePercent;
-        // Needed to draw a preview bracket before the real one is built.
+        // For the preview bracket before the real one exists.
         [ProtoMember(26)] public bool ThirdPlaceMatch;
         [ProtoMember(27)] public int MaxEntrants;
         [ProtoMember(28)] public int PartiesPerMatch;   // sides per node: 2 for a duel bracket
         [ProtoMember(29)] public int AdvancePerMatch;  // how many of them go through
 
-        // Scheduling, so the admin panel can load what is set instead of blanking it on save.
         [ProtoMember(33)] public long OpenAtUnix;
         [ProtoMember(34)] public int SignupWindowMinutes;
         [ProtoMember(35)] public int RepeatEveryMinutes;
-        /// <summary>Daily repeat times as "HH:MM;HH:MM", empty when there are none.</summary>
+        // "HH:MM;HH:MM", empty = none.
         [ProtoMember(36)] public string RepeatAtPacked;
-        /// <summary>Whether players see this draft in their list before signup opens.</summary>
         [ProtoMember(37)] public bool ShowBeforeSignup;
+
+        // Fields below are only filled for admins.
+        [ProtoMember(38)] public bool HasAdminSettings;
+        // Empty = any suitable arena.
+        [ProtoMember(39)] public long[] PlaceWhitelist;
+        [ProtoMember(40)] public bool LockLoadout;
+        [ProtoMember(41)] public bool BringOwnGear;
+        [ProtoMember(42)] public bool ManualMatchStart;
+        [ProtoMember(43)] public int ReadyCheckSeconds;
+        [ProtoMember(44)] public int MaxConcurrentMatches;
+        [ProtoMember(45)] public int AutoStartEntrants;      // 0 = off
+        [ProtoMember(46)] public int AutoStartDelaySeconds;
+        [ProtoMember(47)] public int SeedMode;               // 0 = random, 1 = by Elo
+        [ProtoMember(48)] public int RatedMode;              // 0 = inherit the event, 1 = force unrated
+        [ProtoMember(49)] public bool PauseScheduler;
     }
 
     [ProtoContract]
@@ -155,17 +153,26 @@ namespace canevents.src.Network
     {
         [ProtoMember(1)] public long TournamentId;
         [ProtoMember(2)] public bool Join;         // false = withdraw
-        /// <summary>Optional team name; empty falls back to "Leader +N". Ignored for solo brackets.</summary>
+        // Empty = "Leader +N". Ignored for solo brackets.
         [ProtoMember(3)] public string TeamName;
-        /// <summary>Set to rename an existing entry rather than join.</summary>
-        [ProtoMember(4)] public bool RenameOnly;
-        /// <summary>Set to store a class choice for the whole tournament rather than join.</summary>
-        [ProtoMember(5)] public bool LoadoutOnly;
-        [ProtoMember(6)] public string LoadoutSet;
     }
 
-    /// <summary>Every admin operation on one packet: ConfigJson carries a TournamentDraft for
-    /// create/configure, the rest use the scalar fields. Answered via PlaceOperationResultMsg.</summary>
+    [ProtoContract]
+    public class TournamentRenameMsg
+    {
+        [ProtoMember(1)] public long TournamentId;
+        [ProtoMember(2)] public string TeamName;
+    }
+
+    // Class used for the whole tournament.
+    [ProtoContract]
+    public class TournamentLoadoutMsg
+    {
+        [ProtoMember(1)] public long TournamentId;
+        [ProtoMember(2)] public string SetName;
+    }
+
+    // ConfigJson is a TournamentDraft for create/configure.
     [ProtoContract]
     public class TournamentAdminActionMsg
     {

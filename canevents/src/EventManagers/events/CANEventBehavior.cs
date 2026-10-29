@@ -1,5 +1,8 @@
 using System;
+using System.Linq;
 using Vintagestory.API.Common;
+using Vintagestory.API.Common.Entities;
+using Vintagestory.API.Config;
 using Vintagestory.API.Datastructures;
 using Vintagestory.API.Server;
 
@@ -7,60 +10,84 @@ namespace canevents.src.EventManagers.events
 {
     public abstract class CANEventBehavior
     {
+        // name is unused but the signature is what Activator and Clone() expect.
         public CANEventBehavior(string name, JsonObject attributes, RunningEvent runningEvent)
         {
-            this.Name = name;
             Attributes = attributes;
             this.runningEvent = runningEvent;
-            this.RegisterGameTickListener = Attributes["RegisterGameTickListener"].AsBool(true);
         }
-        public abstract string Name { get; set; }
-        public bool RegisterGameTickListener { get; set; }
-        public JsonObject Attributes { get; set; }
+        public abstract string Name { get; }
+
+        // OnTick at 1 Hz. The old JSON "RegisterGameTickListener" key was never read.
+        public virtual bool WantsTick => false;
+
+        // Setter drops the cached Config reader.
+        public JsonObject Attributes
+        {
+            get => attributes;
+            set { attributes = value; config = null; }
+        }
+        private JsonObject attributes;
         public RunningEvent runningEvent { get; set; }
 
-        /// <summary>
-        /// Configuration reader that reports what it could not find. Use it in Initialize() rather
-        /// than reaching into Attributes directly, where a misspelt key silently becomes a default.
-        /// Null-logger safe, so a behavior built outside a match still reads its configuration.
-        /// </summary>
+        // Logs missing keys, unlike raw Attributes access. Works without a logger.
         protected BehaviorAttributes Config => config ??= new BehaviorAttributes(
             Attributes, runningEvent?.sapi?.World?.Logger, Name);
 
         private BehaviorAttributes config;
 
-        /// <summary>The server log, already tagged with this behavior's name. Same null-safety as
-        /// Config: no logger, no output.</summary>
+        // Scalar keys read during Initialize; templates are initialized on load, so this is filled there.
+        public System.Collections.Generic.IReadOnlyList<KnownSetting> KnownSettings => Config.Known;
+
         protected Log log => logger ??= Log.For(runningEvent?.sapi?.World?.Logger, Name);
 
         private Log logger;
 
-        // Only Name is mandatory. Every lifecycle hook is a virtual no-op so a behavior implements
-        // just the phases it cares about.
+        protected void Announce(string langKey, params object[] args)
+            => eventBehavior.Shared.EventBroadcaster.Broadcast(runningEvent, Lang.Get(langKey, args));
+
+        // System.Func spelled out: Vintagestory.API.Common has a Func<> of its own.
+        protected void AnnounceWinners(string winKey, string noneKey, System.Func<string, string> entry)
+        {
+            var winners = runningEvent.GetWinners();
+            if (winners.Count > 0) Announce(winKey, string.Join(", ", winners.Select(entry)));
+            else if (noneKey != null) Announce(noneKey);
+        }
+
         public virtual void Initialize() { }
         public virtual void OnBeforeStart() { }
         public virtual void OnStart() { }
         public virtual void OnTick(float dt) { }
         public virtual void OnEnd() { }
-        public virtual void OnParticipantDeath(IServerPlayer player, DamageSource source) { }
+        // body is passed because BodyOf skips dead bots. ArenaBotsEB eliminates the bot afterwards.
+        public virtual void OnParticipantDeath(string uid, Entity body, DamageSource source) { }
+
+        // True silences ArenaBotsEB's death messages.
+        public virtual bool AnnouncesDeaths => false;
+
         public virtual void OnParticipantRespawn(IServerPlayer player) { }
         public virtual void OnParticipantLeftGame() { }
         public virtual void OnParticipantJoinedGame() { }
 
-        // RunningEvent sets clone.runningEvent then calls clone.Initialize(), so Initialize() always
-        // has a non-null runningEvent. Override only when a behavior has state not re-derivable from
-        // Attributes (e.g. Spleef's platform blocks); Initialize() still runs after Clone().
+        // A player entering or leaving a match that is already running (open matches).
+        // Admitted runs in behavior order; returning false from CanAdmit anywhere cancels the entry.
+        public virtual bool CanAdmit(IServerPlayer player) => true;
+        public virtual void OnParticipantAdmitted(IServerPlayer player) { }
+        public virtual void OnParticipantWithdrawn(IServerPlayer player) { }
+
+        // Disconnected out of an open match: drop per-player state only. Inventory and position
+        // come back on reconnect (RestoreEventBackup, RestoreOrphanedReturnPosition).
+        public virtual void OnParticipantDropped(string uid) { }
+
+        // RunningEvent sets runningEvent on the clone, then calls Initialize().
         public virtual CANEventBehavior Clone()
         {
             return (CANEventBehavior)Activator.CreateInstance(GetType(), Name, Attributes, runningEvent);
         }
 
-        // Called on each behavior just before FinishEvent runs. Last chance to call
-        // runningEvent.SetWinners(...), used by time-based modes to resolve time-up winners without
-        // racing the manager's own time check.
+        // Last chance for SetWinners before FinishEvent; avoids racing the manager's time check.
         public virtual void OnBeforeFinish() { }
 
-        // Match scoring/ranking is NOT on the base behavior; the mode behavior implements
-        // Shared.IMatchScorer instead (resolved as RunningEvent.Scorer).
+        // Scoring lives in Shared.IMatchScorer (RunningEvent.Scorer), not here.
     }
 }

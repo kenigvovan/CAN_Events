@@ -7,19 +7,15 @@ using Vintagestory.API.Server;
 
 namespace canevents.src.Network
 {
-    // Per-player access: the spectate privilege and the queue blacklist, both editable from the admin
-    // panel. Every handler here is admin-gated at registration (see SetAdminHandler) and re-checks on
-    // arrival, because granting privileges from a packet is exactly the thing worth being strict about.
+    // Spectate privilege and queue blacklist from the admin panel.
     public partial class ServerNetworkHandler
     {
-        /// <summary>Cap on the access list. Past this the panel is the wrong tool anyway, and the
-        /// packet would carry a roster nobody reads.</summary>
         private const int MaxAccessEntries = 200;
 
         private void RegisterAccessHandlers()
         {
-            SetAdminHandler<RequestPlayerAccessMsg>((player, _) => SendPlayerAccessList(player));
-            SetAdminHandler<PlayerAccessActionMsg>(OnPlayerAccessAction);
+            Handle<RequestPlayerAccessMsg>(ProtocolChannel.Admin, true, (player, _) => SendPlayerAccessList(player));
+            Handle<PlayerAccessActionMsg>(ProtocolChannel.Admin, true, OnPlayerAccessAction);
         }
 
         private void OnPlayerAccessAction(IServerPlayer player, PlayerAccessActionMsg msg)
@@ -27,17 +23,12 @@ namespace canevents.src.Network
             if (msg == null) return;
             if (!RequireAdmin(player)) return;
 
-            // A name is what the admin types for someone not on the list yet; a uid is what the rows
-            // carry. Either resolves to a uid here, or there is nothing to act on.
+            // uid from a list row, or a typed name.
             string uid = msg.PlayerUid;
             string name = msg.PlayerName;
 
             if (string.IsNullOrEmpty(uid) && !string.IsNullOrWhiteSpace(name))
-            {
-                var data = sapi.PlayerData.GetPlayerDataByLastKnownName(name.Trim());
-                uid = data?.PlayerUID;
-                name = data?.LastKnownPlayername ?? name;
-            }
+                uid = EventManagers.PlayerModDataAccess.UidOfName(sapi, name);
 
             if (string.IsNullOrEmpty(uid))
             {
@@ -48,8 +39,6 @@ namespace canevents.src.Network
             switch (msg.Action)
             {
                 case PlayerAccessAction.GrantSpectate:
-                    // Permanent: an admin granting a moderator the broadcaster role means it to
-                    // survive a restart, not to evaporate with the session.
                     sapi.Permissions.RemovePrivilegeDenial(uid, CanEventsPrivileges.Spectate);
                     sapi.Permissions.GrantPrivilege(uid, CanEventsPrivileges.Spectate, permanent: true);
                     ReplyOk(player, Lang.Get("canevents:access-spectate-granted", NameOf(uid, name)));
@@ -57,21 +46,16 @@ namespace canevents.src.Network
 
                 case PlayerAccessAction.RevokeSpectate:
                     sapi.Permissions.RevokePrivilege(uid, CanEventsPrivileges.Spectate, permanent: true);
-                    // A right that comes from the player's ROLE survives the revoke above - the role
-                    // still lists it - so it also has to be denied per player, or the button reads as
-                    // broken. Harmless when there was only a personal grant.
+                    // Deny too, in case the right comes from their role.
                     sapi.Permissions.DenyPrivilege(uid, CanEventsPrivileges.Spectate);
 
-                    // Already watching something on a right they no longer have: seat them out now
-                    // rather than leave a live broadcaster feed running for a revoked account.
                     if (sapi.World.PlayerByUid(uid) is IServerPlayer revoked)
                         eventManager.StopObserving(revoked, notifyClient: true);
 
                     ReplyOk(player, Lang.Get("canevents:access-spectate-revoked", NameOf(uid, name)));
                     break;
 
-                // Through the manager, not the store: blacklisting also has to drop their pending
-                // registrations, or a signup already in flight slips past the ban.
+                // Via the manager so pending registrations get dropped too.
                 case PlayerAccessAction.BlacklistAdd:
                     eventManager.SetPlayerBlacklisted(uid, true);
                     ReplyOk(player, Lang.Get("canevents:access-blacklisted", NameOf(uid, name)));
@@ -86,9 +70,12 @@ namespace canevents.src.Network
             SendPlayerAccessList(player);
         }
 
-        // Best display name: what the server last saw, falling back to whatever the caller typed.
+        // Falls back to the typed name for unknown uids.
         private string NameOf(string uid, string fallback)
-            => sapi.PlayerData.GetPlayerDataByUid(uid)?.LastKnownPlayername ?? fallback ?? uid;
+        {
+            string known = EventManagers.PlayerModDataAccess.NameOf(sapi, uid);
+            return known == uid && fallback != null ? fallback : known;
+        }
 
         private void SendPlayerAccessList(IServerPlayer player)
         {
@@ -96,15 +83,13 @@ namespace canevents.src.Network
             var seen = new HashSet<string>();
             int omitted = 0;
 
-            // Online first: those are the ones an admin is usually acting on.
             foreach (var online in sapi.World.AllOnlinePlayers.OfType<IServerPlayer>())
             {
                 if (!seen.Add(online.PlayerUID)) continue;
                 entries.Add(BuildAccessEntry(online.PlayerUID, online.PlayerName, true));
             }
 
-            // Then anyone offline who already has a decision recorded against them - otherwise a
-            // grant made yesterday would be invisible and impossible to take back from the panel.
+            // Offline players only if they have a grant or a ban.
             foreach (var kv in sapi.PlayerData.PlayerDataByUid)
             {
                 if (seen.Contains(kv.Key)) continue;
@@ -116,7 +101,7 @@ namespace canevents.src.Network
                 entries.Add(BuildAccessEntry(kv.Key, kv.Value?.LastKnownPlayername, false));
             }
 
-            serverChannel.SendPacket(new PlayerAccessListMsg
+            adminChannel.SendPacket(new PlayerAccessListMsg
             {
                 Players = entries.ToArray(),
                 OmittedCount = omitted
@@ -139,8 +124,7 @@ namespace canevents.src.Network
             };
         }
 
-        // Does this player have the spectate right, from any source? Mirrors what HasPrivilege would
-        // answer, but works for someone offline too - which is the whole point of the offline rows.
+        // Like HasPrivilege, but works for offline players.
         private bool HasSpectateRight(string uid)
         {
             var data = sapi.PlayerData.GetPlayerDataByUid(uid);

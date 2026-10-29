@@ -2,32 +2,38 @@ using System.Collections.Generic;
 
 namespace canevents.src.EventManagers.eventBehavior.Shared
 {
-    // Implemented by the one mode behavior that owns a match's scoring; RunningEvent resolves
-    // exactly one per match (RunningEvent.Scorer). Kept off CANEventBehavior so non-scoring
-    // behaviors don't carry empty score hooks.
+    public sealed class ScoreboardData
+    {
+        public Dictionary<string, int> Kills;
+        public Dictionary<string, int> Deaths;
+        public int[] TeamScores;
+        public int ZoneOwnerTeam = -1;
+        public int TeamScoreLimit;
+    }
+
+    // RunningEvent resolves exactly one scorer per match (RunningEvent.Scorer).
     public interface IMatchScorer
     {
-        // Placement brackets, best first; one player (FFA) or a team per bracket, ties share one.
-        // Null when this scorer can't produce a ranking.
+        // Placement brackets, best first; ties share a bracket. Null if no ranking.
         List<HashSet<string>> GetFinalRanking();
 
-        // Per-player kill / death tallies, or null if this mode doesn't track them.
-        Dictionary<string, int> GetFinalKillCounts();
-        Dictionary<string, int> GetFinalDeathCounts();
+        Dictionary<string, int> GetFinalKillCounts() => null;
+        Dictionary<string, int> GetFinalDeathCounts() => null;
 
-        /// <summary>
-        /// Blanks the per-player kills/deaths in the live scoreboard. For hidden-role modes, where
-        /// a kill count is a role: the first player with a kill is the murderer. Honored in
-        /// ServerNetworkHandler.BuildScoreboard, which every scoreboard packet goes through.
-        /// The end-of-match results table is unaffected - by then the roles are public.
-        /// </summary>
+        // Also sent to spectators who join mid-match.
+        ScoreboardData BuildScoreboard() => new ScoreboardData
+        {
+            Kills = GetFinalKillCounts() ?? new Dictionary<string, int>(),
+            Deaths = GetFinalDeathCounts()
+        };
+
+        // Hidden-role modes: a kill count would reveal the murderer. Applied in ServerNetworkHandler.ToScoreboardMsg.
         bool HidesIndividualScores => false;
 
-        /// <summary>
-        /// Nobody is named as a killer in the kill feed or the death announcements. Asked by every
-        /// path that announces a death - including the bot one, which builds its own message and
-        /// would otherwise name the murderer the first time they cut down a bot.
-        /// </summary>
+        // Checked by every death announcement path, bot deaths included.
         bool HidesKillerIdentity => false;
+
+        // false: the player gets an empty scoreboard, so the HUD drops the table.
+        bool ShowsScoreboardTo(string uid) => true;
     }
 }

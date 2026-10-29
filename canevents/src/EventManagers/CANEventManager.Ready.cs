@@ -6,21 +6,9 @@ using Vintagestory.API.Server;
 
 namespace canevents.src.EventManagers
 {
-    /// <summary>
-    /// "Your match is ready - are you?" for queue matches.
-    ///
-    /// A queue slot is taken minutes before the match assembles, and people wander off. Without this,
-    /// the match simply started with them: their side fought a man down and they collected a loss
-    /// they never played. Tournaments have had a ready-check for exactly this reason
-    /// (<see cref="Tournaments.TournamentManager"/>); the queue did not.
-    ///
-    /// The window runs BEFORE the arena search, so a match nobody confirms never occupies an arena,
-    /// and dropouts are removed while the roster is still the starting line-up - which is what
-    /// <see cref="MatchRoster.MarkPreStartDropout"/> was already built to handle.
-    /// </summary>
+    // Ready check for queue matches. Runs before the arena search; no-shows become pre-start dropouts.
     public partial class CANEventManager
     {
-        /// <summary>Opens the ready window and asks everyone who can answer.</summary>
         private void BeginReadyCheck(RunningEvent re)
         {
             re.EventState = EventState.AwaitingReady;
@@ -29,7 +17,6 @@ namespace canevents.src.EventManagers
 
             foreach (var uid in re.ParticipantsBefore)
             {
-                // Bots are always ready, and an offline player is answered for by the deadline.
                 if (Bots.BotIdentity.IsBot(uid)) { re.ReadyUids.Add(uid); continue; }
 
                 if (!(sapi.World.PlayerByUid(uid) is IServerPlayer player)) continue;
@@ -42,10 +29,6 @@ namespace canevents.src.EventManagers
             NetworkHandler?.SendStateUpdate(re);
         }
 
-        /// <summary>
-        /// A player's answer. Declining is immediate rather than "wait for the deadline": someone who
-        /// says no has told us everything we need, and the rest should not wait out the clock for it.
-        /// </summary>
         public (bool ok, string message) SetMatchReady(IServerPlayer player, long eventId, bool ready)
         {
             var re = FindRunningEvent(eventId);
@@ -54,6 +37,10 @@ namespace canevents.src.EventManagers
 
             if (!re.IsParticipant(player.PlayerUID))
                 return (false, Lang.Get("canevents:ready-not-yours"));
+
+            // Late "yes" after declining or leaving doesn't count.
+            if (ready && re.Roster.IsPreStartDropout(player.PlayerUID))
+                return (false, Lang.Get("canevents:ready-nothing-pending"));
 
             if (ready) re.ReadyUids.Add(player.PlayerUID);
             else
@@ -64,18 +51,12 @@ namespace canevents.src.EventManagers
 
             NetworkHandler?.SendMatchReadyClosed(player, re.Id);
 
-            // Settled the moment the last answer lands, rather than on the next matchmaking pass: a
-            // group that all clicked at once should not sit staring at nothing for another interval.
+            // Don't wait for the next pass if this was the last answer.
             AttemptReadyChecks();
 
             return (true, Lang.Get(ready ? "canevents:ready-confirmed" : "canevents:ready-declined"));
         }
 
-        /// <summary>
-        /// Ticked by the manager: closes windows that are full or out of time. Called from the same
-        /// listener as the location search, so a match moves on the moment it is settled rather than
-        /// waiting for the next matchmaking pass.
-        /// </summary>
         public void AttemptReadyChecks()
         {
             long now = sapi.World.ElapsedMilliseconds;
@@ -93,8 +74,6 @@ namespace canevents.src.EventManagers
             }
         }
 
-        // Drops whoever never answered, then either lets the match go looking for an arena or calls
-        // it off.
         private void CloseReadyCheck(RunningEvent re)
         {
             var noShows = re.ParticipantsBefore
@@ -103,7 +82,6 @@ namespace canevents.src.EventManagers
 
             foreach (var uid in noShows) re.MarkPreStartDropout(uid);
 
-            // Everyone still in gets their prompt taken down, answered or not.
             foreach (var uid in re.ParticipantsBefore)
                 if (sapi.World.PlayerByUid(uid) is IServerPlayer player)
                     NetworkHandler?.SendMatchReadyClosed(player, re.Id);
@@ -112,10 +90,9 @@ namespace canevents.src.EventManagers
 
             if (!IsLineupStillViable(re, out int sidesLeft))
             {
-                // Everyone who DID confirm is put back in the queue: they did nothing wrong, and
-                // making them re-register punishes them for someone else's absence.
-                RequeueConfirmed(re);
-                AbortSearchingEvent(re, "not enough players confirmed the ready check");
+                var requeued = RequeueConfirmed(re);
+                AbortSearchingEvent(re, "not enough players confirmed the ready check",
+                    "canevents:ready-cancelled", requeued);
                 return;
             }
 
@@ -133,13 +110,11 @@ namespace canevents.src.EventManagers
 
             log.Notification("Ready check for {0} closed: {1} dropped, {2} side(s) left",
                 re.Event.Code, noShows.Count, sidesLeft);
+
+            // Only now, so a signup window doesn't close on a match that gets called off.
+            RaiseMatchStarted(re, MatchStartSource.Queue);
         }
 
-        /// <summary>
-        /// Can this line-up still play? Counts the sides that have anyone left, against the mode's
-        /// own minimum - a 5v5 whose second team evaporated is not a match, it is one team standing
-        /// in an arena.
-        /// </summary>
         private static bool IsLineupStillViable(RunningEvent re, out int sidesLeft)
         {
             sidesLeft = 0;
@@ -150,20 +125,53 @@ namespace canevents.src.EventManagers
             return sidesLeft >= System.Math.Max(2, minSides);
         }
 
-        // Puts the players who confirmed back where they were, so a cancelled match costs them only
-        // the wait. Their entry-fee escrow is untouched - they are still queued for the same event.
-        private void RequeueConfirmed(RunningEvent re)
+        // Re-adds the original registrations minus no-shows, not via AddToQueue: that would refuse
+        // over the held escrow and re-add the whole party. Escrow stays held.
+        private HashSet<string> RequeueConfirmed(RunningEvent re)
         {
-            foreach (var uid in re.ReadyUids)
-            {
-                if (Bots.BotIdentity.IsBot(uid)) continue;
-                if (!(sapi.World.PlayerByUid(uid) is IServerPlayer player)) continue;
+            var requeued = new HashSet<string>();
+            if (!IsEventEnabled(re.Event.Code)) return requeued;
+            // Current definition, re.Event may be stale after /eventadmin reload.
+            var target = FindEventByCode(re.Event.Code);
+            if (target == null) return requeued;
+            List<Registration> originals;
+            lock (runningEvents) queueRegistrationsByMatch.TryGetValue(re.Id, out originals);
+            if (originals == null) return requeued;
 
-                var (ok, _) = Queueing.Join(player, re.Event.Code);
-                player.SendMessage(0,
-                    Lang.Get(ok ? "canevents:ready-requeued" : "canevents:ready-cancelled"),
-                    EnumChatType.Notification);
+            foreach (var original in originals)
+            {
+                var stay = original.PlayersGuids
+                    .Where(uid => !Bots.BotIdentity.IsBot(uid)
+                        && re.ReadyUids.Contains(uid)
+                        && !IsPlayerBlacklisted(uid)
+                        && sapi.World.PlayerByUid(uid) is IServerPlayer)
+                    .ToList();
+                if (stay.Count == 0) continue;
+
+                var reg = new Registration(target, stay)
+                {
+                    // Keep their place in line.
+                    TimeStampCreated = original.TimeStampCreated,
+                    ChosenLoadoutSet = original.ChosenLoadoutSet,
+                    RegistrantUid = stay.Contains(original.RegistrantUid) ? original.RegistrantUid : stay[0]
+                };
+                foreach (var kv in original.PerPlayerLoadoutChoices)
+                    if (stay.Contains(kv.Key)) reg.PerPlayerLoadoutChoices[kv.Key] = kv.Value;
+
+                // Shrunken party may not fit a full-party event anymore.
+                if (QueueManagers.TryGetValue(target.Code, out var qm)
+                    && !qm.CheckRegistrationIsSuitable(reg).ok) continue;
+                if (stay.Any(uid => _store.HasPlayerRegistration(uid, target))) continue;
+                if (!AddRegistration(reg)) continue;
+
+                foreach (var uid in stay)
+                {
+                    requeued.Add(uid);
+                    (sapi.World.PlayerByUid(uid) as IServerPlayer)?.SendMessage(0,
+                        Lang.Get("canevents:ready-requeued"), EnumChatType.Notification);
+                }
             }
+            return requeued;
         }
 
         private static int Max(int a, int b) => a > b ? a : b;

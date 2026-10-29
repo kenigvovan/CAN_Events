@@ -1,9 +1,6 @@
 namespace canevents.src.EventPlacesManagers.Places
 {
-    /// <summary>
-    /// Keys into <see cref="EventPlace.BehaviorData"/>, centralized so producer (commands/network)
-    /// and consumer (event behaviors) can't drift on a raw string literal.
-    /// </summary>
+    // Keys into EventPlace.BehaviorData, shared by commands/network and the event behaviors.
     public static class BehaviorKeys
     {
         public const string Spleef = "Spleef";
@@ -12,5 +9,6 @@ namespace canevents.src.EventPlacesManagers.Places
         public const string HungerGames = "HungerGames";
         public const string CaptureTheFlag = "CaptureTheFlag";
         public const string MurderMystery = "MurderMystery";
+        public const string WaitingRoom = "WaitingRoom";
     }
 }

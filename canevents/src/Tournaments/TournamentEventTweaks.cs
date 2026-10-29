@@ -4,18 +4,10 @@ using Vintagestory.API.Datastructures;
 
 namespace canevents.src.Tournaments
 {
-    /// <summary>
-    /// Per-tournament adjustments to a mode, applied to a throwaway copy of the event. Configuration
-    /// must go into a behavior's Attributes, not a property: RunningEvent rebuilds behaviors from
-    /// (Name, Attributes) for every match, so only the attributes survive. The token is deep-copied
-    /// because cloned behaviors share their Attributes instance with the real mode.
-    /// </summary>
+    // Tweaks go into Attributes because RunningEvent rebuilds behaviors from (Name, Attributes).
+    // Deep copy: cloned behaviors share the Attributes instance with the original.
     public static class TournamentEventTweaks
     {
-        /// <summary>
-        /// Copy of the event with SavePlayerAttributes.KeepOwnGear on, or the event itself when it has
-        /// no such behavior.
-        /// </summary>
         public static CANEvent WithOwnGear(CANEvent ev) => WithBehaviorFlag(ev, "keepOwnGear", true);
 
         private static CANEvent WithBehaviorFlag(CANEvent ev, string attribute, bool value)
@@ -37,7 +29,7 @@ namespace canevents.src.Tournaments
                 return clone;
             }
 
-            return ev;   // nothing to configure: hand back the original, no copy needed
+            return ev;
         }
     }
 }

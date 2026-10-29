@@ -19,7 +19,7 @@ namespace canevents.src.EventManagers
         public bool MarkedUsed { get; set; } = false;
         public string ChosenLoadoutSet { get; set; }
         public string RegistrantUid { get; set; }
-        /// <summary>Per-member loadout picks made at queue time; overrides ChosenLoadoutSet for that uid.</summary>
+        // Per-member picks made at queue time; override ChosenLoadoutSet for that uid.
         public Dictionary<string, string> PerPlayerLoadoutChoices { get; set; } = new Dictionary<string, string>();
 
         public Registration(CANEvent canEvent, List<string> playersGuids)

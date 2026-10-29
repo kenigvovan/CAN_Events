@@ -7,11 +7,9 @@ using Vintagestory.API.Server;
 
 namespace canevents.src.Tournaments
 {
-    // The ready window: prompting the called sides, collecting confirmations, and deciding what a
-    // missed deadline means.
+    // Ready window: prompts, confirmations, missed deadlines.
     public partial class TournamentManager
     {
-        /// <summary>A player confirms (or refuses) their called match. Validated against server state only.</summary>
         public (bool ok, string message) SetReady(IServerPlayer player, long tournamentId, int matchId, bool accept)
         {
             return Transition(tournamentId, t =>
@@ -21,8 +19,6 @@ namespace canevents.src.Tournaments
                 var m = matchId > 0 ? t.FindMatch(matchId) : CalledMatchOf(t, player.PlayerUID);
                 if (m == null) return (false, Lang.Get("canevents:tournament-no-called-match"));
 
-                // Already through the ready check and waiting on the server: say so instead of "you
-                // have no match", which reads as if the click was lost.
                 if (m.State == BracketMatchState.Starting || m.State == BracketMatchState.Live)
                     return (true, Lang.Get("canevents:tournament-ready-waiting"));
 
@@ -34,15 +30,13 @@ namespace canevents.src.Tournaments
 
                 if (!accept)
                 {
-                    // Without this, a repeated packet re-announced the forfeit server-wide each time.
+                    // Repeated packets would re-announce the forfeit.
                     if (m.AbsentSides.Contains(side))
                         return (false, Lang.Get("canevents:tournament-already-forfeited"));
 
-                    // Giving up costs the whole side its match, so it is the leader's call.
                     if (!IsEntrantLeader(t, side, player.PlayerUID, out string leaderName))
                         return (false, Lang.Get("canevents:tournament-leader-only", leaderName));
 
-                    // With more than two sides the rest still play; with two, the other walks through.
                     DropSide(m, side);
                     Announce(Lang.Get("canevents:tournament-forfeited", t.NameOfEntrant(side), t.Name));
 
@@ -54,18 +48,14 @@ namespace canevents.src.Tournaments
 
                 if (!m.ReadyUids.Contains(player.PlayerUID)) m.ReadyUids.Add(player.PlayerUID);
 
-                // Handing the match to CANEventManager happens on our own tick, never from here: we
-                // hold the store lock and StartMatchFor takes the running-events lock.
+                // Actual start happens on the tick: we hold the store lock here.
                 if (m.ActiveSides.All(id => SideReady(t, m, id))) BeginStarting(t, m);
 
                 return (true, Lang.Get("canevents:tournament-ready-ok"));
             });
         }
 
-        /// <summary>
-        /// Tells both sides their match is up: popup packet plus a chat fallback. The deadline is the
-        /// server's; the client countdown is decoration and never answers on its own.
-        /// </summary>
+        // Popup plus chat fallback. The deadline is server-side only.
         private void SendReadyRequests(Tournament t, BracketMatch m)
         {
             foreach (var id in m.ActiveSides)
@@ -76,14 +66,15 @@ namespace canevents.src.Tournaments
                 foreach (var uid in e.Uids)
                 {
                     if (!(sapi.World.PlayerByUid(uid) is IServerPlayer player)) continue;
-                    SendReadyPopup(t, m, player, opponent, alreadyReady: false);
-                    player.SendMessage(0, Lang.Get("canevents:tournament-ready-prompt", t.Name, opponent,
-                        Math.Max(0, m.ReadyDeadlineUnix - Now), t.Id), EnumChatType.Notification);
+                    bool ready = m.ReadyUids.Contains(uid);
+                    SendReadyPopup(t, m, player, opponent, alreadyReady: ready);
+                    if (!ready)
+                        player.SendMessage(0, Lang.Get("canevents:tournament-ready-prompt", t.Name, opponent,
+                            Math.Max(0, m.ReadyDeadlineUnix - Now), t.Id), EnumChatType.Notification);
                 }
             }
         }
 
-        /// <summary>Re-prompts a returning player whose ready window is still open.</summary>
         private void ResendReadyCheck(IServerPlayer player)
         {
             foreach (var t in store.ActiveSnapshot())
@@ -117,10 +108,6 @@ namespace canevents.src.Tournaments
             });
         }
 
-        /// <summary>
-        /// Everyone confirmed. The popup is closed rather than left saying "waiting for your opponent"
-        /// while the server looks for an arena - untrue once the last side confirmed.
-        /// </summary>
         private void BeginStarting(Tournament t, BracketMatch m)
         {
             m.State = BracketMatchState.Starting;
@@ -129,7 +116,6 @@ namespace canevents.src.Tournaments
             Tell(t, m, Lang.Get("canevents:tournament-ready-waiting"));
         }
 
-        /// <summary>Dismisses a ready popup that is no longer answerable, for everyone it was sent to.</summary>
         private void CloseReadyPopups(Tournament t, BracketMatch m, string reason)
         {
             var net = manager.NetworkHandler;
@@ -154,10 +140,7 @@ namespace canevents.src.Tournaments
             return null;
         }
 
-        /// <summary>
-        /// Is this player the one who speaks for the entrant? The first uid is the leader, and every
-        /// decision binding the whole side is theirs alone. Solo entrants are their own leader.
-        /// </summary>
+        // First uid is the leader.
         private bool IsEntrantLeader(Tournament t, string entrantId, string uid, out string leaderName)
         {
             leaderName = "-";
@@ -177,17 +160,13 @@ namespace canevents.src.Tournaments
             return null;
         }
 
-        /// <summary>
-        /// Marks a side as a no-show. The name stays in its slot (replacing it with "TBD" would lose
-        /// the only record of what happened); it just does not play.
-        /// </summary>
+        // Name stays in the slot so the walkover is still visible.
         private void DropSide(BracketMatch m, string entrantId)
         {
             if (string.IsNullOrEmpty(entrantId)) return;
             if (!m.AbsentSides.Contains(entrantId)) m.AbsentSides.Add(entrantId);
         }
 
-        /// <summary>"A vs B" for a duel, "A, B, C and 5 more" for a free-for-all node.</summary>
         private string SidesText(Tournament t, BracketMatch m)
         {
             var names = m.FilledSlots.Select(t.NameOfEntrant).ToList();
@@ -196,7 +175,6 @@ namespace canevents.src.Tournaments
             return string.Join(", ", names.Take(3)) + " +" + (names.Count - 3);
         }
 
-        /// <summary>The same list, minus the reader's own side.</summary>
         private string OpponentsText(Tournament t, BracketMatch m, string ownSide)
         {
             var names = m.FilledSlots.Where(id => id != ownSide).Select(t.NameOfEntrant).ToList();
@@ -205,10 +183,7 @@ namespace canevents.src.Tournaments
             return string.Join(", ", names.Take(3)) + " +" + (names.Count - 3);
         }
 
-        /// <summary>
-        /// A team side is ready only when every member has confirmed. Bots cannot press anything, so a
-        /// bot side is ready as soon as it is called - otherwise it would forfeit every deadline.
-        /// </summary>
+        // All members confirmed. Bots count as ready.
         private bool SideReady(Tournament t, BracketMatch m, string entrantId)
         {
             var e = t.FindEntrant(entrantId);
@@ -218,11 +193,7 @@ namespace canevents.src.Tournaments
             return true;
         }
 
-        /// <summary>
-        /// Closes ready windows whose deadline passed: whoever confirmed plays, no-shows are dropped.
-        /// Generalizes "the one who turned up wins" to N-way nodes, where three of eight answering
-        /// means a three-way match rather than a void round.
-        /// </summary>
+        // Past the deadline whoever confirmed plays, no-shows are dropped.
         private void ExpireReadyChecks(Tournament t)
         {
             foreach (var m in t.Matches.ToList())
@@ -251,7 +222,6 @@ namespace canevents.src.Tournaments
                     }
                     else
                     {
-                        // Enough sides turned up for a real match - play it short-handed.
                         BeginStarting(t, m);
                         if (missing.Count > 0)
                             Announce(Lang.Get("canevents:tournament-shorthanded", t.Name,

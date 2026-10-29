@@ -3,10 +3,6 @@ using Vintagestory.API.Config;
 
 namespace canevents.src.QueueManagers
 {
-    /// <summary>
-    /// Checks a registration against the mode's party-size limits, with the player-facing wording.
-    /// Shared by the FIFO and ranked managers, which otherwise assemble matches differently.
-    /// </summary>
     public static class PartySizeValidator
     {
         public static (bool ok, string message) Check(Registration reg)
@@ -28,9 +24,7 @@ namespace canevents.src.QueueManagers
             return (true, null);
         }
 
-        /// <summary>
-        /// The by-parts rule: register alone, the manager builds the teams (ranked and unranked).
-        /// </summary>
+        // By-parts modes: solo only, the manager builds teams.
         public static (bool ok, string message) SoloOnly(Registration reg)
             => reg.PlayersGuids.Count > 1
                 ? (false, Lang.Get("canevents:queue-solo-only"))

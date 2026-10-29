@@ -8,23 +8,14 @@ using Vintagestory.API.MathTools;
 
 namespace canevents.src.Gui.Native
 {
-    /// <summary>
-    /// One row of the browser's list: a full-width section header, or up to two event tiles side by
-    /// side. The vanilla <c>GuiElementCellList</c> only stacks cells vertically, so the two-column
-    /// grid is built a row at a time; both tiles in a row take the taller one's height.
-    ///
-    /// A tile is drawn once into a texture (twice, counting the hover version); item icons are real
-    /// item renders and go through the render pass instead.
-    /// </summary>
+    // Vanilla GuiElementCellList only stacks vertically, so two-column rows are one cell each.
     public class EventTileRow : GuiElementTextBase, IGuiElementCell
     {
         public const double UnscaledPadding = 10;
         public const double UnscaledStripeWidth = 4;
         public const double UnscaledTileGap = 10;
         public const double UnscaledButtonHeight = 26;
-        // Cell pitch vs item render size mirrors vanilla's slot grid (48px slot, 25.6 item): the size
-        // parameter scales the MODEL, not a bounding box, so a long mesh (a spear) sprawls across its
-        // neighbours. The vanilla ratio plus a per-icon scissor keeps each item in its own cell.
+        // Ratio matches vanilla slots (48 / 25.6); item size scales the model, not a box, so long meshes need a scissor.
         public const double UnscaledIconSize = 30;
         public const double UnscaledIconItemSize = 17;
         public const double UnscaledIconRowHeight = 34;
@@ -36,9 +27,7 @@ namespace canevents.src.Gui.Native
         private readonly LoadedTexture[] hoverTextures;
         private readonly double[] iconRowY;      // unscaled, relative to the tile's top
 
-        // The vanilla itemstack tooltip, created lazily since most rows are never hovered. Rendered
-        // via ItemstackComponentBase, which handles screen-edge flipping and lifts the scissor -
-        // otherwise the list's clip would cut the box off.
+        // ItemstackComponentBase lifts the scissor, so the list's clip doesn't cut the tooltip.
         private ItemstackComponentBase tooltipRenderer;
         private ItemSlot hoveredIconSlot;
 
@@ -74,7 +63,7 @@ namespace canevents.src.Gui.Native
             }
         }
 
-        /// <summary>Width of a single tile, in scaled pixels. A header row is one full-width tile.</summary>
+        // Scaled pixels.
         private double TileWidth => IsHeaderRow || fullWidth
             ? Bounds.InnerWidth
             : (Bounds.InnerWidth - scaled(UnscaledTileGap)) / 2;
@@ -88,8 +77,7 @@ namespace canevents.src.Gui.Native
             double height = 0;
             for (int i = 0; i < tiles.Length; i++) height = Math.Max(height, MeasureTile(i));
 
-            // Both tiles in a row share the taller one's height, which keeps the columns lined up and
-            // is why the button is bottom-anchored rather than placed after the text.
+            // Both tiles share the taller height, hence bottom-anchored buttons.
             Bounds.fixedHeight = Math.Max(IsHeaderRow ? 26 : 78, height);
         }
 
@@ -128,6 +116,20 @@ namespace canevents.src.Gui.Native
             int w = (int)TileWidth;
             int h = Bounds.OuterHeightInt;
 
+            // Cairo is native: a degenerate surface size kills the process with no log.
+            // Logged once, since OnRender retries Compose every frame while TextureId == 0.
+            if (w <= 0 || h <= 0 || w > 8192 || h > 8192)
+            {
+                if (!skipReported)
+                {
+                    skipReported = true;
+                    ClientTrace.Mark(() => "EventCardCell.Compose skipped, size " + w + "x" + h);
+                }
+                return;
+            }
+
+            skipReported = false;
+
             for (int i = 0; i < tiles.Length; i++)
             {
                 var surface = new ImageSurface(Format.Argb32, w, h);
@@ -157,8 +159,7 @@ namespace canevents.src.Gui.Native
             double padY = scaled(UnscaledPadding);
             double textWidth = w - padX - scaled(UnscaledPadding);
 
-            // An engine icon in front of the title, drawn into Cairo rather than put in the string:
-            // the game font has no star glyph and prints a box.
+            // Drawn as an icon: the game font has no star glyph.
             double titleX = padX;
             if (!string.IsNullOrEmpty(card.TitleIcon))
             {
@@ -184,7 +185,6 @@ namespace canevents.src.Gui.Native
             if (!string.IsNullOrEmpty(card.BadgeText)) DrawButton(ctx, card, w, h, hovered);
         }
 
-        // Section label: text plus a rule to the right edge, cheaper than a full tile of height.
         private void DrawHeader(Context ctx, EventCard card, double w, double h)
         {
             Font = TitleFontFor(card);
@@ -211,7 +211,6 @@ namespace canevents.src.Gui.Native
             ctx.SetSourceRGBA(0.10 + lift, 0.085 + lift, 0.065 + lift, 0.92);
             ctx.Fill();
 
-            // A faint top-down sheen: flat fills read as placeholder art.
             GuiElement.RoundRectangle(ctx, 0, 0, w, h, radius);
             using (var sheen = new LinearGradient(0, 0, 0, h))
             {
@@ -221,22 +220,20 @@ namespace canevents.src.Gui.Native
                 ctx.Fill();
             }
 
-            // Accent stripe: the tile's state, readable before any word is.
+            // Accent stripe
             var accent = card.Accent ?? Palette.Title;
             GuiElement.RoundRectangle(ctx, 0, 0, scaled(UnscaledStripeWidth), h, radius);
             ctx.SetSourceRGBA(accent[0], accent[1], accent[2], hovered ? 1.0 : 0.85);
             ctx.Fill();
 
-            // Hairline border, brighter on hover so the pointer target is obvious.
+            // Border
             GuiElement.RoundRectangle(ctx, 0.5, 0.5, w - 1, h - 1, radius);
             ctx.LineWidth = scaled(1);
             ctx.SetSourceRGBA(1, 0.92, 0.7, hovered ? 0.30 : 0.13);
             ctx.Stroke();
         }
 
-        // The action button, or a bare state word when the tile is not clickable. Full width along
-        // the bottom: a half-width tile has no room for a right-hand pill, and anchoring to the
-        // bottom stops it floating mid-tile in the shorter of two tiles sharing a height.
+        // Plain text when the tile isn't clickable.
         private void DrawButton(Context ctx, EventCard card, double w, double h, bool hovered)
         {
             double bx = scaled(UnscaledPadding) + scaled(UnscaledStripeWidth + 6);
@@ -265,8 +262,7 @@ namespace canevents.src.Gui.Native
                 ctx, Font, card.BadgeText, bx, by + scaled(4), bw, EnumTextOrientation.Center);
         }
 
-        // How full the lobby is, right above the button (or along the bottom when there is none).
-        // Bottom-anchored for the same reason the button is.
+        // Lobby fill, just above the button.
         private void DrawFillBar(Context ctx, EventCard card, double w, double h)
         {
             double barH = scaled(3);
@@ -316,7 +312,6 @@ namespace canevents.src.Gui.Native
             }
         }
 
-        // Real item renders rather than names - the language the rest of the game speaks.
         private void RenderIcons(ICoreClientAPI api, int i, float deltaTime)
         {
             if (iconSlots[i].Count == 0) return;
@@ -326,8 +321,7 @@ namespace canevents.src.Gui.Native
             double y = Bounds.absY + scaled(iconRowY[i]);
             double maxX = TileX(i) + TileWidth - scaled(UnscaledPadding) - size;
 
-            // Hover detection piggybacks on the draw loop, which already knows every icon's rect.
-            // TileAt(...) doubles as the clip check, so icons scrolled out of view stay inert.
+            // TileAt also checks the clip, so scrolled-out icons don't hover.
             int mouseX = api.Input.MouseX, mouseY = api.Input.MouseY;
             bool mayHover = TileAt(mouseX, mouseY) == i;
             double rowStart = x;
@@ -337,8 +331,7 @@ namespace canevents.src.Gui.Native
             {
                 if (x > maxX) { x = rowStart; y += scaled(UnscaledIconRowHeight); }   // wrap; MeasureTile reserved the rows
 
-                // Stacking scissor: intersected with the list's clip, so an icon on a half-scrolled
-                // row still vanishes at the viewport edge.
+                // Stacked scissor intersects with the list's clip.
                 api.Render.PushScissor(IconScissor(x, y, size), true);
                 api.Render.RenderItemstackToGui(slot, x + size / 2, y + size / 2, 100, (float)itemSize,
                     ColorUtil.WhiteArgb, deltaTime, true, false, true);
@@ -351,9 +344,10 @@ namespace canevents.src.Gui.Native
             }
         }
 
-        // Reused for every icon: scissor bounds are read at push time, so one instance can be
-        // repositioned per call. Screen pixels go back to unscaled, since CalcWorldBounds rescales.
+        // Read at push time, so one instance is reused; unscaled since CalcWorldBounds rescales.
         private readonly ElementBounds iconScissorBounds = ElementBounds.Fixed(0, 0, 0, 0).WithEmptyParent();
+
+        private bool skipReported;
 
         private ElementBounds IconScissor(double x, double y, double size)
         {
@@ -366,7 +360,7 @@ namespace canevents.src.Gui.Native
             return iconScissorBounds;
         }
 
-        /// <summary>How many rows the tile's icons wrap onto, from the same geometry RenderIcons uses.</summary>
+        // Must match the wrapping in RenderIcons.
         private int IconRows(int i)
         {
             double step = scaled(UnscaledIconSize + 4);
@@ -377,7 +371,6 @@ namespace canevents.src.Gui.Native
 
         private double TileX(int i) => Bounds.absX + i * (TileWidth + scaled(UnscaledTileGap));
 
-        /// <summary>Index of the tile under the given screen position, or -1 (also for the gap).</summary>
         private int TileAt(int mouseX, int mouseY)
         {
             if (Bounds.PositionInside(mouseX, mouseY) == null) return -1;
@@ -431,23 +424,17 @@ namespace canevents.src.Gui.Native
         }
     }
 
-    /// <summary>One list row: a full-width header, or one or two tiles side by side.</summary>
     public class EventCardRow
     {
         public EventCard[] Tiles;
 
-        /// <summary>
-        /// Single tile spanning the whole row, for the narrow dialogs (class pick). The browser's
-        /// trailing odd tile keeps its half width instead, so the grid stays a grid.
-        /// </summary>
+        // For narrow dialogs; the browser's odd last tile stays half width.
         public bool FullWidth;
 
-        /// <summary>Convenience for the one-tile-per-row lists.</summary>
         public static EventCardRow Single(EventCard card)
             => new EventCardRow { Tiles = new[] { card }, FullWidth = true };
     }
 
-    /// <summary>The data behind one tile.</summary>
     public class EventCard
     {
         public string Title;
@@ -457,22 +444,15 @@ namespace canevents.src.Gui.Native
         public bool IsHeader;
         public Action OnClick;
 
-        /// <summary>0..1 fill bar above the button (lobby headcount). Null draws no bar.</summary>
+        // 0..1, null for no bar.
         public double? Progress;
 
-        /// <summary>Items to show as icons under the text (fees, prizes, loadout contents).</summary>
         public List<ItemStack> Icons;
 
-        /// <summary>
-        /// Engine icon drawn in front of the title, by name ("wpStar1"). A Cairo vector, not a
-        /// unicode star: the game font has no glyph for one and renders an empty box.
-        /// </summary>
+        // Engine icon name, e.g. "wpStar1".
         public string TitleIcon;
     }
 
-    /// <summary>
-    /// One palette for every native dialog: warm parchment-on-dark, matching the game's own.
-    /// </summary>
     public static class Palette
     {
         public static readonly double[] Title  = { 1.00, 0.83, 0.42, 1 };   // brass
@@ -484,7 +464,7 @@ namespace canevents.src.Gui.Native
         public static readonly double[] Idle   = { 0.62, 0.60, 0.56, 1 };   // waiting, nothing to do
         public static readonly double[] Info   = { 0.45, 0.72, 0.95, 1 };   // ratings, neutral figures
 
-        /// <summary>HUD panel backing. Lighter than a dialog's: it sits over the world all match.</summary>
+        // Lighter than dialogs, since HUD panels sit over the world.
         public static readonly double[] HudBg  = { 0.06, 0.05, 0.04, 0.55 };
     }
 }

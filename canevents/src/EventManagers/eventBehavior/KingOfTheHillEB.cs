@@ -11,12 +11,11 @@ using Vintagestory.API.Server;
 
 namespace canevents.src.EventManagers.eventBehavior
 {
-    // King of the Hill: teams score per second while they outnumber every other team inside the hill
-    // zone; parity is a deadlock and nobody scores. Win = first to scoreLimit, else highest at time up.
-    // Hill geometry is per-place: BehaviorData["KingOfTheHill"] = { X, Y, Z, Radius, Height }.
-    public class KingOfTheHillEB : TeamScoreEB, HarmonyPatches.IProvidesRespawnPoint
+    // Team with the most players in the hill scores each second; a tie scores nothing.
+    // Hill is per-place: BehaviorData["KingOfTheHill"] = { X, Y, Z, Radius, Height }.
+    public class KingOfTheHillEB : TeamScoreEB
     {
-        // Sentinel values for hillOwnerTeam, shared with the HUD over the scoreboard packet.
+        // Also read by the client HUD.
         public const int OwnerNeutral = -1;
         public const int OwnerContested = -2;
 
@@ -31,35 +30,30 @@ namespace canevents.src.EventManagers.eventBehavior
 
         private double hillX, hillY, hillZ;
         private bool hillSet = false;
-        private float hillRadiusSq;
 
-        // Reused every tick so scoring allocates nothing.
         private int[] zoneCounts;
         private int hillOwnerTeam = OwnerNeutral;
-        // Last owner actually broadcast. Kept apart from hillOwnerTeam so a change arriving during the
-        // announce cooldown is still announced once it lifts.
+        // Separate from hillOwnerTeam so a change during the announce cooldown still gets announced.
         private int announcedOwnerTeam = OwnerNeutral;
 
-        private float scoreTickAccum = 0f;
         private float ownerNotifyCooldown = 0f;
 
         public KingOfTheHillEB(string name, JsonObject attributes, RunningEvent runningEvent)
             : base(name, attributes, runningEvent) { }
 
-        public override string Name { get => "KingOfTheHill"; set { } }
+        public override string Name => BehaviorNames.KingOfTheHill;
 
-        public override void Initialize()
+        protected override float DefaultTimeLimitSeconds => 480f;
+
+        protected override void ReadModeConfig()
         {
-            ParseTimeLimit(480f);
-            scoreLimit = Config.Int("scoreLimit", 200);
+            scoreLimit = Config.Int(BehaviorConfigKeys.ScoreLimit, 200);
             hillRadius = Config.Float("defaultRadius", 5f);
             hillHeight = Config.Float("defaultHeight", 5f);
             pointsPerSecond = Config.Int("pointsPerSecond", 1);
             advantageBonusPerPlayer = Config.Int("advantageBonusPerPlayer", 1);
             maxAdvantageBonus = Config.Int("maxAdvantageBonus", 2);
-            showZoneParticles = Config.Bool("showZoneParticles", true);
-            ParseLoadoutSets();
-            Config.WarnUnknown();
+            showZoneParticles = Config.Bool(BehaviorConfigKeys.ShowZoneParticles, true);
         }
 
         public override void OnBeforeStart()
@@ -67,19 +61,18 @@ namespace canevents.src.EventManagers.eventBehavior
             BeginMatch();
             zoneCounts = new int[runningEvent.ParticipantsByGroupsBefore.Count];
 
-            // Radius/height are this mode's own settings and apply only when the hill was configured.
             var place = runningEvent.Place;
-            var origin = Shared.PlaceZone.TryResolveCentre(place, BehaviorKeys.KingOfTheHill,
+            var origin = PlaceZone.TryResolveCentre(place, BehaviorKeys.KingOfTheHill,
                 out hillX, out hillY, out hillZ);
-            hillSet = origin != Shared.ZoneOrigin.None;
+            hillSet = origin != ZoneOrigin.None;
 
-            if (origin == Shared.ZoneOrigin.Configured
+            if (origin == ZoneOrigin.Configured
                 && place.TryGetBehaviorData(BehaviorKeys.KingOfTheHill, out var data))
             {
                 if (data["Radius"] != null) hillRadius = data.Value<float>("Radius");
                 if (data["Height"] != null) hillHeight = data.Value<float>("Height");
             }
-            else if (origin == Shared.ZoneOrigin.BoundsCentre)
+            else if (origin == ZoneOrigin.BoundsCentre)
             {
                 runningEvent.sapi.World.Logger.Notification(
                     "[KOTH] Place id={0} has no hill configured; using bounds center r={1} h={2}.",
@@ -92,82 +85,46 @@ namespace canevents.src.EventManagers.eventBehavior
                     + "Nobody can score. Use /caneventplace kothhill <radius> [height].",
                     place?.Id);
             }
-            hillRadiusSq = hillRadius * hillRadius;
         }
 
         public override void OnStart()
         {
             GiveLoadoutAndHealAll();
-            // Initial scoreboard push so HUD shows team rows from t=0.
             PushScoreboard();
         }
 
-        // Deaths only feed the kill tally (handled by the base): the hill, not frags, decides the match.
+        public override bool WantsTick => true;
 
-        public override void OnParticipantRespawn(IServerPlayer player)
-        {
-            if (!runningEvent.IsActive(player.PlayerUID)) return;
-            GiveLoadoutAndHeal(player);
-        }
-
-        // Respawn mode: without this the engine sends the dead player to their bed / world spawn and
-        // the team loses a body for the rest of the match.
-        public bool TryGetRespawnPoint(string playerUid, out PlayerSpawnPos pos)
-            => EventSpawns.TryGetTeamSpawn(runningEvent, playerUid, out pos);
-
+        // Manager ticks once a second; that is the scoring period.
         public override void OnTick(float dt)
         {
             if (MatchResolved) return;
             if (ownerNotifyCooldown > 0) ownerNotifyCooldown -= dt;
 
-            scoreTickAccum += dt;
-            if (scoreTickAccum >= 1f)
+            if (hillSet)
             {
-                scoreTickAccum -= 1f;
-                if (hillSet)
-                {
-                    ScoreTick();
-                    if (showZoneParticles) DrawHillRing();
-                }
-                PushScoreboard();
-
-                for (int i = 0; i < teamScores.Length; i++)
-                {
-                    if (teamScores[i] >= scoreLimit)
-                    {
-                        DeclareTeamWinner(i);
-                        return;
-                    }
-                }
+                ScoreTick();
+                if (showZoneParticles) DrawHillRing();
             }
-            // Time-up is the manager's job (MaxDurationSeconds); the winner is resolved in
-            // OnBeforeFinish to avoid racing its tick.
-        }
+            PushScoreboard();
 
-        // OnBeforeFinish (lone surviving team, else the highest score) comes from TeamScoreEB.
+            int reached = Array.FindIndex(teamScores, s => s >= scoreLimit);
+            if (reached >= 0) DeclareTeamWinner(reached);
+            // Time-up winner is resolved in OnBeforeFinish (TeamScoreEB).
+        }
 
         private void ScoreTick()
         {
-            var groups = runningEvent.ParticipantsByGroupsBefore;
             Array.Clear(zoneCounts, 0, zoneCounts.Length);
 
-            for (int i = 0; i < groups.Count; i++)
+            // Bodies, so bots count too.
+            foreach (var (uid, body) in runningEvent.LiveBodies())
             {
-                foreach (var uid in groups[i])
-                {
-                    if (!runningEvent.IsActive(uid)) continue;
-                    var pl = runningEvent.sapi.World.PlayerByUid(uid) as IServerPlayer;
-                    if (pl?.Entity == null || !pl.Entity.Alive) continue;
-                    var pos = pl.Entity.Pos;
-                    double dx = pos.X - hillX;
-                    double dz = pos.Z - hillZ;
-                    double dy = pos.Y - hillY;
-                    // Cylinder check: XZ radius + vertical range [-1, hillHeight]
-                    if (dx * dx + dz * dz <= hillRadiusSq && dy >= -1.0 && dy <= hillHeight)
-                    {
-                        zoneCounts[i]++;
-                    }
-                }
+                int team = runningEvent.TeamIndexOf(uid);
+                if (team < 0 || team >= zoneCounts.Length) continue;
+                // From one block below the floor.
+                if (CylinderZone.Contains(body.Pos, hillX, hillY, hillZ, hillRadius, 1.0, hillHeight))
+                    zoneCounts[team]++;
             }
 
             int top = 0, second = 0, topTeam = -1;
@@ -185,15 +142,13 @@ namespace canevents.src.EventManagers.eventBehavior
             }
             else if (top == second)
             {
-                // Numerical parity is a deadlock: break it by killing, not by standing.
                 newOwner = OwnerContested;
             }
             else
             {
                 newOwner = topTeam;
                 int pts = pointsPerSecond;
-                // The bonus pays only against actual opposition, so stacking an empty hill gains
-                // nothing. Surplus is (top - second): a 2-vs-1 hold is one player of advantage.
+                // Advantage bonus only when contested.
                 if (second > 0)
                 {
                     pts += advantageBonusPerPlayer * Math.Min(top - second, maxAdvantageBonus);
@@ -205,8 +160,7 @@ namespace canevents.src.EventManagers.eventBehavior
             hillOwnerTeam = newOwner;
         }
 
-        // Transitions only; the cooldown swallows flapping. Dedup is against the last ANNOUNCED owner,
-        // not the live one, so a flip landing during the cooldown is still announced afterward.
+        // 3s cooldown against flapping.
         private void AnnounceOwnerChange(int newOwner)
         {
             if (newOwner == announcedOwnerTeam) return;
@@ -214,18 +168,9 @@ namespace canevents.src.EventManagers.eventBehavior
             ownerNotifyCooldown = 3f;
             announcedOwnerTeam = newOwner;
 
-            if (newOwner >= 0)
-            {
-                EventBroadcaster.Broadcast(runningEvent, Lang.Get("canevents:koth-captured", newOwner + 1));
-            }
-            else if (newOwner == OwnerContested)
-            {
-                EventBroadcaster.Broadcast(runningEvent, Lang.Get("canevents:koth-contested"));
-            }
-            else
-            {
-                EventBroadcaster.Broadcast(runningEvent, Lang.Get("canevents:koth-neutral"));
-            }
+            if (newOwner >= 0) Announce("canevents:koth-captured", newOwner + 1);
+            else if (newOwner == OwnerContested) Announce("canevents:koth-contested");
+            else Announce("canevents:koth-neutral");
         }
 
         private void DrawHillRing()
@@ -235,13 +180,14 @@ namespace canevents.src.EventManagers.eventBehavior
                 ZoneVisualizer.OwnerColor(hillOwnerTeam));
         }
 
-        protected override void PushScoreboard()
-            => runningEvent.NetworkHandler?.SendScoreboard(
-                runningEvent, killCounts, deathCounts, teamScores, hillOwnerTeam, scoreLimit);
-
-        public override void OnEnd()
+        public override ScoreboardData BuildScoreboard()
         {
-            EventBroadcaster.Broadcast(runningEvent, Lang.Get("canevents:koth-ended", ScoreLine()));
+            var data = base.BuildScoreboard();
+            data.ZoneOwnerTeam = hillOwnerTeam;
+            data.TeamScoreLimit = scoreLimit;
+            return data;
         }
+
+        protected override string EndedLangKey => "canevents:koth-ended";
     }
 }

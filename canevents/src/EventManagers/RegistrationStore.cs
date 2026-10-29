@@ -5,8 +5,7 @@ using canevents.src.EventManagers.events;
 
 namespace canevents.src.EventManagers
 {
-    /// <summary>Thread-safe store for queue registrations: all collections are owned here under a
-    /// single lock, and callers never touch the underlying data directly.</summary>
+    // Queue registrations under one lock; callers only ever get snapshots.
     internal sealed class RegistrationStore
     {
         private readonly object _lock = new object();
@@ -15,7 +14,7 @@ namespace canevents.src.EventManagers
 
         // Write operations
 
-        /// <summary>Adds the registration. Returns false if it was already present.</summary>
+        // False if already present.
         public bool Add(Registration reg)
         {
             lock (_lock)
@@ -34,7 +33,7 @@ namespace canevents.src.EventManagers
             }
         }
 
-        /// <summary>Removes the registration. Idempotent: safe to call if already absent.</summary>
+        // Idempotent.
         public bool Remove(Registration reg)
         {
             lock (_lock)
@@ -50,7 +49,7 @@ namespace canevents.src.EventManagers
 
         // Read operations
 
-        /// <summary>Snapshot of all registrations, keyed by event. Safe to iterate without locking.</summary>
+        // Snapshot keyed by event, safe to iterate without the lock.
         public Dictionary<CANEvent, List<Registration>> Snapshot()
         {
             lock (_lock)
@@ -62,29 +61,25 @@ namespace canevents.src.EventManagers
             }
         }
 
-        /// <summary>How many registrations are queued for one event. Exists so a caller that only
-        /// wants the number does not copy the whole store to count one list.</summary>
+        // Counts without copying the whole store.
         public int CountFor(CANEvent ev)
         {
             lock (_lock)
                 return ev != null && _byEvent.TryGetValue(ev, out var set) ? set.Count : 0;
         }
 
-        /// <summary>Snapshot of all registrations for a player. Returns empty list if none.</summary>
         public List<Registration> SnapshotForPlayer(string uid)
         {
             lock (_lock)
                 return _byPlayer.TryGetValue(uid, out var set) ? new List<Registration>(set) : new List<Registration>();
         }
 
-        /// <summary>True if the player has any pending registration for the given event.</summary>
         public bool HasPlayerRegistration(string uid, CANEvent ev)
         {
             lock (_lock)
                 return _byPlayer.TryGetValue(uid, out var set) && set.Any(r => r.Event == ev);
         }
 
-        /// <summary>Returns the first pending registration for (uid, event), or null.</summary>
         public Registration FindRegistration(string uid, CANEvent ev)
         {
             lock (_lock)
@@ -98,8 +93,7 @@ namespace canevents.src.EventManagers
 
         // Bulk-drop operations
 
-        /// <summary>Removes all registrations matching the predicate, returning (registration, affected
-        /// UIDs) pairs so the caller can notify players and clean up QueueManager partial state.</summary>
+        // Returns what was removed with the affected uids, for notifying and QueueManager cleanup.
         public List<(Registration reg, List<string> affected)> DropWhere(Predicate<Registration> predicate)
         {
             var result = new List<(Registration, List<string>)>();

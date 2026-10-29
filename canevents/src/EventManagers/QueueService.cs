@@ -5,11 +5,8 @@ using Vintagestory.API.Server;
 
 namespace canevents.src.EventManagers
 {
-    /// <summary>
-    /// Joining and leaving event queues. Signing up is not a single call - it is add-to-queue, prompt
-    /// every other party member for their loadout, then push the refreshed event list to everyone's
-    /// browser. Front ends supply only the player and the code; the sequence lives here.
-    /// </summary>
+    // Signup is a sequence: queue, ask the other party members for a loadout, refresh everyone's list.
+    // Front ends pass only the player and the code.
     public class QueueService
     {
         private readonly CANEventManager manager;
@@ -19,8 +16,7 @@ namespace canevents.src.EventManagers
             this.manager = manager;
         }
 
-        /// <summary>Signs the player (and their party, if registered as one) up. A null/empty code
-        /// means "the first event", which is what a bare /canreg does.</summary>
+        // Empty code means the first event, as a bare /canreg does.
         public (bool ok, string message) Join(IServerPlayer player, string eventCode, string loadoutSet = null)
         {
             if (player == null) return (false, Lang.Get("canevents:specify-event-code"));
@@ -40,6 +36,10 @@ namespace canevents.src.EventManagers
                         + string.Join(", ", manager.Events.Select(e => e.Code)));
             }
 
+            // Walked into from the lobby, never queued for.
+            if (CANEventManager.OpenModeOf(target) != null)
+                return (false, Lang.Get("canevents:live-no-queue", target.Code));
+
             var (ok, message) = manager.AddToQueue(target, player, loadoutSet);
             if (!ok) return (false, message);
 
@@ -51,7 +51,7 @@ namespace canevents.src.EventManagers
             return (true, message);
         }
 
-        /// <summary>Drops the player from one queue, or from every queue when the code is empty.</summary>
+        // Empty code leaves every queue.
         public (bool ok, string message) Leave(IServerPlayer player, string eventCode = null)
         {
             if (player == null) return (false, Lang.Get("canevents:not-in-queue"));

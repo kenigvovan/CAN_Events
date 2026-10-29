@@ -10,10 +10,7 @@ namespace canevents.src.QueueManagers
     {
         public List<TeamShard> Shards { get; set; } = new List<TeamShard>();
 
-        /// <summary>
-        /// Everyone across all shards, deduplicated. Populated only by <see cref="AddShard"/> (no
-        /// setter) so the roster cannot disagree with the shards; removal is still allowed.
-        /// </summary>
+        // Filled only via AddShard so it matches the shards.
         public List<string> PlayersGuids { get; } = new List<string>();
         public bool Completed { get; set; } = false;
         public void AddShard(TeamShard shard)
@@ -30,10 +27,7 @@ namespace canevents.src.QueueManagers
                 }
             }
         }
-        /// <summary>
-        /// Adds one team built from several separate registrations - what the solo-collecting
-        /// managers do once they have decided who plays with whom.
-        /// </summary>
+        // One team from several solo registrations.
         public void AddTeam(IReadOnlyList<EventManagers.Registration> members)
         {
             if (members == null || members.Count == 0) return;

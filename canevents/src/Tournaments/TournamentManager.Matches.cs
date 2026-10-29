@@ -11,15 +11,10 @@ namespace canevents.src.Tournaments
     // Calling pairs, the ready window, and turning a finished match into bracket progress.
     public partial class TournamentManager
     {
-        // calling the next pair
-
-        /// <summary>
-        /// Starts as many pending matches as the tournament allows at once, oldest round first. A pair
-        /// that cannot go yet is left pending and retried next tick, never skipped permanently.
-        /// </summary>
+        // A pair that can't go yet stays pending and is retried next tick.
         private void CallNextMatches(Tournament t)
         {
-            // Hand-paced tournament: only the admin's "call next match" reaches CallMatch.
+            // Manual mode: only the admin calls matches.
             if (t.ManualMatchStart) return;
 
             int live = t.Matches.Count(m => m.State == BracketMatchState.AwaitingReady
@@ -27,10 +22,7 @@ namespace canevents.src.Tournaments
                                          || m.State == BracketMatchState.Live);
             if (live >= Math.Max(1, t.MaxConcurrentMatches)) return;
 
-            var pending = t.Matches
-                .Where(m => m.State == BracketMatchState.Pending && m.IsPlayable)
-                .OrderBy(m => m.Round).ThenBy(m => m.SlotInRound)
-                .ToList();
+            var pending = CallableMatches(t);
 
             string firstStall = null;
             int stalled = 0;
@@ -47,14 +39,26 @@ namespace canevents.src.Tournaments
                 if (CallMatch(t, m)) live++;
             }
 
-            // One line per tournament, not per match: identical "no free arena" lines buried the log.
+            // One line per tournament, not per match, to keep the log readable.
             if (stalled > 0 && live == 0) LogStall(t, stalled, firstStall);
         }
 
-        /// <summary>
-        /// Hands every match that finished its ready window to CANEventManager. Runs on our tick with
-        /// no store lock held, so the store and running-events locks are never taken in both orders.
-        /// </summary>
+        private static List<BracketMatch> CallableMatches(Tournament t) => t.Matches
+            .Where(m => m.State == BracketMatchState.Pending && BracketBuilder.ReadyToPlay(t.Matches, m))
+            .OrderBy(m => m.Round).ThenBy(m => m.SlotInRound)
+            .ToList();
+
+        // Also clears confirmations. Caller releases the called players.
+        private static void ResetToPending(BracketMatch m)
+        {
+            m.State = BracketMatchState.Pending;
+            m.RunningEventId = 0;
+            m.ReadyDeadlineUnix = 0;
+            m.StartDeadlineUnix = 0;
+            m.ReadyUids.Clear();
+        }
+
+        // Runs without the store lock so store and running-events locks never nest in both orders.
         private void StartPendingStarts(Tournament t)
         {
             foreach (var m in t.Matches.ToList())
@@ -62,18 +66,12 @@ namespace canevents.src.Tournaments
                     TryStartMatch(t, m);
         }
 
-        /// <summary>
-        /// Calls the next waiting match now, ignoring the parallel-match limit. For when the tick will
-        /// not and the admin needs to know why rather than watching the bracket sit still.
-        /// </summary>
+        // Ignores the parallel-match limit and reports why nothing could be called.
         public (bool ok, string message) ForceCallNext(long tournamentId) => Transition(tournamentId, t =>
         {
             if (t.State != TournamentState.Running) return (false, "the tournament is not running");
 
-            var pending = t.Matches
-                .Where(m => m.State == BracketMatchState.Pending && m.IsPlayable)
-                .OrderBy(m => m.Round).ThenBy(m => m.SlotInRound)
-                .ToList();
+            var pending = CallableMatches(t);
             if (pending.Count == 0) return (false, "no match is waiting to be called");
 
             var reasons = new List<string>();
@@ -92,24 +90,15 @@ namespace canevents.src.Tournaments
         private bool CanCall(Tournament t, BracketMatch m, out string why)
         {
             why = null;
-            // Only the sides that will actually play: a no-show keeps its slot, but waiting for them
-            // would stall the match they already forfeited.
+            // Active sides only, don't wait for a no-show.
             foreach (var id in m.ActiveSides)
             {
                 var e = t.FindEntrant(id);
                 if (e == null) { why = "entrant missing"; return false; }
                 foreach (var uid in e.Uids)
                 {
-                    if (Bots.BotIdentity.IsBot(uid)) continue;   // a bot side is always available
-
-                    if (!(sapi.World.PlayerByUid(uid) is IServerPlayer))
-                    {
-                        why = NameOf(uid) + " is offline";
-                        return false;
-                    }
-                    // Only "busy elsewhere" counts: this match's own call already marked them called,
-                    // so the general busy check would refuse every retry.
-                    if (!IsCalled(uid) && manager.IsBusy(uid))
+                    // Ignore our own call mark (retries) and offline (the ready window handles that).
+                    if (manager.PlayerState.Check(uid, ignoreTournamentCall: true) == PlayerAvailability.Busy)
                     {
                         why = NameOf(uid) + " is in another match";
                         return false;
@@ -125,10 +114,6 @@ namespace canevents.src.Tournaments
             return true;
         }
 
-        /// <summary>
-        /// Why no arena could be had - counted, not guessed, since a bare "no free arena" sends admins
-        /// hunting for a missing place when one match is simply still holding the only one.
-        /// </summary>
         private string DescribeArenaProblem(Tournament t)
         {
             var parts = new List<string>();
@@ -138,35 +123,13 @@ namespace canevents.src.Tournaments
                 if (ev == null) { parts.Add(code + ": no such event"); continue; }
                 if (manager.DisabledEventCodes.Contains(ev.Code)) { parts.Add(code + ": event disabled"); continue; }
 
-                var tags = ev.EventTypes.ToArray();
-                int tagged = 0, occupied = 0, disabled = 0, noSpawns = 0, outsideWhitelist = 0;
-                foreach (var p in manager.eventPlacesManager.EventPlaces)
-                {
-                    if (p.placeTypes == null || !tags.All(tag => p.placeTypes.Contains(tag))) continue;
-                    tagged++;
-                    if (t.PlaceWhitelist.Count > 0 && !t.PlaceWhitelist.Contains(p.Id)) { outsideWhitelist++; continue; }
-                    if (!p.Enabled) { disabled++; continue; }
-                    if (p.spawnPositions == null || p.spawnPositions.Count == 0) { noSpawns++; continue; }
-                    if (p.Occupied) occupied++;
-                }
-
-                if (tagged == 0) { parts.Add(code + ": no arena tagged " + string.Join("+", tags)); continue; }
-
-                var detail = new List<string>();
-                if (occupied > 0) detail.Add(occupied + " in use");
-                if (outsideWhitelist > 0) detail.Add(outsideWhitelist + " outside this tournament's arena list");
-                if (disabled > 0) detail.Add(disabled + " disabled");
-                if (noSpawns > 0) detail.Add(noSpawns + " without spawn points");
-                parts.Add(code + ": " + tagged + " matching arena(s), "
-                    + (detail.Count == 0 ? "none free" : string.Join(", ", detail)));
+                // Same text as the admin panel's readiness column.
+                parts.Add(code + ": " + manager.AvailabilityOf(ev, t.PlaceWhitelist).Summary);
             }
             return string.Join("; ", parts);
         }
 
-        /// <summary>
-        /// The event this match is played as: rotating the tournament's codes by round, among those
-        /// with a free whitelisted arena right now.
-        /// </summary>
+        // Rotates event codes by round, first one with a free whitelisted arena wins.
         private EventManagers.events.CANEvent PickEventFor(Tournament t, BracketMatch m)
         {
             if (t.EventCodes.Count == 0) return null;
@@ -193,33 +156,39 @@ namespace canevents.src.Tournaments
             log.Notification("{0}: {1} match(es) waiting - {2}", t.Id, stalledCount, why);
         }
 
-        /// <summary>
-        /// Opens the ready window for a pair (or starts immediately when the tournament runs without
-        /// one). From this moment both sides count as busy, so nothing else can claim them.
-        /// </summary>
+        // From here both sides count as busy.
         private bool CallMatch(Tournament t, BracketMatch m)
         {
             var ev = PickEventFor(t, m);
             if (ev == null) return false;
 
             m.EventCode = ev.Code;
-            // Readiness is NOT cleared here: a confirmed match that failed to start comes back through
-            // this path, and wiping the flags made everyone click again. Only ex-players are dropped.
+            // Keep readiness so a failed start doesn't make everyone confirm again.
             m.ReadyUids.RemoveAll(uid => SideOf(t, m, uid) == null);
             MarkCalled(t, m, true);
 
-            // No ready window: go straight to Starting and let the tick pick it up. Starting is never
-            // done from inside the store lock - see StartPendingStarts.
-            if (t.ReadyCheckSeconds <= 0)
+            int window = t.ReadyCheckSeconds;
+            if (window <= 0)
             {
-                m.State = BracketMatchState.Starting;
-                m.ReadyDeadlineUnix = 0;
-                store.Mutate(_ => { });
-                return true;
+                // No ready window: the tick starts it (never from inside the store lock).
+                if (!AnyoneOffline(t, m))
+                {
+                    m.State = BracketMatchState.Starting;
+                    m.ReadyDeadlineUnix = 0;
+                    store.Mutate(_ => { });
+                    return true;
+                }
+
+                // Someone is offline: online players auto-confirm, absentees get a grace window.
+                foreach (var id in m.ActiveSides)
+                    foreach (var uid in t.FindEntrant(id)?.Uids ?? new List<string>())
+                        if (manager.PlayerState.Check(uid, ignoreTournamentCall: true) != PlayerAvailability.Offline
+                            && !m.ReadyUids.Contains(uid))
+                            m.ReadyUids.Add(uid);
+                window = OfflineGraceSeconds;
             }
 
-            // Everyone already confirmed (a retry after a failed start, or a side made of bots):
-            // don't open a fresh window and don't ask again.
+            // Already confirmed (retry or bots): skip the window.
             if (m.ActiveSides.All(id => SideReady(t, m, id)))
             {
                 BeginStarting(t, m);
@@ -228,18 +197,31 @@ namespace canevents.src.Tournaments
             }
 
             m.State = BracketMatchState.AwaitingReady;
-            m.ReadyDeadlineUnix = Now + t.ReadyCheckSeconds;
+            m.ReadyDeadlineUnix = Now + window;
             store.Mutate(_ => { });
 
             string label = BracketBuilder.RoundLabel(m, BracketBuilder.TotalRounds(t.Matches));
             Announce(Lang.Get("canevents:tournament-match-called", t.Name, label,
-                SidesText(t, m), t.ReadyCheckSeconds));
+                SidesText(t, m), window));
             SendReadyRequests(t, m);
             PushUpdate(t.Id);
             return true;
         }
 
-        // starting the match (the ready window itself lives in TournamentManager.ReadyCheck.cs)
+        // Grace for offline players when there's no ready check.
+        private const int OfflineGraceSeconds = 60;
+
+        // After this a match that keeps failing to start goes back to pending.
+        private const int StartTimeoutSeconds = 300;
+
+        private bool AnyoneOffline(Tournament t, BracketMatch m)
+        {
+            foreach (var id in m.ActiveSides)
+                foreach (var uid in t.FindEntrant(id)?.Uids ?? new List<string>())
+                    if (manager.PlayerState.Check(uid, ignoreTournamentCall: true) == PlayerAvailability.Offline)
+                        return true;
+            return false;
+        }
 
         private bool TryStartMatch(Tournament t, BracketMatch m)
         {
@@ -247,11 +229,11 @@ namespace canevents.src.Tournaments
             if (ev == null)
             {
                 m.State = BracketMatchState.Pending;
+                m.StartDeadlineUnix = 0;
                 MarkCalled(t, m, false);
                 return false;
             }
 
-            // One team per filled slot: two for a duel, as many as the node seats for a free-for-all.
             var teams = new List<IReadOnlyList<string>>();
             var loadouts = new Dictionary<string, string>();
             foreach (var id in m.ActiveSides)
@@ -263,8 +245,7 @@ namespace canevents.src.Tournaments
                     if (e.Contains(kv.Key) && !string.IsNullOrEmpty(kv.Value) && t.AllowsLoadout(kv.Value))
                         loadouts[kv.Key] = kv.Value;
 
-                // With a restricted class list, pre-fill everyone: the countdown prompt would offer the
-                // mode's full list, which is exactly what the restriction forbids.
+                // Pre-fill, otherwise the countdown prompt offers the mode's full list.
                 if (t.AllowedLoadouts.Count > 0)
                     foreach (var uid in e.Uids)
                         if (!loadouts.ContainsKey(uid)) loadouts[uid] = t.AllowedLoadouts[0];
@@ -272,39 +253,49 @@ namespace canevents.src.Tournaments
             if (teams.Count < 2)
             {
                 m.State = BracketMatchState.Pending;
+                m.StartDeadlineUnix = 0;
                 MarkCalled(t, m, false);
                 return false;
             }
 
-            // A bot side needs the ArenaBots behavior, or nothing spawns, nobody can die and the match
-            // holds its arena until the time limit. Only the copy is touched.
+            // Bots need the ArenaBots behavior or nothing spawns. Works on a copy.
             bool hasBots = teams.Any(team => team.Any(Bots.BotIdentity.IsBot));
             if (hasBots) ev = Bots.BotMatchSupport.EnsureBotsCanSpawn(ev);
 
-            // Bring-your-own belongs to this tournament, not the mode, so it goes onto a copy as an
-            // attribute - the only thing that survives the match rebuilding its behaviors.
+            // Set as an attribute on a copy, behaviors get rebuilt by the match.
             if (t.BringOwnGear) ev = TournamentEventTweaks.WithOwnGear(ev);
 
             var re = manager.StartMatchFor(ev, teams, loadouts, t.PlaceWhitelist, out string reason);
             if (re == null)
             {
-                // Stay in Starting and retry on the tick: dropping back to Pending re-ran the ready
-                // check and threw away confirmations. The cleared deadline keeps ExpireReadyChecks off.
+                // Stay in Starting and retry until StartTimeoutSeconds, then back to pending.
                 m.ReadyDeadlineUnix = 0;
+                if (m.StartDeadlineUnix == 0) m.StartDeadlineUnix = Now + StartTimeoutSeconds;
+                else if (Now >= m.StartDeadlineUnix)
+                {
+                    log.Warning("{0}: match #{1} could not start for {2}s ({3}), back to pending",
+                        t.Id, m.Id, StartTimeoutSeconds, reason);
+                    store.Mutate(_ =>
+                    {
+                        ResetToPending(m);
+                        MarkCalled(t, m, false);
+                    });
+                    Tell(t, m, Lang.Get("canevents:tournament-start-timeout", t.Name));
+                    PushUpdate(t.Id);
+                    return false;
+                }
                 LogStall(t, 1, "match #" + m.Id + " cannot start - " + reason);
                 store.Mutate(_ => { });
                 return false;
             }
 
-            // The bracket owns the stakes, not the sub-match: nothing is settled per round.
+            // Fees and prizes are settled by the bracket at the end, not per round.
             re.SuppressEntryFeeSettlement = true;
             re.SuppressRating = t.RatedMode == 1;
-            // Prizes are the bracket's, paid once at the end; the event's own reward would otherwise
-            // be paid again for every round survived.
             re.SuppressRewards = true;
 
             m.RunningEventId = re.Id;
-            m.RunningEventIds.Add(re.Id);
+            m.StartDeadlineUnix = 0;
             m.State = BracketMatchState.Live;
             store.Mutate(_ => { });
             PushUpdate(t.Id);
@@ -313,11 +304,7 @@ namespace canevents.src.Tournaments
             return true;
         }
 
-        /// <summary>
-        /// May this player switch to that loadout set in this running match? Only a bracket that
-        /// restricts or locks classes says no. Checked on every pick packet, since an unsolicited one
-        /// arrives after TryStartMatch's pre-filled choices.
-        /// </summary>
+        // Checked per pick packet, the client can send one after our pre-filled choice.
         public bool AllowsLoadoutChange(long runningEventId, string uid, string setName)
         {
             foreach (var t in store.ActiveSnapshot())
@@ -331,11 +318,7 @@ namespace canevents.src.Tournaments
             return true;
         }
 
-        /// <summary>
-        /// Is this player held by a running bracket that locks its entrants? Without this an entrant
-        /// could queue for casual matches between rounds and stall the tournament. Only sides still in
-        /// the draw are held.
-        /// </summary>
+        // Keeps entrants still in the draw out of casual queues between rounds.
         public bool IsLockedEntrant(string uid)
         {
             if (string.IsNullOrEmpty(uid)) return false;
@@ -344,18 +327,12 @@ namespace canevents.src.Tournaments
                 if (t.State != TournamentState.Running || !t.LockEntrantsWhileRunning) continue;
                 var e = t.EntrantOfPlayer(uid);
                 if (e == null) continue;
-                // Still in the draw = has at least one match that has not been played out yet.
                 if (t.Matches.Any(m => !m.IsClosed && m.FilledSlots.Contains(e.Id))) return true;
             }
             return false;
         }
 
-        // results
-
-        /// <summary>
-        /// Match-finished observer; only records the outcome. Advancing the bracket and calling the
-        /// next pair happen on our tick, because this fires inside the finishing match's lifecycle.
-        /// </summary>
+        // Fires inside the match's lifecycle, so only record here; the tick calls the next pair.
         private void HandleMatchFinished(RunningEvent re, MatchResult result)
         {
             long touched = 0;
@@ -391,17 +368,12 @@ namespace canevents.src.Tournaments
             {
                 foreach (var t in d.Active)
                 {
-                    // Running only: RunningEvent ids restart from 1 after a server restart, so a stale
-                    // Live node could otherwise swallow an abort belonging to a real match.
+                    // RunningEvent ids restart from 1 after a restart, so check state too.
                     if (t.State != TournamentState.Running) continue;
                     var m = t.Matches.FirstOrDefault(x => x.RunningEventId == re.Id);
                     if (m == null || m.IsClosed) continue;
 
-                    // Nothing was played: back to Pending so the tick retries once an arena frees up.
-                    m.State = BracketMatchState.Pending;
-                    m.RunningEventId = 0;
-                    m.ReadyUids.Clear();
-                    m.ReadyDeadlineUnix = 0;
+                    ResetToPending(m);
                     MarkCalled(t, m, false);
                     log.Warning("{0}: match #{1} aborted ({2}), will retry", t.Id, m.Id, reason);
                     return;
@@ -409,29 +381,26 @@ namespace canevents.src.Tournaments
             });
         }
 
-        /// <summary>The single side that loses a duel, or null when the node had more than two.</summary>
+        // Null for nodes with more than two sides. Includes no-shows (walkover).
         private static string LoserOf(BracketMatch m, string winner)
         {
-            // Counts the no-show, who is the loser in a walkover.
             var others = m.FilledSlots.Where(id => id != winner).ToList();
             return others.Count == 1 ? others[0] : null;
         }
 
-        /// <summary>
-        /// Who comes out of this match, best first: the winner for a knockout, or as many as a heat
-        /// advances, read off the match's ranking - which is why heats need a mode that ranks.
-        /// </summary>
+        // Best first. Heats read the match ranking, so they need a mode that ranks.
         private List<string> MapWinners(Tournament t, BracketMatch m, MatchResult result)
         {
             var advancing = new List<string>();
             int wanted = Math.Max(1, m.AdvanceCount);
+            // Disqualified sides may still be in the results.
+            var sides = m.ActiveSides;
 
-            // Ranked brackets first: they place everyone, not just the winner.
             if (result?.Ranking != null)
             {
                 foreach (var bracket in result.Ranking)
                 {
-                    foreach (var id in m.FilledSlots)
+                    foreach (var id in sides)
                     {
                         if (advancing.Contains(id)) continue;
                         var e = t.FindEntrant(id);
@@ -444,7 +413,7 @@ namespace canevents.src.Tournaments
 
             if (advancing.Count == 0 && result?.Winners != null && result.Winners.Count > 0)
             {
-                foreach (var id in m.FilledSlots)
+                foreach (var id in sides)
                 {
                     var e = t.FindEntrant(id);
                     if (e == null) continue;
@@ -456,15 +425,11 @@ namespace canevents.src.Tournaments
             return advancing;
         }
 
-        /// <summary>
-        /// Records a decision and pushes it through the bracket. A null winner voids the node: everyone
-        /// is out and the match above collapses into a bye for whoever is left.
-        /// </summary>
+        // Null winner voids the node, the match above becomes a bye.
         private void CloseMatch(Tournament t, BracketMatch m, string winnerEntrantId, string kind)
             => CloseMatchAdvancing(t, m,
                 winnerEntrantId == null ? new List<string>() : new List<string> { winnerEntrantId }, kind);
 
-        /// <summary>Closes a match where more than one side may go through (a qualifying heat).</summary>
         private void CloseMatchAdvancing(Tournament t, BracketMatch m, List<string> winners, string kind)
         {
             if (m.State == BracketMatchState.AwaitingReady) CloseReadyPopups(t, m, kind);
@@ -481,7 +446,6 @@ namespace canevents.src.Tournaments
             m.RunningEventId = 0;
             MarkCalled(t, m, false);
 
-            // Everyone who did not come out of this node is out of the tournament.
             foreach (var id in sides)
                 if (!winners.Contains(id)) MarkEliminated(t, id);
 
@@ -495,15 +459,13 @@ namespace canevents.src.Tournaments
             if (e != null) e.Eliminated = true;
         }
 
-        // finish
-
-        /// <summary>
-        /// Every match is decided: work out the standings, pay out and announce. Placement is read off
-        /// the bracket, with everyone outside the podium ordered by how deep they got.
-        /// </summary>
         private void Finalize(Tournament t)
         {
-            store.Mutate(_ =>
+            var payouts = new List<PendingPayout>();
+            Tournament next = null;
+
+            // Single write so a crash can't leave a finished bracket with its pot gone.
+            store.Mutate(d =>
             {
                 t.FinalPlacement = ComputePlacement(t);
                 for (int i = 0; i < t.FinalPlacement.Count; i++)
@@ -511,20 +473,35 @@ namespace canevents.src.Tournaments
                     var e = t.FindEntrant(t.FinalPlacement[i]);
                     if (e != null) e.PlacedAt = i + 1;
                 }
+
+                payouts = BuildPayouts(t);
+                t.Pot.Clear();
+                t.Contributions.Clear();
+                d.Pending.AddRange(payouts);
+
                 t.State = TournamentState.Finished;
                 t.FinishedUnix = Now;
+
+                // Queue the repeat now, not on archive, or short intervals lose a cycle.
+                next = PrepareRepeat(t, d);
             });
 
-            PayOut(t);
+            DeliverToOnline(payouts);
 
             string podium = string.Join(", ", t.FinalPlacement.Take(3)
                 .Select((id, i) => (i + 1) + ". " + t.NameOfEntrant(id)));
             Announce(Lang.Get("canevents:tournament-finished", t.Name, podium));
 
+            if (next != null)
+            {
+                Announce(Lang.Get("canevents:tournament-repeat-scheduled", next.Name,
+                    Math.Max(1, (next.OpenAtUnix - Now + 59) / 60)));
+                PushUpdate(next.Id);
+            }
+
             ResumeSchedulerIfIdle();
             PushUpdate(t.Id);
-            // Deliberately NOT archived here: vanishing from the list the instant the last match ends
-            // looks like a deletion. The tick archives it later (see ArchiveFinished).
+            // Archived later by the tick (ArchiveFinished) so it doesn't vanish instantly.
         }
 
         private List<string> ComputePlacement(Tournament t)
@@ -536,8 +513,7 @@ namespace canevents.src.Tournaments
             if (final != null)
             {
                 Add(final.WinnerEntrantId);
-                // A single runner-up only exists in a duel final; a free-for-all's losers are ordered
-                // further down by how deep they got.
+                // Null for a free-for-all final.
                 Add(final.LoserEntrantId);
             }
 
@@ -548,8 +524,7 @@ namespace canevents.src.Tournaments
                 Add(third.LoserEntrantId);
             }
 
-            // Everyone else, deepest elimination first; entrants who never lost come before those
-            // who did (a bracket cut short by cancellation).
+            // Rest by elimination depth; never-eliminated first (cancelled brackets).
             var rest = t.Entrants
                 .Where(e => !placement.Contains(e.Id))
                 .OrderByDescending(e => EliminationRound(t, e.Id, rounds))
@@ -571,8 +546,7 @@ namespace canevents.src.Tournaments
             {
                 if (!m.IsClosed) continue;
                 if (!m.Contains(entrantId)) continue;
-                // Everyone who came OUT of this node survived it, not just the top name: checking only
-                // the winner ranked a heat's other qualifiers as knocked out in the round they won.
+                // All qualifiers of a heat survived it, not just the first.
                 if (m.WinnerEntrantIds.Contains(entrantId)) continue;
                 if (m.Round > deepest) deepest = m.Round;
             }

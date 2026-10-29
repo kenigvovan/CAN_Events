@@ -1,5 +1,6 @@
 using canevents.src.EventManagers;
 using canevents.src.EventManagers.eventBehavior.abstracts;
+using canevents.src.EventManagers.events;
 using Vintagestory.API.Datastructures;
 
 namespace canevents.src.EventManagers.eventBehavior
@@ -9,12 +10,10 @@ namespace canevents.src.EventManagers.eventBehavior
         public FullPartyRequired(string name, JsonObject attributes, RunningEvent runningEvent)
             : base(name, attributes, runningEvent) { }
 
-        public override string Name { set { } get => "FullPartyRequired"; }
+        public override string Name => BehaviorNames.FullPartyRequired;
 
         public override void Initialize()
         {
-            // Through Config, not Attributes: a misspelt key here would silently change a mode's
-            // capacity with nothing in the log.
             this.MaxPartiesCount   = Config.Int("maxPartiesCount", 1);
             this.MinPartiesCount   = Config.Int("minPartiesCount", 1);
             this.MaxPartySize      = Config.Int("maxPartySize", 1);

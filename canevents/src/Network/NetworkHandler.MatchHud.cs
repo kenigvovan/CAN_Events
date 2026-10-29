@@ -7,13 +7,10 @@ using Vintagestory.API.Server;
 
 namespace canevents.src.Network
 {
-    // Server → client HUD push: state, kill-feed, scoreboard, result. Called from event behaviors
-    // via runningEvent.NetworkHandler.
+    // HUD packets. Behaviors go through EventBroadcaster, not here.
     public partial class ServerNetworkHandler
     {
-        // Every HUD packet goes to the same set: the match's line-up plus anyone observing it. One
-        // helper rather than a foreach per send site, so adding a recipient class stays a one-line
-        // change and no packet is left reaching only half the audience.
+        // Participants plus observers.
         private void SendToAudience<T>(RunningEvent re, T msg)
         {
             foreach (var player in re.HudAudience) serverChannel.SendPacket(msg, player);
@@ -21,20 +18,14 @@ namespace canevents.src.Network
 
         public void SendStateUpdate(RunningEvent re) => SendToAudience(re, BuildStateUpdate(re));
 
-        /// <summary>Pushes the current match state to one client. Used when someone starts watching
-        /// mid-match: their HUD only opens on a state packet, and the next broadcast may be a minute
-        /// away.</summary>
+        // For someone who starts watching mid-match; the HUD opens on a state packet.
         public void SendStateUpdateTo(RunningEvent re, IServerPlayer player)
         {
             if (re == null || player == null) return;
             serverChannel.SendPacket(BuildStateUpdate(re), player);
         }
 
-        /// <summary>
-        /// Tells one client that a match is over as far as they are concerned. Sent to an observer who
-        /// stopped watching: the client keys its HUD off the state packet and closes on Finished, so
-        /// without this their HUD would hang around showing a match they left.
-        /// </summary>
+        // Fake Finished state so an observer who left gets their HUD closed.
         public void SendMatchClosedTo(RunningEvent re, IServerPlayer player)
         {
             if (re == null || player == null) return;
@@ -49,16 +40,25 @@ namespace canevents.src.Network
             string startCry = re.Behaviors.OfType<IStartCryProvider>().FirstOrDefault()?.StartCryLangKey
                 ?? "canevents:arena-start-cry";
 
+            // Round modes show the round's clock while a round runs; 0 = no limit (endless timer).
+            var round = re.Behaviors.OfType<IRoundClock>().FirstOrDefault();
+            bool roundClock = round != null && round.RoundLive;
+            float remaining = roundClock ? round.RoundSecondsLeft
+                : re.Unlimited ? 0 : Math.Max(0, re.MaxDurationSeconds - re.ElapsedSeconds);
+            float length = roundClock ? round.RoundLength : re.Unlimited ? 0 : re.MaxDurationSeconds;
+
             return new EventStateUpdateMsg
             {
                 EventState = re.EventState,
                 GameModeCode = re.Event.Code,
                 ArenaName = re.Place?.Name ?? "",
                 CountdownSeconds = (int)re.CountdownSeconds,
-                TimeRemainingSeconds = Math.Max(0, re.MaxDurationSeconds - re.ElapsedSeconds),
-                MaxDurationSeconds = re.MaxDurationSeconds,
+                TimeRemainingSeconds = remaining,
+                MaxDurationSeconds = length,
                 EventId = re.Id,
-                StartCryLangKey = startCry
+                StartCryLangKey = startCry,
+                HoldSeconds = Math.Max(0f, re.HoldEndsAtElapsed - re.ElapsedSeconds),
+                HoldLangKey = re.HoldLangKey
             };
         }
 
@@ -73,38 +73,46 @@ namespace canevents.src.Network
             });
         }
 
-        public void SendScoreboard(RunningEvent re, Dictionary<string, int> killCounts, Dictionary<string, int> deathCounts = null, int[] teamScores = null, int zoneOwnerTeam = -1, int teamScoreLimit = 0)
+        public void SendScoreboard(RunningEvent re, ScoreboardData data)
         {
-            SendToAudience(re, BuildScoreboard(re, killCounts, deathCounts, teamScores, zoneOwnerTeam, teamScoreLimit));
+            if (re == null || data == null) return;
+
+            var full = ToScoreboardMsg(re, data);
+            ScoreboardUpdateMsg hidden = null;
+            foreach (var player in re.HudAudience)
+            {
+                if (ShowsScoreboardTo(re, player)) serverChannel.SendPacket(full, player);
+                else serverChannel.SendPacket(hidden ??= HiddenScoreboardMsg(re), player);
+            }
         }
 
-        /// <summary>The scoreboard as it stands, for one client. Same reason as
-        /// <see cref="SendStateUpdateTo"/>: a new watcher should not sit in front of an empty table
-        /// until the mode next recomputes scores.</summary>
+        // For a new watcher, so they don't wait for the next score update.
         public void SendScoreboardTo(RunningEvent re, IServerPlayer player)
         {
-            if (re?.Scorer == null || player == null) return;
-
-            var msg = BuildScoreboard(re,
-                re.Scorer.GetFinalKillCounts() ?? new Dictionary<string, int>(),
-                re.Scorer.GetFinalDeathCounts());
-            serverChannel.SendPacket(msg, player);
+            var data = re?.Scorer?.BuildScoreboard();
+            if (data == null || player == null) return;
+            serverChannel.SendPacket(ShowsScoreboardTo(re, player) ? ToScoreboardMsg(re, data) : HiddenScoreboardMsg(re), player);
         }
 
-        private ScoreboardUpdateMsg BuildScoreboard(RunningEvent re, Dictionary<string, int> killCounts,
-            Dictionary<string, int> deathCounts, int[] teamScores = null, int zoneOwnerTeam = -1,
-            int teamScoreLimit = 0)
+        private static bool ShowsScoreboardTo(RunningEvent re, IServerPlayer player)
+            => re.Scorer?.ShowsScoreboardTo(player.PlayerUID) != false;
+
+        // Sent instead of skipping, so a table the client already has gets cleared.
+        private static ScoreboardUpdateMsg HiddenScoreboardMsg(RunningEvent re)
+            => new ScoreboardUpdateMsg { Entries = Array.Empty<ScoreEntryMsg>(), EventId = re.Id, ZoneOwnerTeam = -1 };
+
+        private ScoreboardUpdateMsg ToScoreboardMsg(RunningEvent re, ScoreboardData data)
         {
-            // Hidden-role modes (Murder Mystery): a kill count is a role, so the tallies are blanked
-            // for everyone. Here rather than in the mode's PushScoreboard, because a spectator who
-            // starts watching mid-match gets their board from SendScoreboardTo, which skips it.
+            var killCounts = data.Kills;
+            var deathCounts = data.Deaths;
+
+            // Hidden-role modes: kill counts would reveal roles. Done here so SendScoreboardTo hides them too.
             bool hideScores = re.Scorer?.HidesIndividualScores == true;
 
             var entries = new List<ScoreEntryMsg>();
             foreach (var plGuid in re.ParticipantsBefore)
             {
-                // A bot has no player object, so it is named from its uid - the same way the results
-                // table and the body's name tag are, so the three cannot disagree.
+                // Bots have no player object, name them from the uid.
                 string name = Bots.BotIdentity.IsBot(plGuid)
                     ? Bots.BotIdentity.NameOfUid(plGuid)
                     : (sapi.World.PlayerByUid(plGuid)?.PlayerName);
@@ -134,23 +142,36 @@ namespace canevents.src.Network
             {
                 Entries = entries.ToArray(),
                 EventId = re.Id,
-                TeamScores = teamScores,
-                ZoneOwnerTeam = zoneOwnerTeam,
-                TeamScoreLimit = teamScoreLimit
+                TeamScores = data.TeamScores,
+                ZoneOwnerTeam = data.ZoneOwnerTeam,
+                TeamScoreLimit = data.TeamScoreLimit
             };
         }
 
-        /// <summary>Tells the audience who is carrying which team's flag, so their clients can
-        /// draw it. Match-only, and fires on pickup/capture/death rather than on a timer.</summary>
+        // Empty arrays clear that match's pennants on the client.
+        public void SendTeamMarkersTo(RunningEvent re, IServerPlayer player, string[] uids, int[] teams, bool onHead = false)
+            => serverChannel.SendPacket(new TeamMarkersMsg { EventId = re.Id, Uids = uids, Teams = teams, OnHead = onHead }, player);
+
         public void SendCtfCarriers(RunningEvent re, string[] carrierUids, int[] flagTeams)
         {
             SendToAudience(re, new CtfCarriersMsg { CarrierUids = carrierUids, FlagTeams = flagTeams });
         }
 
-        /// <summary>Pushes the storm-zone state to everyone watching the match (participants,
-        /// eliminated spectators and observers alike) for the client-side dome renderer.
-        /// See <see cref="HgZoneStateMsg"/>.</summary>
-        public void SendHgZoneState(RunningEvent re, HgZoneStateMsg msg) => SendToAudience(re, msg);
+        public void SendHgZoneState(RunningEvent re, bool active, int aliveCount, double x, double y, double z,
+            float radiusNow, float radiusTarget, float secondsToTarget)
+        {
+            SendToAudience(re, new HgZoneStateMsg
+            {
+                Active = active,
+                AliveCount = aliveCount,
+                X = x,
+                Y = y,
+                Z = z,
+                RadiusNow = radiusNow,
+                RadiusTarget = radiusTarget,
+                SecondsToTarget = secondsToTarget
+            });
+        }
 
         public void SendEventResult(RunningEvent re, string[] winnerNames, ScoreEntryMsg[] finalScores)
         {

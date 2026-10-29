@@ -7,6 +7,7 @@
     "EventPlaceTypes": [ "MURDERMYSTERY", "FFA", "DEATHMATCH" ],
     "reward": {},
     "behaviors": [
+        { "name": "ArenaProtection", "attributes": {} },
         {
             "name": "FullPartyRequired",
             "attributes": {

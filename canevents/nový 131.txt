@@ -1,0 +1,33 @@
+http://localhost:3000/d/vsservers-business/vsservers-business-metrics?orgId=1&from=now-24h&to=now&timezone=browser&refresh=1m
+
+
+ssh -L 3000:localhost:3000 root@91.107.224.205
+fgdsw56FSF4fc
+docker exec -t vsservers-postgres-1 pg_dump -U vsservers vsservers > backup_10.sql
+
+
+  Stability: NRE guards in Alliance, RealBankActions, harmony patches, OnPlayerDeath; atomic city rename with rollback; HourTimer .ToArray() fix; empty catches now log.
+
+  Refactoring: CooldownHandler → ExpiringList; harmony cached GetMethod; AllianceCommand leader/cities checks; city commands split into files; teleportation handler extracted.
+
+  Commands: Added plotsgroupdeny; fixed onAcceptPlotGroup notification.
+
+  GUI: Full visual redesign of Prison/Summon/PlotsGroup tabs; CANPlayerTab redesigned with city info, ranks, balance, friends; ranks tab description tooltip; prison buttons now
+  visible for mayor.
+
+  Bug fix: Prison cells duplicating — race condition between CITY_PRISON_CELL_ALL and CITY_ADD_PRISON_CELL in same packet batch; fixed server-side and client-side.
+
+  Localization: Friend tooltips, balance key, corrected prison cell tooltip, ranks description added.
+  
+  FG55adsd%2323
+  
+  1484
+ 
+ 
+ docker compose logs -f 
+ 
+ {"vsservers_default":{"IPAMConfig":null,"Links":null,"Aliases":["vsservers-nginx-1","nginx"],
+ "DriverOpts":null,"GwPriority":0,"NetworkID":"503b30e9f2a332849db8012c7b5dffc6525a36127fb4ab743a27f92379b4e16d",
+ "EndpointID":"b16f18ac3c405eb448b68ddacf3d2fb72f7d880324268094332dc929561deda8","Gateway":"172.18.0.1",
+ "IPAddress":"172.18.0.8","MacAddress":"92:94:42:96:2e:48","IPPrefixLen":16,"IPv6Gateway":"","
+ GlobalIPv6Address":"","GlobalIPv6PrefixLen":0,"DNSNames":["vsservers-nginx-1","nginx","aff3ad6b35ea"]}}

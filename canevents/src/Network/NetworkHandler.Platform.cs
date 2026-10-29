@@ -21,17 +21,28 @@ namespace canevents.src.Network
             public HashSet<Vintagestory.API.MathTools.BlockPos> Positions = new HashSet<Vintagestory.API.MathTools.BlockPos>();
         }
 
-        /// <summary>Drops the world-event hooks and any open edit sessions. Called from Dispose:
-        /// the hooks are lazy, so a reload during editing would leave a dead handler behind.</summary>
+        // From Dispose: the hooks are lazy, so a reload during editing would leave a dead handler behind.
         private void UnhookPlatformEditing()
         {
-            if (_blockEventsHooked)
-            {
-                sapi.Event.DidPlaceBlock -= OnPlayerPlacedBlock;
-                sapi.Event.DidBreakBlock -= OnPlayerBrokeBlock;
-                _blockEventsHooked = false;
-            }
+            UnhookBlockEvents();
             _platformSessions.Clear();
+        }
+
+        // When a fill message names no block.
+        private const string DefaultPlatformBlock = "game:stickslayer-wooden-ew-free";
+
+        private void UnhookBlockEvents()
+        {
+            if (!_blockEventsHooked) return;
+            sapi.Event.DidPlaceBlock -= OnPlayerPlacedBlock;
+            sapi.Event.DidBreakBlock -= OnPlayerBrokeBlock;
+            _blockEventsHooked = false;
+        }
+
+        // The world hooks only serve open sessions: dropped with the last one.
+        private void UnhookBlockEventsIfIdle()
+        {
+            if (_platformSessions.Count == 0) UnhookBlockEvents();
         }
 
         private void OnPlatformEditStart(IServerPlayer player, PlatformEditStartMsg msg)
@@ -74,22 +85,22 @@ namespace canevents.src.Network
             // Gated like every other mutating platform handler, for consistency.
             if (!RequireAdmin(player)) return;
             if (!_platformSessions.TryGetValue(player.PlayerUID, out var session)) return;
-            _platformSessions.Remove(player.PlayerUID);
-
-            if (_platformSessions.Count == 0 && _blockEventsHooked)
-            {
-                sapi.Event.DidPlaceBlock -= OnPlayerPlacedBlock;
-                sapi.Event.DidBreakBlock -= OnPlayerBrokeBlock;
-                _blockEventsHooked = false;
-            }
 
             if (msg.Save)
             {
                 var place = eventManager.eventPlacesManager.FindById(session.PlaceId);
                 if (place != null)
                 {
-                    SavePlatformPositions(place, session.Positions);
-                    ReplyOk(player, Lang.Get("canevents:platform-saved", session.Positions.Count));
+                    var result = PlaceConfig.SaveSpleefPlatform(place, session.Positions);
+                    Reply(player, result.Ok, result.Message);
+                    // A refused save (the arena is hosting a match) keeps the session open, so the
+                    // marked blocks are not lost - the admin can save again once the match is over.
+                    if (!result.Ok)
+                    {
+                        SendPlatformState(player, session.PlaceId, true, session.Positions.Count);
+                        return;
+                    }
+                    LogPlatformSave(place, session.Positions);
                 }
             }
             else
@@ -97,15 +108,30 @@ namespace canevents.src.Network
                 ReplyOk(player, Lang.Get("canevents:platform-edit-cancelled"));
             }
 
+            _platformSessions.Remove(player.PlayerUID);
+            UnhookBlockEventsIfIdle();
+
             SendPlatformState(player, session.PlaceId, false, 0);
+            // The list carries the platform block count and the setup summary: stale without this.
+            if (msg.Save) SendPlaceListTo(player);
+        }
+
+        // A match's own rollback wouldn't know about these writes. False, reply sent, when the place is busy.
+        private bool PlatformPlaceFree(IServerPlayer player, PlatformEditSession session)
+        {
+            var place = eventManager.eventPlacesManager.FindById(session.PlaceId);
+            if (place == null || !place.Occupied) return true;
+            ReplyFail(player, Lang.Get("canevents:place-in-use"));
+            return false;
         }
 
         private void OnPlatformFillShape(IServerPlayer player, PlatformFillShapeMsg msg)
         {
             if (!RequireAdmin(player)) return;
             if (!_platformSessions.TryGetValue(player.PlayerUID, out var session)) return;
+            if (!PlatformPlaceFree(player, session)) return;
 
-            var block = sapi.World.GetBlock(new Vintagestory.API.Common.AssetLocation(msg.BlockCode ?? "game:stickslayer-wooden-ew-free"));
+            var block = sapi.World.GetBlock(new Vintagestory.API.Common.AssetLocation(msg.BlockCode ?? DefaultPlatformBlock));
             if (block == null) return;
 
             var origin = player.Entity.Pos.AsBlockPos;
@@ -113,7 +139,7 @@ namespace canevents.src.Network
             var blockAccessor = sapi.World.BlockAccessor;
             // Cap the radius like flood-fill does: unbounded, this touches (2r+1)^2 blocks
             // synchronously on the main thread and freezes the server.
-            var fillCfg = sapi.ModLoader.GetModSystem<canevents>().config;
+            var fillCfg = GlobalConfig;
             int r = System.Math.Min(System.Math.Max(1, msg.Radius),
                 System.Math.Max(1, fillCfg.maxPlatformFloodFillRadius));
 
@@ -143,11 +169,12 @@ namespace canevents.src.Network
         {
             if (!RequireAdmin(player)) return;
             if (!_platformSessions.TryGetValue(player.PlayerUID, out var session)) return;
+            if (!PlatformPlaceFree(player, session)) return;
 
-            var block = sapi.World.GetBlock(new Vintagestory.API.Common.AssetLocation(msg.BlockCode ?? "game:stickslayer-wooden-ew-free"));
+            var block = sapi.World.GetBlock(new Vintagestory.API.Common.AssetLocation(msg.BlockCode ?? DefaultPlatformBlock));
             if (block == null) return;
 
-            var cfg = sapi.ModLoader.GetModSystem<canevents>().config;
+            var cfg = GlobalConfig;
             int hardRadiusCap = System.Math.Max(1, cfg.maxPlatformFloodFillRadius);
             int hardBlocksCap = System.Math.Max(1, cfg.maxPlatformFloodFillBlocks);
 
@@ -218,12 +245,7 @@ namespace canevents.src.Network
         private void OnPlayerDisconnect(IServerPlayer player)
         {
             if (!_platformSessions.Remove(player.PlayerUID)) return;
-            if (_platformSessions.Count == 0 && _blockEventsHooked)
-            {
-                sapi.Event.DidPlaceBlock -= OnPlayerPlacedBlock;
-                sapi.Event.DidBreakBlock -= OnPlayerBrokeBlock;
-                _blockEventsHooked = false;
-            }
+            UnhookBlockEventsIfIdle();
         }
 
         private void OnPlayerPlacedBlock(IServerPlayer player, int oldBlockId, Vintagestory.API.Common.BlockSelection sel, Vintagestory.API.Common.ItemStack stack)
@@ -242,27 +264,12 @@ namespace canevents.src.Network
 
         private void SendPlatformState(IServerPlayer player, long placeId, bool active, int count)
         {
-            serverChannel.SendPacket(new PlatformEditStateMsg { PlaceId = placeId, Active = active, Count = count }, player);
+            adminChannel.SendPacket(new PlatformEditStateMsg { PlaceId = placeId, Active = active, Count = count }, player);
         }
 
-        private static Newtonsoft.Json.Linq.JObject GetOrCreateSpleefData(EventPlacesManagers.Places.EventPlace place)
-            => place.GetOrCreateBehaviorData(BehaviorKeys.Spleef);
-
-        private void SavePlatformPositions(EventPlacesManagers.Places.EventPlace place, HashSet<Vintagestory.API.MathTools.BlockPos> positions)
+        // The save itself is PlaceConfigService.SaveSpleefPlatform; this only leaves a trace of it.
+        private void LogPlatformSave(EventPlacesManagers.Places.EventPlace place, HashSet<Vintagestory.API.MathTools.BlockPos> positions)
         {
-            var data = GetOrCreateSpleefData(place);
-            var xs = new int[positions.Count];
-            var ys = new int[positions.Count];
-            var zs = new int[positions.Count];
-            var ds = new int[positions.Count];
-            int i = 0;
-            foreach (var p in positions) { xs[i] = p.X; ys[i] = p.Y; zs[i] = p.Z; ds[i] = p.dimension; i++; }
-
-            data["PlatformX"] = Newtonsoft.Json.Linq.JToken.FromObject(xs);
-            data["PlatformY"] = Newtonsoft.Json.Linq.JToken.FromObject(ys);
-            data["PlatformZ"] = Newtonsoft.Json.Linq.JToken.FromObject(zs);
-            data["PlatformDim"] = Newtonsoft.Json.Linq.JToken.FromObject(ds);
-
             var yGroups = new Dictionary<int, int>();
             foreach (var p in positions)
             {
@@ -272,8 +279,6 @@ namespace canevents.src.Network
             var summary = string.Join(", ", yGroups.OrderBy(kv => kv.Key).Select(kv => "Y=" + kv.Key + ":" + kv.Value));
             sapi.World.Logger.VerboseDebug("[PlatformSave] place='{0}' id={1} total={2} byLevel: {3}",
                 place.Name, place.Id, positions.Count, summary);
-
-            eventManager.eventPlacesManager.SavePlace(place);
         }
     }
 }

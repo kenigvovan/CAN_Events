@@ -3,8 +3,11 @@ using ProtoBuf;
 namespace canevents.src.Network
 {
     // Item-set management messages. One set of packets serves every kind of store (loadouts,
-    // outfits - see ItemSetKinds); `Kind` picks it, and an absent Kind means loadouts, which is
-    // exactly what an older client sends.
+    // outfits - see ItemSetKinds); `Kind` picks it, and an absent Kind means loadouts.
+    //
+    // LoadoutEventMsg, LoadoutSetMsg and LoadoutDefaultEntryMsg only ever travel inside another
+    // message, so they are plain ProtoContracts and are not registered on any channel
+    // (see CanEventsProtocol).
 
     [ProtoContract]
     public class RequestLoadoutListMsg
@@ -44,19 +47,42 @@ namespace canevents.src.Network
 
         [ProtoMember(3)]
         public int[] ItemQuantities;
+
+        // Loadouts only, parallel to ItemCodes; null for outfits.
+        [ProtoMember(4)]
+        public string[] ItemIds;
+
+        // Every item's chain, in level order; UpgradeStepMsg.Item is the index into ItemCodes.
+        [ProtoMember(5)]
+        public UpgradeStepMsg[] Upgrades;
     }
 
     [ProtoContract]
-    public class SaveLoadoutFromInvMsg
+    public class UpgradeStepMsg
     {
-        [ProtoMember(1)]
-        public string EventCode;
+        [ProtoMember(1)] public string Code;
+        // 0 = as many as the kit item.
+        [ProtoMember(2)] public int Quantity;
+        [ProtoMember(3)] public int Cost;
+        [ProtoMember(4)] public int Item;
+        // Handed out along with Code, parallel arrays.
+        [ProtoMember(5)] public string[] ExtraCodes;
+        [ProtoMember(6)] public int[] ExtraQuantities;
 
-        [ProtoMember(2)]
-        public string SetName;
+        public int ExtraCount => ExtraCodes?.Length ?? 0;
 
-        [ProtoMember(9)]
-        public string Kind;
+        public int ExtraQuantityAt(int i)
+            => ExtraQuantities != null && i < ExtraQuantities.Length ? ExtraQuantities[i] : 1;
+
+        public UpgradeStepMsg CopyFor(int item) => new UpgradeStepMsg
+        {
+            Item = item,
+            Code = Code,
+            Quantity = Quantity,
+            Cost = Cost,
+            ExtraCodes = (string[])ExtraCodes?.Clone(),
+            ExtraQuantities = (int[])ExtraQuantities?.Clone()
+        };
     }
 
     [ProtoContract]
@@ -73,6 +99,13 @@ namespace canevents.src.Network
 
         [ProtoMember(4)]
         public int[] ItemQuantities;
+
+        // Ids of items loaded from a saved set (null for new ones), so their upgrades keep their place.
+        [ProtoMember(5)]
+        public string[] ItemIds;
+
+        [ProtoMember(6)]
+        public UpgradeStepMsg[] Upgrades;
 
         [ProtoMember(9)]
         public string Kind;
@@ -103,8 +136,7 @@ namespace canevents.src.Network
 
     // Match-start loadout pick messages
 
-    /// <summary>One selectable loadout set on the wire; ItemCodes is semicolon-packed
-    /// ("code:qty;code:qty").</summary>
+    // ItemCodes is packed "code:qty;code:qty".
     [ProtoContract]
     public class LoadoutSetInfoMsg
     {
@@ -112,7 +144,7 @@ namespace canevents.src.Network
         [ProtoMember(2)] public string ItemCodes;
         [ProtoMember(3)] public string Description;
 
-        /// <summary>Zip three parallel arrays (as produced by ILoadoutProvider) into infos.</summary>
+        // The three parallel arrays of ILoadoutProvider.
         public static LoadoutSetInfoMsg[] FromArrays(string[] names, string[] itemCodes, string[] descriptions)
         {
             if (names == null) return null;
@@ -130,7 +162,7 @@ namespace canevents.src.Network
         }
     }
 
-    /// <summary>Server asks a participant to pick a loadout for an upcoming match.</summary>
+    // Server asks a participant to pick a loadout for an upcoming match.
     [ProtoContract]
     public class LoadoutPickRequestMsg
     {
@@ -140,9 +172,11 @@ namespace canevents.src.Network
         [ProtoMember(6)] public float TimeoutSeconds;
         [ProtoMember(7)] public string CurrentDefault; // null if none
         [ProtoMember(8)] public string RegistrationGuid; // non-empty for queue-time picks
+        [ProtoMember(9)] public string CountdownLangKey; // null = "match starts in"
+        [ProtoMember(10)] public string Preselected; // set to highlight; null = CurrentDefault
     }
 
-    /// <summary>Client picks a loadout (and optionally saves it as default).</summary>
+    // Optionally saved as the default.
     [ProtoContract]
     public class LoadoutPickResponseMsg
     {
@@ -153,18 +187,15 @@ namespace canevents.src.Network
         [ProtoMember(5)] public string RegistrationGuid; // echo back
     }
 
-    /// <summary>Client requests to forget a saved default for an event.</summary>
     [ProtoContract]
     public class ClearLoadoutDefaultMsg
     {
         [ProtoMember(1)] public string EventCode;
     }
 
-    /// <summary>Client requests its own saved defaults.</summary>
     [ProtoContract]
     public class RequestLoadoutDefaultsMsg { }
 
-    /// <summary>Server returns the player's saved defaults.</summary>
     [ProtoContract]
     public class LoadoutDefaultsListMsg
     {

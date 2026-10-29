@@ -3,96 +3,115 @@ using canevents.src.EventManagers;
 using canevents.src.EventManagers.events;
 using Vintagestory.API.Common;
 using Vintagestory.API.Common.Entities;
+using Vintagestory.API.Config;
 using Vintagestory.API.Datastructures;
 using Vintagestory.API.Server;
 using Vintagestory.GameContent;
 
 namespace canevents.src.EventManagers.eventBehavior
 {
-    // Saves each participant's real inventory + health at event start, clears it for the loadout and
-    // restores it at the end. Snapshot/restore itself (plus its ModData crash-recovery mirror) lives in
-    // PlayerInventoryBackup, shared with the reconnect path; this behavior adds the event-time
-    // concerns: clearing on respawn and stopping inventory drops on death.
+    // Snapshot inventory at start, clear for the loadout, restore at end (PlayerInventoryBackup).
+    // Also clears on respawn and stops issued gear dropping on death.
     public class SavePlayerAttributes : CANEventBehavior
     {
         private readonly Shared.DamageHookSet damageHooks = new Shared.DamageHookSet();
 
-        /// <summary>Undone first thing in OnEnd - see Unsubscribers for why that order matters.</summary>
+        // Undone first in OnEnd, see Unsubscribers.
         private readonly Shared.Unsubscribers subscriptions = new Shared.Unsubscribers();
 
         public SavePlayerAttributes(string name, JsonObject attributes, RunningEvent runningEvent) : base(name, attributes, runningEvent)
         {
         }
 
-        public override string Name { set { } get => "SavePlayerAttributes"; }
+        public override string Name => BehaviorNames.SavePlayerAttributes;
 
-        /// <summary>
-        /// Players fight with their own gear: no kit, no death-time rescue, no restore at the end.
-        /// Protecting real belongings would dupe them (items dropped mid-match survive AND get
-        /// restored from the start-of-match snapshot). Read from the "keepOwnGear" attribute; a
-        /// tournament sets that attribute on its own copy of the event (see TournamentEventTweaks),
-        /// since every match builds its behaviors from attributes alone.
-        /// </summary>
+        // No kit, no death rescue, no restore: restoring would dupe items dropped mid-match.
+        // Tournaments set it on their event copy (TournamentEventTweaks).
         public bool KeepOwnGear { get; private set; }
 
-        /// <summary>
-        /// This event's own answer to "what happens to issued kit thrown on the ground", or null to
-        /// inherit the server default. Lives on this behavior because it already owns the match's
-        /// inventory: the same place that decides what is handed out and what is kept.
-        /// </summary>
+        // null inherits the server default.
         public Shared.IssuedGearDrop? IssuedGearDropOverride { get; private set; }
 
-        /// <summary>
-        /// An eliminated player takes the spectator seat and watches the rest of the match. Turn it
-        /// off (`spectateOnElimination: false`) to send them straight home with their own gear
-        /// instead - in a long one-life mode, being made to watch for ten minutes is a punishment
-        /// nobody asked for.
-        /// </summary>
+        // false sends eliminated players home instead of spectating.
         public bool SpectateOnElimination { get; private set; } = true;
+
+        // Called by PersonalStashPatch on every slot interaction: keep it cheap, never throw.
+        public static bool LocksStashesOf(IServerPlayer player)
+        {
+            var re = HarmonyPatches.MatchDeathExternalsPatch.MatchOf(player);
+            return re?.GetBehavior<SavePlayerAttributes>() != null;
+        }
 
         public override void Initialize()
         {
             base.Initialize();
             KeepOwnGear = Config.Bool("keepOwnGear", false);
-            // Before WarnUnknown, or the key it just read would be reported as unread.
             IssuedGearDropOverride = Shared.IssuedGear.ParseOverride(Config.String("issuedGearDrop"), log);
             SpectateOnElimination = Config.Bool("spectateOnElimination", true);
             Config.WarnUnknown();
         }
 
+        // Taken early by a waiting room; OnStart leaves these alone.
+        private readonly HashSet<string> snapshotted = new HashSet<string>();
+
         public override void OnStart()
         {
-            // Snapshot then clear in the same step. Snapshotting here rather than in OnBeforeStart
-            // closes the dupe window where items dropped during the countdown stay in the world AND
-            // get restored at OnEnd.
-            foreach (var player in runningEvent.OnlineParticipants)
-            {
-                // Never in play (dropped out before the arena was found): no loadout, no teleport,
-                // so clearing here would take real belongings for a match they are not playing.
-                if (!runningEvent.IsActive(player.PlayerUID)) continue;
+            // Snapshot here, not in OnBeforeStart: items dropped during the countdown would be duped.
+            // A waiting room snapshots at teleport instead (SnapshotNow), so nothing can be dropped there.
+            foreach (var player in runningEvent.ActiveOnlineParticipants)
+                if (!snapshotted.Contains(player.PlayerUID)) TakeSnapshot(player);
 
-                // Own-gear matches have no end-of-match restore, so a stale backup from a match that
-                // never restored would later overwrite the player's real inventory. Settle it first,
-                // exactly as the reconnect path would have.
-                if (KeepOwnGear && PlayerInventoryBackup.Restore(player, runningEvent.sapi))
-                    runningEvent.sapi.World.Logger.Warning(
-                        "SavePlayerAttributes: settled a stale inventory backup for {0} before an own-gear match.",
-                        player.PlayerName);
-
-                PlayerInventoryBackup.Save(player, runningEvent.sapi, gearStaysWithPlayer: KeepOwnGear);
-                if (!KeepOwnGear) PlayerInventoryBackup.ClearInventory(player);
-                // Strictly after Save: the snapshot must hold the player's real saturation, not
-                // the full bar we hand them for the match.
-                Shared.EventBroadcaster.Feed(player);
-                // The death-time rescue exists to stop ISSUED gear from dropping; own gear is
-                // meant to drop.
-                if (!KeepOwnGear) HookLethalDamage(player);
-            }
-
-            // Catches deaths that bypass the damage pipeline (e.g. /kill, void fall).
-            // Fires inside Die() before EntityPlayer's inventory-drop behavior runs.
+            // For deaths that bypass the damage pipeline (/kill, void). Fires inside Die() before the inventory drop.
             runningEvent.sapi.Event.OnEntityDeath += OnAnyEntityDeath;
             subscriptions.Add(() => runningEvent.sapi.Event.OnEntityDeath -= OnAnyEntityDeath);
+        }
+
+        public void SnapshotNow(IServerPlayer player)
+        {
+            if (snapshotted.Add(player.PlayerUID)) TakeSnapshot(player);
+        }
+
+        private void TakeSnapshot(IServerPlayer player)
+        {
+            // Own-gear has no restore at end, so settle a stale backup now or it overwrites later.
+            if (KeepOwnGear && PlayerInventoryBackup.Restore(player, runningEvent.sapi))
+                runningEvent.sapi.World.Logger.Warning(
+                    "SavePlayerAttributes: settled a stale inventory backup for {0} before an own-gear match.",
+                    player.PlayerName);
+
+            // Event code goes into the snapshot for the audit trail.
+            bool saved = PlayerInventoryBackup.Save(player, runningEvent.sapi,
+                gearStaysWithPlayer: KeepOwnGear, eventCode: runningEvent.Event?.Code);
+
+            // Refused = an older snapshot is unsettled and current items are saved nowhere; sit out untouched.
+            if (!saved && !KeepOwnGear)
+            {
+                runningEvent.sapi.World.Logger.Error(
+                    "[inventory] {0} kept out of '{1}': an earlier snapshot was never settled, so what "
+                    + "they carry now is copied nowhere and cannot be cleared for the kit. "
+                    + "Check /eventadmin inv status {0}.",
+                    player.PlayerName, runningEvent.Event?.Code ?? "?");
+                runningEvent.MarkReleased(player.PlayerUID);
+                runningEvent.EliminatePlayer(player.PlayerUID);
+                player.SendMessage(0, Lang.Get("canevents:inventory-unsettled-sitout"), EnumChatType.Notification);
+                return;
+            }
+            if (!saved)
+                runningEvent.sapi.World.Logger.Error(
+                    "[inventory] {0} enters own-gear match '{1}' with an unsaved inventory - an earlier "
+                    + "snapshot was never settled. Check /eventadmin inv status {0}.",
+                    player.PlayerName, runningEvent.Event?.Code ?? "?");
+
+            EnterMatch(player);
+        }
+
+        // Snapshot already taken: empty the inventory for the kit, top up food, guard the lethal hit.
+        private void EnterMatch(IServerPlayer player)
+        {
+            if (!KeepOwnGear) PlayerInventoryBackup.ClearInventory(player);
+            // After Save, so the snapshot keeps the real saturation.
+            Shared.EventBroadcaster.Feed(player);
+            if (!KeepOwnGear) HookLethalDamage(player);
         }
 
         public override void OnEnd()
@@ -100,19 +119,53 @@ namespace canevents.src.EventManagers.eventBehavior
             subscriptions.UnhookAll();
             damageHooks.UnhookAll();
 
-            // Offline players keep their ModData backup and are restored on reconnect
-            // (CANEventManager.RestoreEventBackup).
+            // Offline players are restored on reconnect (CANEventManager.RestoreEventBackup).
             foreach (var player in runningEvent.OnlineParticipants)
-                PlayerInventoryBackup.Restore(player, runningEvent.sapi);
+                if (runningEvent.HoldsPlayer(player.PlayerUID))
+                    PlayerInventoryBackup.Restore(player, runningEvent.sapi);
         }
+
+        // From CANEventManager.TryReleaseEliminated: own inventory is back, stop the lethal-hit sweep.
+        public void Release(string playerUid) => damageHooks.Unhook(playerUid);
+
+        // Open-match entry, step 1: take the snapshot, touch nothing else. False = an older snapshot is
+        // unsettled; the player stays out with their inventory as it is.
+        public bool PrepareAdmit(IServerPlayer player)
+        {
+            if (KeepOwnGear) return true;
+            if (PlayerInventoryBackup.Save(player, runningEvent.sapi, eventCode: runningEvent.Event?.Code)) return true;
+
+            runningEvent.sapi.World.Logger.Error(
+                "[inventory] {0} not let into '{1}': an earlier snapshot was never settled. Check /eventadmin inv status {0}.",
+                player.PlayerName, runningEvent.Event?.Code ?? "?");
+            return false;
+        }
+
+        // The entry fell through after PrepareAdmit: settle the snapshot just taken, nothing was cleared yet.
+        public void RollbackAdmit(IServerPlayer player)
+        {
+            if (!KeepOwnGear) PlayerInventoryBackup.Restore(player, runningEvent.sapi);
+        }
+
+        public override void OnParticipantAdmitted(IServerPlayer player) => EnterMatch(player);
+
+        public override void OnParticipantWithdrawn(IServerPlayer player)
+        {
+            Release(player.PlayerUID);
+            if (!KeepOwnGear) PlayerInventoryBackup.Restore(player, runningEvent.sapi);
+        }
+
+        public override void OnParticipantDropped(string uid) => Release(uid);
+
+        // Rejoin spawns a fresh entity.
+        public override void OnParticipantJoinedGame() => damageHooks.RehookAll(runningEvent);
 
         private void OnAnyEntityDeath(Entity entity, DamageSource source)
         {
             if (!(entity is EntityPlayer entityPlayer)) return;
             var player = runningEvent.sapi.World.PlayerByUid(entityPlayer.PlayerUID) as IServerPlayer;
             if (player == null) return;
-            if (!runningEvent.IsParticipant(player.PlayerUID)) return;
-            // Own gear is supposed to drop; only issued gear is swept up before the body does.
+            if (!runningEvent.HoldsPlayer(player.PlayerUID)) return;
             if (KeepOwnGear) return;
 
             PlayerInventoryBackup.DropDeathDrops(player, runningEvent.sapi);
@@ -121,24 +174,18 @@ namespace canevents.src.EventManagers.eventBehavior
 
         private void HookLethalDamage(IServerPlayer player)
         {
-            // Captured rather than read through the set: the hook needs this player's own
-            // health to compare the incoming damage against.
             var health = player.Entity?.GetBehavior<EntityBehaviorHealth>();
             if (health == null) return;
 
+            string uid = player.PlayerUID;
             damageHooks.Hook(player, (damage, dmgSource) =>
             {
-                // If this hit would kill, clear the inventory before EntityPlayer.Die() drops it.
-                // The saved backup is untouched and restored in OnEnd.
-                if (damage >= health.Health
-                    // ...unless a knock-down mod is about to swallow the blow. It hooks onDamaged
-                    // after us on every hit, so "lethal" here does not mean the player dies - and
-                    // emptying the inventory of someone who only got knocked down looks like theft.
-                    // A death that happens anyway is still covered by OnAnyEntityDeath, which runs
-                    // inside Die() ahead of the engine's drop.
+                // Lethal hit: clear before EntityPlayer.Die() drops it.
+                if (runningEvent.HoldsPlayer(uid)
+                    && damage >= health.Health
+                    // Downed mod hooks onDamaged after us and may turn this into a knock-down.
                     && !Compat.DownedCompat.WouldGoDownInsteadOfDying(player.Entity, dmgSource))
                 {
-                    // Anything the mode wants lootable hits the ground first; the rest is swept up.
                     PlayerInventoryBackup.DropDeathDrops(player, runningEvent.sapi);
                     PlayerInventoryBackup.ClearInventory(player);
                 }
@@ -148,16 +195,25 @@ namespace canevents.src.EventManagers.eventBehavior
 
         public override void OnParticipantRespawn(IServerPlayer player)
         {
-            if (runningEvent.IsParticipant(player.PlayerUID))
-            {
-                // Cleared either way: the engine hands out default starting items on respawn, and a
-                // player who just lost their own gear must not be handed a consolation kit.
+            string uid = player.PlayerUID;
+            if (!runningEvent.HoldsPlayer(uid)) return;
+
+            // Engine gives starting items on respawn; skip only if a kit behavior ahead already re-equipped.
+            if (KeepOwnGear || !runningEvent.IsActive(uid) || !KitGivenBeforeThis())
                 PlayerInventoryBackup.ClearInventory(player);
-                // Full bar on respawn. Vanilla's revive handling is off for participants via
-                // noSatietyRestoreOnRevive in CANEventManager.OnRespawn, so this is the only writer
-                // of saturation here regardless of callback order.
-                Shared.EventBroadcaster.Feed(player);
+            // Vanilla revive saturation is off via noSatietyRestoreOnRevive (CANEventManager.OnRespawn).
+            Shared.EventBroadcaster.Feed(player);
+        }
+
+        // Respawn hooks run in behavior (JSON) order.
+        private bool KitGivenBeforeThis()
+        {
+            foreach (var b in runningEvent.Behaviors)
+            {
+                if (ReferenceEquals(b, this)) return false;
+                if (b is abstracts.RespawningKillScoringEB) return true;
             }
+            return false;
         }
     }
 }

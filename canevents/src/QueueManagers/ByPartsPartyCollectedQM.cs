@@ -6,21 +6,14 @@ using canevents.src.EventManagers.events;
 
 namespace canevents.src.QueueManagers
 {
-    /// <summary>
-    /// Collects solo players into as many teams as possible (MaxPartiesCount down to
-    /// MinPartiesCount, MaxPartySize per team). Stateless between ticks.
-    /// </summary>
+    // Random solo teams, as many as fit. Stateless between ticks.
     public class ByPartsPartyCollectedQueueManager : QueueManager
     {
         private static readonly Random _rng = new Random();
 
         public override IReadOnlyList<TeamAssembly> TryAssemble(CANEvent canEvent, IReadOnlyList<Registration> pending)
         {
-            var eb          = canEvent.AssemblingEB;
-            int maxTeamSize = Math.Max(1, eb.MaxPartySize);
-            int minTeamSize = Math.Max(1, eb.MinPartySize);
-            int minTeams    = Math.Max(1, eb.MinPartiesCount);
-            int maxTeams    = Math.Max(minTeams, eb.MaxPartiesCount);
+            var eb = canEvent.AssemblingEB;
 
             var available = pending
                 .Where(r => !r.MarkedUsed && r.PlayersGuids.Count == 1 && !AnyPlayerBusy(r))
@@ -30,14 +23,7 @@ namespace canevents.src.QueueManagers
 
             while (true)
             {
-                // Pick the most teams we can fill (MaxPartiesCount down to MinPartiesCount).
-                int teamsCount = 0;
-                int teamSize   = 0;
-                for (int tc = maxTeams; tc >= minTeams; tc--)
-                {
-                    int ts = Math.Min(maxTeamSize, available.Count / tc);
-                    if (ts >= minTeamSize) { teamsCount = tc; teamSize = ts; break; }
-                }
+                var (teamsCount, teamSize, _) = SoloLobbyShapes(eb, available.Count).FirstOrDefault();
                 if (teamsCount == 0) break;
 
                 int needed = teamSize * teamsCount;
@@ -63,7 +49,5 @@ namespace canevents.src.QueueManagers
 
         public override (bool ok, string message) CheckRegistrationIsSuitable(Registration reg)
             => PartySizeValidator.SoloOnly(reg);
-
-        // Assemblies are formed complete in one call: no partial cross-tick state to clean up.
     }
 }

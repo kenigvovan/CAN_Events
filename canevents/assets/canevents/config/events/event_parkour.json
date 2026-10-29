@@ -10,6 +10,7 @@
         "minMatchSeconds": 0
     },
     "behaviors": [
+        { "name": "ArenaProtection", "attributes": {} },
         {
             "name": "FullPartyRequired",
             "attributes": {
@@ -40,7 +41,7 @@
             "attributes": {
                 "lives": 3,
                 "finishGraceSeconds": 90.0,
-                "prefightSeconds": 0.0
+                "prefightSeconds": 3.0
             },
             "RegisterGameTickListener": true
         }

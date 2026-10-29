@@ -6,13 +6,10 @@ using canevents.src.Tournaments;
 using Vintagestory.API.Common;
 using Vintagestory.API.Common.CommandAbbr;
 using Vintagestory.API.Server;
+using static canevents.src.commands.CommandArgs;
 
 namespace canevents.src.commands
 {
-    /// <summary>
-    /// Chat access to the tournament driver. The player subcommands need no privilege; everything that
-    /// shapes or runs a bracket requires controlserver.
-    /// </summary>
     public static class TournamentCommands
     {
         public static void Register(ICoreServerAPI sapi, CommandArgumentParsers parsers)
@@ -61,7 +58,6 @@ namespace canevents.src.commands
                         .WithDesc("Give up your called tournament match.")
                     .EndSub()
 
-                    // ── admin ──
                     .BeginSub("create")
                         .RequiresPrivilege(Privilege.controlserver)
                         .WithArgs(parsers.Word("name"), parsers.Word("eventCodes"), parsers.OptionalInt("teamSize"))
@@ -70,7 +66,8 @@ namespace canevents.src.commands
                     .EndSub()
                     .BeginSub("arena")
                         .RequiresPrivilege(Privilege.controlserver)
-                        .WithArgs(parsers.Long("tournamentId"), parsers.Word("action"), parsers.OptionalLong("placeId"))
+                        // -1 when omitted: 0 is a real arena id.
+                        .WithArgs(parsers.Long("tournamentId"), parsers.Word("action"), parsers.OptionalLong("placeId", -1))
                         .HandleWith(impl.Arena)
                         .WithDesc("add|remove|clear|list arenas the tournament may use (empty = any).")
                     .EndSub()
@@ -102,8 +99,10 @@ namespace canevents.src.commands
                         .RequiresPrivilege(Privilege.controlserver)
                         .WithArgs(parsers.Long("tournamentId"), parsers.Word("option"), parsers.Word("value"))
                         .HandleWith(impl.Set)
-                        .WithDesc("readycheck|maxentrants|concurrent|thirdplace|seed|rated|rake|sides|scheduler|deadline"
-                            + "|openin|signupwindow|repeat|repeatat|announce <value>")
+                        // Keep in sync with the default case in Set.
+                        .WithDesc("readycheck|maxentrants|concurrent|thirdplace|seed|rated|rake|sides|advance"
+                            + "|manual|owngear|lockclass|autostart|autostartdelay|scheduler|deadline"
+                            + "|openin|signupwindow|repeat|repeatat|announce [value]")
                     .EndSub()
                     .BeginSub("open")
                         .RequiresPrivilege(Privilege.controlserver)
@@ -170,7 +169,8 @@ namespace canevents.src.commands
         private TournamentManager Tournaments
             => sapi.ModLoader.GetModSystem<canevents>()?.CANEventManager?.Tournaments;
 
-        // read-only
+        private EventPlacesManagers.DefaultEventPlacesManager Places
+            => sapi.ModLoader.GetModSystem<canevents>()?.CANEventManager?.eventPlacesManager;
 
         public TextCommandResult List(TextCommandCallingArgs args)
             => Lines(Tournaments?.Describe());
@@ -178,13 +178,11 @@ namespace canevents.src.commands
         public TextCommandResult Bracket(TextCommandCallingArgs args)
         {
             var t = Tournaments;
-            if (t == null) return TextCommandResult.Error("tournaments are not available");
+            if (t == null) return Report(Unavailable);
             long id = ResolveId(args, 0);
             if (id <= 0) return TextCommandResult.Error("which tournament? see /tournament list");
             return Lines(t.DescribeBracket(id));
         }
-
-        // player
 
         public TextCommandResult Signup(TextCommandCallingArgs args)
             => Run(args, (t, id, player) => t.Signup(player, id));
@@ -195,7 +193,7 @@ namespace canevents.src.commands
         public TextCommandResult TeamName(TextCommandCallingArgs args)
         {
             var t = Tournaments;
-            if (t == null) return TextCommandResult.Error("tournaments are not available");
+            if (t == null) return Report(Unavailable);
             if (!(args.Caller.Player is IServerPlayer player)) return TextCommandResult.Error("players only");
             return Report(t.SetTeamName(player, Id(args, 0), Str(args, 1)));
         }
@@ -203,7 +201,7 @@ namespace canevents.src.commands
         public TextCommandResult ClassChoice(TextCommandCallingArgs args)
         {
             var t = Tournaments;
-            if (t == null) return TextCommandResult.Error("tournaments are not available");
+            if (t == null) return Report(Unavailable);
             if (!(args.Caller.Player is IServerPlayer player)) return TextCommandResult.Error("players only");
             return Report(t.SetLoadout(player, Id(args, 0), Str(args, 1)));
         }
@@ -217,12 +215,10 @@ namespace canevents.src.commands
         public TextCommandResult Forfeit(TextCommandCallingArgs args)
             => Run(args, (t, id, player) => t.SetReady(player, id, 0, false));
 
-        // admin
-
         public TextCommandResult Create(TextCommandCallingArgs args)
         {
             var t = Tournaments;
-            if (t == null) return TextCommandResult.Error("tournaments are not available");
+            if (t == null) return Report(Unavailable);
             string name = Str(args, 0);
             var codes = (Str(args, 1) ?? "").Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries);
             int teamSize = Math.Max(1, Num(args, 2));
@@ -237,10 +233,13 @@ namespace canevents.src.commands
                 switch (action)
                 {
                     case "add":
-                        if (placeId <= 0) return (false, "which arena?");
+                        if (placeId < 0) return (false, "which arena?");
+                        if (Places?.FindById(placeId) == null) return (false, "no arena #" + placeId + " - see /canep list");
                         if (!cfg.PlaceWhitelist.Contains(placeId)) cfg.PlaceWhitelist.Add(placeId);
                         return (true, "arenas: " + Describe(cfg.PlaceWhitelist));
                     case "remove":
+                        // No existence check, so stale ids of deleted arenas can be removed.
+                        if (placeId < 0) return (false, "which arena?");
                         cfg.PlaceWhitelist.Remove(placeId);
                         return (true, "arenas: " + Describe(cfg.PlaceWhitelist));
                     case "clear":
@@ -308,131 +307,161 @@ namespace canevents.src.commands
                     + TournamentManager.DescribeItems(cfg.PlacementPrizes[place - 1].Items));
             });
 
+        // Goes through TournamentDraft.ApplyTo like the panel, so clamping is shared. Reply shows the stored value.
         public TextCommandResult Set(TextCommandCallingArgs args)
-            => Configure(args, (tour, cfg) =>
+        {
+            string option = (Str(args, 1) ?? "").ToLowerInvariant();
+            string value = Str(args, 2) ?? "";
+            bool isNumber = int.TryParse(value, out int n);
+            bool flag = value.Equals("true", StringComparison.OrdinalIgnoreCase)
+                     || value.Equals("on", StringComparison.OrdinalIgnoreCase)
+                     || value == "1";
+
+            var draft = new Network.TournamentDraft();
+            System.Func<Tournament, string> describe;
+            string needsNumber = null;
+            switch (option)
             {
-                string option = (Str(args, 1) ?? "").ToLowerInvariant();
-                string value = Str(args, 2) ?? "";
-                bool isNumber = int.TryParse(value, out int n);
-                bool flag = value.Equals("true", StringComparison.OrdinalIgnoreCase)
-                         || value.Equals("on", StringComparison.OrdinalIgnoreCase)
-                         || value == "1";
+                case "readycheck":
+                    needsNumber = "seconds, 0 to disable the ready check";
+                    draft.ReadyCheckSeconds = n;
+                    describe = cfg => "ready check: " + cfg.ReadyCheckSeconds + "s";
+                    break;
+                case "maxentrants":
+                    needsNumber = Network.TournamentDraft.MinEntrantCount + ".." + Network.TournamentDraft.MaxEntrantCount;
+                    draft.MaxEntrants = n;
+                    describe = cfg => "max entrants: " + cfg.MaxEntrants;
+                    break;
+                case "concurrent":
+                    needsNumber = "1.." + Network.TournamentDraft.MaxConcurrent;
+                    draft.MaxConcurrentMatches = n;
+                    describe = cfg => "concurrent matches: " + cfg.MaxConcurrentMatches;
+                    break;
+                case "thirdplace":
+                    draft.ThirdPlaceMatch = flag;
+                    describe = cfg => "third-place match: " + cfg.ThirdPlaceMatch;
+                    break;
+                case "seed":
+                    draft.SeedMode = value.StartsWith("elo", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+                    describe = cfg => "seeding: " + (cfg.SeedMode == 1 ? "by Elo" : "random");
+                    break;
+                case "rated":
+                    draft.RatedMode = flag ? 0 : 1;
+                    describe = cfg => "rated: " + (cfg.RatedMode == 0 ? "as the event" : "forced off");
+                    break;
+                case "rake":
+                    needsNumber = "0..100";
+                    draft.RakePercent = n;
+                    describe = cfg => "rake: " + cfg.RakePercent + "%";
+                    break;
+                case "manual":
+                    draft.ManualMatchStart = flag;
+                    describe = cfg => cfg.ManualMatchStart
+                        ? "matches are called by hand (/tournament next)"
+                        : "matches are called automatically";
+                    break;
+                case "owngear":
+                    draft.BringOwnGear = flag;
+                    describe = cfg => cfg.BringOwnGear
+                        ? "players bring their own gear - and lose it if they die"
+                        : "players get the arena kit";
+                    break;
+                case "lockclass":
+                    draft.LockLoadout = flag;
+                    describe = cfg => cfg.LockLoadout
+                        ? "class locked once the bracket starts"
+                        : "players may change class between rounds";
+                    break;
+                case "autostart":
+                    needsNumber = "entrant count, 0 to disable";
+                    draft.AutoStartEntrants = n;
+                    describe = cfg => cfg.AutoStartEntrants == 0
+                        ? "auto-start off"
+                        : "auto-start at " + cfg.AutoStartEntrants + " entrants";
+                    break;
+                case "autostartdelay":
+                    needsNumber = "seconds";
+                    draft.AutoStartDelaySeconds = n;
+                    describe = cfg => "auto-start delay: " + cfg.AutoStartDelaySeconds + "s";
+                    break;
+                case "advance":
+                    needsNumber = "how many go through, 1.." + Network.TournamentDraft.MaxAdvance;
+                    draft.AdvancePerMatch = n;
+                    describe = cfg => "advancing per match: " + cfg.AdvancePerMatch;
+                    break;
+                case "sides":
+                    needsNumber = "sides per match, 2.." + Network.TournamentDraft.MaxSides + ", 0 = take it from the event";
+                    draft.PartiesPerMatch = n;
+                    describe = cfg => cfg.PartiesPerMatch == 0
+                        ? "sides per match: from the event"
+                        : "sides per match: " + cfg.PartiesPerMatch;
+                    break;
+                case "scheduler":
+                    draft.PauseScheduler = flag;
+                    describe = cfg => "pause auto-scheduler while running: " + cfg.PauseScheduler;
+                    break;
+                case "deadline":
+                    needsNumber = "minutes from now, 0 for none";
+                    draft.SignupDeadlineMinutes = n;
+                    describe = cfg => cfg.SignupDeadlineUnix == 0 ? "no signup deadline" : "signup closes in " + n + " min";
+                    break;
 
-                switch (option)
+                case "openin":
+                    needsNumber = "minutes from now, 0 to open by hand";
+                    draft.OpenInMinutes = n;
+                    describe = cfg => cfg.OpenAtUnix == 0 ? "opens by hand" : "signup opens in " + n + " min";
+                    break;
+                case "signupwindow":
+                    // A duration, so repeating tournaments can re-derive it.
+                    needsNumber = "minutes, 0 for none";
+                    draft.SignupWindowMinutes = n;
+                    describe = cfg => cfg.SignupWindowMinutes == 0
+                        ? "no signup window"
+                        : "signup stays open " + cfg.SignupWindowMinutes + " min";
+                    break;
+                case "announce":
+                    draft.ShowBeforeSignup = flag;
+                    describe = cfg => cfg.ShowBeforeSignup
+                        ? "listed for players before signup opens"
+                        : "hidden from players until signup opens";
+                    break;
+                case "repeat":
+                    needsNumber = "minutes between runs, 0 = one-off";
+                    draft.RepeatEveryMinutes = n;
+                    describe = cfg => cfg.RepeatEveryMinutes == 0
+                        ? "one-off"
+                        : "repeats every " + cfg.RepeatEveryMinutes + " min after it ends";
+                    break;
+                case "repeatat":
                 {
-                    case "readycheck":
-                        if (!isNumber || n < 0) return (false, "seconds, 0 to disable the ready check");
-                        cfg.ReadyCheckSeconds = n;
-                        return (true, "ready check: " + n + "s");
-                    // The upper bounds matter: these counts size the bracket that gets built, so an
-                    // absurd number is an out-of-memory typo.
-                    case "maxentrants":
-                        if (!isNumber || n < 2 || n > 256) return (false, "2..256");
-                        cfg.MaxEntrants = n;
-                        return (true, "max entrants: " + n);
-                    case "concurrent":
-                        if (!isNumber || n < 1 || n > 32) return (false, "1..32");
-                        cfg.MaxConcurrentMatches = n;
-                        return (true, "concurrent matches: " + n);
-                    case "thirdplace":
-                        cfg.ThirdPlaceMatch = flag;
-                        return (true, "third-place match: " + flag);
-                    case "seed":
-                        cfg.SeedMode = value.StartsWith("elo", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
-                        return (true, "seeding: " + (cfg.SeedMode == 1 ? "by Elo" : "random"));
-                    case "rated":
-                        cfg.RatedMode = flag ? 0 : 1;
-                        return (true, "rated: " + (cfg.RatedMode == 0 ? "as the event" : "forced off"));
-                    case "rake":
-                        if (!isNumber || n < 0 || n > 100) return (false, "0..100");
-                        cfg.RakePercent = n;
-                        return (true, "rake: " + n + "%");
-                    case "manual":
-                        cfg.ManualMatchStart = flag;
-                        return (true, flag
-                            ? "matches are called by hand (/tournament next)"
-                            : "matches are called automatically");
-                    case "owngear":
-                        cfg.BringOwnGear = flag;
-                        return (true, flag
-                            ? "players bring their own gear - and lose it if they die"
-                            : "players get the arena kit");
-                    case "lockclass":
-                        cfg.LockLoadout = flag;
-                        return (true, flag
-                            ? "class locked once the bracket starts"
-                            : "players may change class between rounds");
-                    case "autostart":
-                        if (!isNumber || n < 0) return (false, "entrant count, 0 to disable");
-                        cfg.AutoStartEntrants = n;
-                        return (true, n == 0
-                            ? "auto-start off"
-                            : "auto-start at " + n + " entrants");
-                    case "autostartdelay":
-                        if (!isNumber || n < 0) return (false, "seconds");
-                        cfg.AutoStartDelaySeconds = n;
-                        return (true, "auto-start delay: " + n + "s");
-                    case "advance":
-                        if (!isNumber || n < 1 || n > 16) return (false, "how many go through, 1..16");
-                        cfg.AdvancePerMatch = n;
-                        return (true, "advancing per match: " + n);
-                    case "sides":
-                        if (!isNumber || n < 0 || n > 16) return (false, "sides per match, 2..16, 0 = take it from the event");
-                        cfg.PartiesPerMatch = n == 0 ? 0 : Math.Max(2, n);
-                        return (true, cfg.PartiesPerMatch == 0
-                            ? "sides per match: from the event"
-                            : "sides per match: " + cfg.PartiesPerMatch);
-                    case "scheduler":
-                        cfg.PauseScheduler = flag;
-                        return (true, "pause auto-scheduler while running: " + flag);
-                    case "deadline":
-                        if (!isNumber || n < 0) return (false, "minutes from now, 0 for none");
-                        cfg.SignupDeadlineUnix = n == 0 ? 0 : TournamentManager.Now + n * 60;
-                        return (true, n == 0 ? "no signup deadline" : "signup closes in " + n + " min");
-
-                    // scheduling
-                    case "openin":
-                        if (!isNumber || n < 0) return (false, "minutes from now, 0 to open by hand");
-                        cfg.OpenAtUnix = n == 0 ? 0 : TournamentManager.Now + n * 60;
-                        return (true, n == 0
-                            ? "opens by hand"
-                            : "signup opens in " + n + " min");
-                    case "signupwindow":
-                        // A duration, not a moment, so a repeating tournament can re-derive it.
-                        if (!isNumber || n < 0 || n > 7 * 24 * 60) return (false, "minutes, 0 for none");
-                        cfg.SignupWindowMinutes = n;
-                        return (true, n == 0 ? "no signup window" : "signup stays open " + n + " min");
-                    case "announce":
-                        cfg.ShowBeforeSignup = flag;
-                        return (true, flag
-                            ? "listed for players before signup opens"
-                            : "hidden from players until signup opens");
-                    case "repeat":
-                        if (!isNumber || n < 0 || n > 30 * 24 * 60) return (false, "minutes between runs, 0 = one-off");
-                        cfg.RepeatEveryMinutes = n;
-                        return (true, n == 0 ? "one-off" : "repeats every " + n + " min after it ends");
-                    case "repeatat":
-                    {
-                        // "19:00,21:30", or "off".
-                        if (value.Equals("off", StringComparison.OrdinalIgnoreCase) || value == "-" || value == "0")
-                        {
-                            cfg.RepeatAtMinutesOfDay.Clear();
-                            return (true, "no daily times");
-                        }
-                        // Same parser as the admin panel, so the two cannot disagree.
-                        var minutes = TournamentManager.ParseTimesOfDay(value);
-                        if (minutes == null || minutes.Count == 0)
-                            return (false, "times as HH:MM[,HH:MM...] in server local time, or 'off'");
-                        cfg.RepeatAtMinutesOfDay = minutes;
-                        return (true, "repeats daily at "
-                            + TournamentManager.PackTimesOfDay(minutes).Replace(";", ", "));
-                    }
-                    default:
-                        return (false, "readycheck|maxentrants|concurrent|thirdplace|seed|rated|rake|sides|advance"
-                            + "|manual|owngear|lockclass|autostart|autostartdelay|scheduler|deadline"
-                            + "|openin|signupwindow|repeat|repeatat|announce");
+                    // "19:00,21:30" or "off".
+                    bool off = value.Equals("off", StringComparison.OrdinalIgnoreCase) || value == "-" || value == "0";
+                    // Parsed here only for a nicer error; ApplyTo parses it again.
+                    var minutes = off ? new List<int>() : TournamentManager.ParseTimesOfDay(value);
+                    if (minutes == null || (!off && minutes.Count == 0))
+                        return TextCommandResult.Error("times as HH:MM[,HH:MM...] in server local time, or 'off'");
+                    draft.RepeatAtPacked = off ? "" : value;
+                    describe = cfg => cfg.RepeatAtMinutesOfDay.Count == 0
+                        ? "no daily times"
+                        : "repeats daily at " + TournamentManager.PackTimesOfDay(cfg.RepeatAtMinutesOfDay).Replace(";", ", ");
+                    break;
                 }
+                default:
+                    return TextCommandResult.Error("readycheck|maxentrants|concurrent|thirdplace|seed|rated|rake|sides|advance"
+                        + "|manual|owngear|lockclass|autostart|autostartdelay|scheduler|deadline"
+                        + "|openin|signupwindow|repeat|repeatat|announce");
+            }
+
+            // No option takes a negative value.
+            if (needsNumber != null && (!isNumber || n < 0)) return TextCommandResult.Error(needsNumber);
+
+            return Configure(args, (tour, cfg) =>
+            {
+                var applied = draft.ApplyTo(cfg);
+                if (!applied.ok) return applied;
+                return (true, describe(cfg));
             });
+        }
 
         public TextCommandResult Open(TextCommandCallingArgs args)
             => Report(Tournaments?.OpenSignup(Id(args, 0)) ?? Unavailable);
@@ -455,7 +484,7 @@ namespace canevents.src.commands
         public TextCommandResult CallNext(TextCommandCallingArgs args)
         {
             var t = Tournaments;
-            if (t == null) return TextCommandResult.Error("tournaments are not available");
+            if (t == null) return Report(Unavailable);
             long id = ResolveId(args, 0);
             if (id <= 0) return TextCommandResult.Error("which tournament? see /tournament list");
             return Report(t.ForceCallNext(id));
@@ -467,15 +496,13 @@ namespace canevents.src.commands
         public TextCommandResult Disqualify(TextCommandCallingArgs args)
             => Report(Tournaments?.Disqualify(Id(args, 0), Str(args, 1)) ?? Unavailable);
 
-        // plumbing
-
         private static (bool ok, string message) Unavailable => (false, "tournaments are not available");
 
         private TextCommandResult Run(TextCommandCallingArgs args,
             System.Func<TournamentManager, long, IServerPlayer, (bool ok, string message)> op)
         {
             var t = Tournaments;
-            if (t == null) return TextCommandResult.Error("tournaments are not available");
+            if (t == null) return Report(Unavailable);
             if (!(args.Caller.Player is IServerPlayer player)) return TextCommandResult.Error("players only");
 
             long id = ResolveId(args, 0);
@@ -487,41 +514,19 @@ namespace canevents.src.commands
             System.Func<TournamentManager, Tournament, (bool ok, string message)> edit)
         {
             var t = Tournaments;
-            if (t == null) return TextCommandResult.Error("tournaments are not available");
+            if (t == null) return Report(Unavailable);
             return Report(t.Configure(Id(args, 0), cfg => edit(t, cfg)));
         }
 
-        /// <summary>The id the player typed, or the only active tournament when they typed none.</summary>
+        // Falls back to the only active tournament.
         private long ResolveId(TextCommandCallingArgs args, int index)
         {
             long typed = Id(args, index);
             return typed > 0 ? typed : (Tournaments?.SoleActiveId() ?? 0);
         }
 
-        // An omitted optional parser yields null, so every read is defensive rather than a cast that
-        // throws on a bare subcommand.
-        private static object Raw(TextCommandCallingArgs args, int index)
-            => args.Parsers != null && args.Parsers.Count > index ? args.Parsers[index].GetValue() : null;
-
-        private static string Str(TextCommandCallingArgs args, int index) => Raw(args, index) as string;
-
-        private static long Id(TextCommandCallingArgs args, int index)
-        {
-            var raw = Raw(args, index);
-            return raw == null ? 0 : Convert.ToInt64(raw);
-        }
-
-        private static int Num(TextCommandCallingArgs args, int index)
-        {
-            var raw = Raw(args, index);
-            return raw == null ? 0 : Convert.ToInt32(raw);
-        }
-
         private static string Describe(List<long> ids)
             => ids == null || ids.Count == 0 ? "any suitable" : string.Join(", ", ids);
-
-        private static TextCommandResult Report((bool ok, string message) result)
-            => result.ok ? TextCommandResult.Success(result.message) : TextCommandResult.Error(result.message);
 
         private static TextCommandResult Lines(List<string> lines)
         {

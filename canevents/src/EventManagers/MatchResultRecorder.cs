@@ -6,12 +6,7 @@ using Vintagestory.API.Server;
 
 namespace canevents.src.EventManagers
 {
-    /// <summary>
-    /// Everything that happens to a finished match's outcome: rewards, standings (leaderboard + Elo),
-    /// the result screen and the history entry. The second half of the finish sequence: the manager
-    /// freezes the outcome into a <see cref="MatchResult"/>, tears the match down, then hands the
-    /// frozen copy here.
-    /// </summary>
+    // Rewards, standings, Elo, result screen and history. Gets the result captured before teardown.
     public class MatchResultRecorder
     {
         private readonly CANEventManager manager;
@@ -27,6 +22,9 @@ namespace canevents.src.EventManagers
 
         public void Record(RunningEvent runningEvent, MatchResult result)
         {
+            // An open match only ends when an admin closes it: no result, no head-to-head draws, no history.
+            if (runningEvent.IsOpenMatch) return;
+
             manager.RewardDistributor?.DistributeRewards(runningEvent, result);
 
             RecordStandings(runningEvent, result);
@@ -34,10 +32,7 @@ namespace canevents.src.EventManagers
             PublishResult(runningEvent, result);
         }
 
-        // The lifetime score between two players, fed from every two-sided match - duels included,
-        // which is why this sits outside RecordStandings: a friendly duel moves no rating, but "we
-        // are 7-3" is exactly what it is supposed to count. Multi-side events (FFA, hunger games)
-        // are left out: with twenty sides every pairing is an accident, not a rivalry.
+        // Two-sided matches only, unrated ones (duels) included, so it's outside RecordStandings.
         private void RecordHeadToHead(RunningEvent runningEvent, MatchResult result)
         {
             var headToHead = manager.HeadToHead;
@@ -59,18 +54,14 @@ namespace canevents.src.EventManagers
             }
         }
 
-        // Ranking counts on the RATED track only; unrated events are casual. Rewards are independent
-        // and are distributed by the caller on both tracks.
+        // Rated events only.
         private void RecordStandings(RunningEvent runningEvent, MatchResult result)
         {
             var leaderboard = manager.Leaderboard;
             if (!runningEvent.Event.Rated || leaderboard == null) return;
-            // An exhibition bracket runs real rated events but must not move anyone's rating.
             if (runningEvent.SuppressRating) return;
 
-            // A bot-padded lobby produces no standings at all, humans included: rating play against
-            // bots is the cheapest way to farm Elo, and dropping only the bot rows would still hand the
-            // humans a free win. Rated events shouldn't be configured with bots; this is the backstop.
+            // Any bot in the lobby skips standings for everyone, otherwise Elo can be farmed off bots.
             if (runningEvent.ParticipantsBefore.Any(Bots.BotIdentity.IsBot))
             {
                 sapi.World.Logger.Notification(
@@ -78,9 +69,7 @@ namespace canevents.src.EventManagers
                 return;
             }
 
-            // Same anti-throw contribution gate the reward path uses: a match shorter than the
-            // threshold is a suspected win-trade, so it must not move Elo or the win/loss ledger
-            // either - otherwise two accounts farm ranked standings with instant matches.
+            // Same anti win-trade gate as rewards.
             if (RewardResolver.BelowContributionGate(runningEvent.Event, config,
                     runningEvent.ElapsedSeconds, out int minSeconds))
             {
@@ -93,8 +82,7 @@ namespace canevents.src.EventManagers
             string eventCode = runningEvent.Event.Code;
             if (result.Winners.Count == 0)
             {
-                // No winner = a genuine draw (time-up with the top sides tied); recording a loss would
-                // punish both sides of a tie.
+                // No winner = draw.
                 foreach (var uid in runningEvent.ParticipantsBefore)
                     leaderboard.RecordDraw(uid, eventCode);
             }
@@ -109,10 +97,7 @@ namespace canevents.src.EventManagers
             RecordElo(runningEvent, result, eventCode);
         }
 
-        // Elo for any mode that produces a ranking. Sides are the starting rosters
-        // (ParticipantsByGroupsBefore, so disconnected players still count); each side's placement is
-        // the index of the result.Ranking bracket holding any of its members, unranked → last. Skipped
-        // when the scorer can't rank or there are fewer than 2 sides.
+        // Side placement = index of the first ranking bracket with any of its members; unranked = last.
         private void RecordElo(RunningEvent runningEvent, MatchResult result, string eventCode)
         {
             var sides = runningEvent.ParticipantsByGroupsBefore;
@@ -130,15 +115,12 @@ namespace canevents.src.EventManagers
             manager.Leaderboard.RecordEloResult(eventCode, sideRosters, ranks);
         }
 
-        // One scoreboard, read once: the network message and the history entry are two shapes of the
-        // same rows, and building them separately is how they drift.
+        // Same rows for the network message and the history entry.
         private void PublishResult(RunningEvent runningEvent, MatchResult result)
         {
-            // Bot bodies are already gone by now, so their names come from the bot manager rather than
-            // from the world.
+            // Bot bodies are despawned by now.
             string NameOfParticipant(string uid)
                 => Bots.BotIdentity.IsBot(uid)
-                    // The uid-derived name is the fallback for a bot that never got a body at all.
                     ? runningEvent.Bots.NameOf(uid) ?? Bots.BotIdentity.NameOfUid(uid)
                     : NameOf(uid);
 
@@ -181,7 +163,6 @@ namespace canevents.src.EventManagers
             });
         }
 
-        // Shared with the manager, which names the winners in its finish broadcast.
         private string NameOf(string uid) => manager.NameOf(uid);
     }
 }

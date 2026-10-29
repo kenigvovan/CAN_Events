@@ -28,7 +28,7 @@ namespace canevents.src.Network
                 ReplyFail(player, Lang.Get("canevents:event-not-found", code ?? ""));
                 return;
             }
-            serverChannel.SendPacket(BuildRewardConfigMsg(ev), player);
+            adminChannel.SendPacket(BuildRewardConfigMsg(ev), player);
         }
 
         private void OnSaveEventRewardConfig(IServerPlayer player, EventRewardConfigMsg msg)
@@ -133,7 +133,7 @@ namespace canevents.src.Network
         private void SendRewardLimits(IServerPlayer player)
         {
             var c = GlobalConfig;
-            serverChannel.SendPacket(new RewardLimitsMsg
+            adminChannel.SendPacket(new RewardLimitsMsg
             {
                 RateCapBurst = c.rewardRateCapBurst,
                 RateCapRefillHours = c.rewardRateCapRefillHours,

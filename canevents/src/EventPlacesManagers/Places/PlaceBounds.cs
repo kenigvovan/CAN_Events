@@ -2,49 +2,35 @@ using Vintagestory.API.MathTools;
 
 namespace canevents.src.EventPlacesManagers.Places
 {
-    /// <summary>
-    /// The footprint of an event place, and the one place that says what "inside" means.
-    ///
-    /// **Y is deliberately ignored.** Admins mark bounds by standing on the corners, so what gets
-    /// stored is a floor-level slab rather than a volume: a parkour course runs upward, a spectator
-    /// hovers above the arena, and an item thrown in the air is still in the arena. Checking Y would
-    /// turn all three into "outside". This was written out three times in three files before, each
-    /// with its own copy of that reasoning - now it lives here.
-    /// </summary>
+    // Y is ignored: bounds are a floor-level slab (parkour goes up, spectators hover, items fly).
     public static class PlaceBounds
     {
-        /// <summary>Does this place have a usable footprint at all?</summary>
         public static bool Has(EventPlace place)
             => place != null && place.HasBounds && place.BoundsMin != null && place.BoundsMax != null;
 
-        /// <summary>
-        /// The raw X/Z test, for callers holding plain numbers - the client works off a DTO rather
-        /// than an EventPlace, and it has to answer exactly the same way the server does.
-        /// </summary>
+        // Raw form for the client, which only has a DTO.
         public static bool Contains(int minX, int maxX, int minZ, int maxZ, int x, int z)
             => x >= minX && x <= maxX && z >= minZ && z <= maxZ;
 
-        /// <summary>
-        /// Is this position inside the footprint? False when the place has no bounds: "nowhere" does
-        /// not contain anything. Callers that treat a place without bounds as unrestricted check
-        /// <see cref="Has"/> first and skip the question.
-        /// </summary>
+        // Arenas in different dimensions can share X/Z.
+        public static bool Contains(int minX, int maxX, int minZ, int maxZ, int boundsDim,
+            int x, int z, int dim)
+            => dim == boundsDim && Contains(minX, maxX, minZ, maxZ, x, z);
+
+        // False when the place has no bounds.
         public static bool Contains(EventPlace place, BlockPos pos)
             => Has(place) && pos != null
-               && Contains(place.BoundsMin.X, place.BoundsMax.X,
-                           place.BoundsMin.Z, place.BoundsMax.Z, pos.X, pos.Z);
+               && Contains(place.BoundsMin.X, place.BoundsMax.X, place.BoundsMin.Z, place.BoundsMax.Z,
+                           place.BoundsMin.dimension, pos.X, pos.Z, pos.dimension);
 
-        /// <summary>Same test from world coordinates (an entity position, floored).</summary>
-        public static bool Contains(EventPlace place, double x, double z)
+        // dim is required so no caller silently means dimension 0.
+        public static bool Contains(EventPlace place, double x, double z, int dim)
             => Has(place)
                && Contains(place.BoundsMin.X, place.BoundsMax.X, place.BoundsMin.Z, place.BoundsMax.Z,
-                           (int)System.Math.Floor(x), (int)System.Math.Floor(z));
+                           place.BoundsMin.dimension,
+                           (int)System.Math.Floor(x), (int)System.Math.Floor(z), dim);
 
-        /// <summary>
-        /// The middle of the footprint in world coordinates. The +0.5 is not decoration: block
-        /// coordinates address a corner, so a radius measured from the raw value is off by half a
-        /// block in every direction.
-        /// </summary>
+        // +0.5 because block coords address the corner, not the centre.
         public static bool TryCentre(EventPlace place, out double x, out double y, out double z)
         {
             x = y = z = 0;
@@ -58,11 +44,7 @@ namespace canevents.src.EventPlacesManagers.Places
             return true;
         }
 
-        /// <summary>
-        /// The footprint as a cuboid for world queries: horizontally the bounds plus
-        /// <paramref name="margin"/>, vertically the whole column, since the stored bounds are a
-        /// slab and anything above the floor is still in the arena.
-        /// </summary>
+        // Full world height, since bounds are a slab.
         public static bool TryCuboid(EventPlace place, int margin, int worldHeight,
             out BlockPos from, out BlockPos to)
         {

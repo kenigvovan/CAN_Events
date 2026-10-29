@@ -24,17 +24,41 @@ namespace canevents.src.EventPlacesManagers
             this.logger = logger;
         }
 
-        // Null-tolerant so the manager stays constructible without an API (tests, tooling).
         void Log(string message) => logger?.Notification("[canevents] " + message);
         void LogWarn(string message) => logger?.Warning("[canevents] " + message);
+        // Persisted so a deleted arena's id is never reused (tournament whitelists, rollback files).
+        // Not .json, so the place loader skips it.
+        string IdCounterPath => Path.Combine(pathToJsonFiles, "next_place_id.txt");
+
+        long ReadIdCounter()
+        {
+            try
+            {
+                if (File.Exists(IdCounterPath) && long.TryParse(File.ReadAllText(IdCounterPath).Trim(), out long next))
+                    return next;
+            }
+            catch (Exception e)
+            {
+                LogWarn("could not read the place id counter, rebuilding it from the files: " + e.Message);
+            }
+            return 0;
+        }
+
+        void SaveIdCounter()
+        {
+            if (!Scoring.JsonStore.TryWriteAtomic(IdCounterPath, LastId, out var error))
+                LogWarn("could not save the place id counter: " + error);
+        }
+
         public void LoadEventPlaces()
         {
+            var duplicates = new List<(EventPlace place, string file)>();
+            var seenIds = new HashSet<long>();
+
             if (Directory.Exists(pathToJsonFiles))
             {
                 foreach (var eventPlaceFile in Directory.GetFiles(pathToJsonFiles, "*.json"))
                 {
-                    // Per-file isolation: one unreadable place must not cost the rest of the
-                    // arena list, which is hand-made work that cannot be regenerated.
                     EventPlace eventPlace;
                     try
                     {
@@ -53,8 +77,7 @@ namespace canevents.src.EventPlacesManagers
                         continue;
                     }
 
-                    // HasBounds always survives a round-trip, the corner objects may not. A flag
-                    // without corners makes consumers draw/match a footprint that isn't there.
+                    // HasBounds survives a round-trip, the corners may not.
                     if (eventPlace.HasBounds && (eventPlace.BoundsMin == null || eventPlace.BoundsMax == null))
                     {
                         LogWarn(string.Format(
@@ -63,14 +86,20 @@ namespace canevents.src.EventPlacesManagers
                         eventPlace.HasBounds = false;
                     }
 
+                    // Duplicate id: renumbered below once the max id is known.
+                    if (!seenIds.Add(eventPlace.Id))
+                    {
+                        duplicates.Add((eventPlace, eventPlaceFile));
+                        continue;
+                    }
+
                     this.EventPlaces.Add(eventPlace);
                     if (eventPlace.Id >= LastId)
                     {
                         LastId = eventPlace.Id + 1;
                     }
                     int bdCount = eventPlace.BehaviorData?.Count ?? -1;
-                    bool hasParkour = eventPlace.BehaviorData?.ContainsKey("Parkour") ?? false;
-                    // Bounds are logged because the flag and the corner objects can disagree after a load.
+                    bool hasParkour = eventPlace.BehaviorData?.ContainsKey(BehaviorKeys.Parkour) ?? false;
                     Log(string.Format(
                         "LoadEventPlaces: file={0} id={1} name={2} types={3} BehaviorData.Count={4} hasParkour={5} HasBounds={6} min={7} max={8} spawns={9}",
                         Path.GetFileName(eventPlaceFile), eventPlace.Id, eventPlace.Name,
@@ -86,14 +115,29 @@ namespace canevents.src.EventPlacesManagers
             {
                 Directory.CreateDirectory(pathToJsonFiles);
             }
+
+            LastId = Math.Max(LastId, ReadIdCounter());
+
+            foreach (var (place, file) in duplicates)
+            {
+                long oldId = place.Id;
+                place.Id = LastId++;
+                this.EventPlaces.Add(place);
+                string target = Path.Combine(pathToJsonFiles, FileNameFor(place));
+                LogWarn(string.Format("LoadEventPlaces: {0} has id {1}, which another place already has - "
+                    + "renumbered to {2}.", Path.GetFileName(file), oldId, place.Id));
+                if (SavePlace(place) && !string.Equals(file, target, StringComparison.OrdinalIgnoreCase))
+                {
+                    try { File.Delete(file); }
+                    catch (Exception e) { LogWarn("could not remove " + Path.GetFileName(file) + ": " + e.Message); }
+                }
+            }
+
+            SaveIdCounter();
         }
         private static readonly Random _random = new Random();
 
-        /// <summary>
-        /// A free arena that can host these place tags, picked at random among suitable ones.
-        /// <paramref name="allowedIds"/> narrows the pool to a whitelist (e.g. a tournament pinned to
-        /// specific arenas); null or empty means the whole server.
-        /// </summary>
+        // Random free arena for these tags. Empty allowedIds means no whitelist.
         public bool TryFindEventPlace(string[] searchTypes, out EventPlace result, ICollection<long> allowedIds = null)
         {
             bool restricted = allowedIds != null && allowedIds.Count > 0;
@@ -114,7 +158,6 @@ namespace canevents.src.EventPlacesManagers
             return false;
         }
 
-        /// <summary>The place with this id, or null.</summary>
         public EventPlace FindById(long id) => EventPlaces.FirstOrDefault(it => it.Id == id);
 
         public bool DeletePlace(long id)
@@ -126,12 +169,12 @@ namespace canevents.src.EventPlacesManagers
 
                 try
                 {
-                    var filePath = Path.Combine(this.pathToJsonFiles, found.Name + "_" + found.Id + ".json");
+                    var filePath = Path.Combine(this.pathToJsonFiles, FileNameFor(found));
                     if (File.Exists(filePath))
                     {
                         File.Delete(filePath);
                     }
-                    // Also match without the name, in case the file was renamed
+                    // In case the file was renamed.
                     foreach (var file in Directory.GetFiles(this.pathToJsonFiles, "*_" + found.Id + ".json"))
                     {
                         File.Delete(file);
@@ -139,7 +182,6 @@ namespace canevents.src.EventPlacesManagers
                 }
                 catch (Exception e)
                 {
-                    // The place is gone from memory but its file is not, so it comes back on restart.
                     LogWarn("deleted place " + found.Name + " (#" + found.Id
                         + ") but could not remove its file: " + e.Message);
                 }
@@ -148,23 +190,18 @@ namespace canevents.src.EventPlacesManagers
             }
             return false;
         }
-        /// <summary>
-        /// Writes a place to disk via temp-file-then-swap, so a failure at any step leaves the previous
-        /// file intact; a place is hand-made work that cannot be regenerated.
-        /// </summary>
-        public void SavePlace(EventPlace place)
+        public bool SavePlace(EventPlace place)
         {
-            string target = Path.Combine(this.pathToJsonFiles, place.Name + "_" + place.Id + ".json");
+            string target = Path.Combine(this.pathToJsonFiles, FileNameFor(place));
 
             if (!Scoring.JsonStore.TryWriteAtomic(target, place, out var error))
             {
                 LogWarn(string.Format(
                     "SavePlace: failed to write place id={0} name={1}: {2}", place.Id, place.Name, error));
-                return;
+                return false;
             }
 
-            // Only now drop stale files for this id (a rename orphans one). Deleting before the swap
-            // succeeded would mean a failed write costs the place entirely.
+            // Stale files from a rename are removed only after the write succeeded.
             try
             {
                 foreach (var file in Directory.GetFiles(this.pathToJsonFiles, "*_" + place.Id + ".json"))
@@ -175,19 +212,32 @@ namespace canevents.src.EventPlacesManagers
             }
             catch (System.Exception e)
             {
-                // The place is saved; a leftover file under the old name is cosmetic.
                 LogWarn(string.Format(
                     "SavePlace: saved place id={0} but could not remove its stale file(s): {1}", place.Id, e.Message));
             }
+            return true;
+        }
+
+        // "Name_Id.json"; the id keeps it unique, the name is just sanitized.
+        public static string FileNameFor(EventPlace place)
+        {
+            var invalid = Path.GetInvalidFileNameChars();
+            var sb = new StringBuilder();
+            foreach (char c in place.Name ?? "")
+                sb.Append(Array.IndexOf(invalid, c) >= 0 || char.IsWhiteSpace(c) ? '_' : c);
+            string name = sb.ToString().Trim('.', '_');
+            if (name.Length > 48) name = name.Substring(0, 48);
+            if (name.Length == 0) name = "place";
+            return name + "_" + place.Id + ".json";
         }
 
         public bool AddPlace(EventPlace place, bool skipJsonExport = false)
         {
-            // Guard before assigning an Id: the set is reference-keyed, so re-adding the same object
-            // would bump its Id while Add returns false, desyncing it from the file already written.
+            // Check first: re-adding the same object would bump its Id and desync it from its file.
             if (this.EventPlaces.Contains(place)) return false;
 
             place.Id = this.LastId++;
+            SaveIdCounter();
             if (this.EventPlaces.Add(place))
             {
                 if (!skipJsonExport) SavePlace(place);

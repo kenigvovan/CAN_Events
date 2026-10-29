@@ -14,8 +14,7 @@ namespace canevents.src.EventPlacesManagers.Places
         public string Description { get; set; }
         [JsonConverter(typeof(PlaceTagsConverter))]
         public string[] placeTypes { get; set; }
-        // Runtime-only: true while a match is live here. Must NOT persist - a mid-match SavePlace would
-        // write Occupied=true, and nothing resets it on load, so the place would be unusable forever.
+        // Runtime only; nothing resets it on load, so a persisted true would lock the place forever.
         [JsonIgnore]
         public bool Occupied { get; set; }
         public bool Enabled { get; set; } = true;
@@ -29,37 +28,23 @@ namespace canevents.src.EventPlacesManagers.Places
         public string SchematicTemplateCode { get; set; }
         public BlockPos SchematicOrigin { get; set; }
 
-        // Per-behavior world data (positions, settings specific to a behavior and this place).
-        // Key = behavior name (e.g. "Spleef"), value = arbitrary JSON object.
+        // Keyed by BehaviorKeys.
         public Dictionary<string, JObject> BehaviorData { get; set; } = new Dictionary<string, JObject>();
 
-        public EventPlace(long Id, string Name, string Description, string[] placeTypes, List<BlockPos> spawnPositions)
-        {
-            this.Id = Id;
-            this.Name = Name;
-            this.Description = Description;
-            this.placeTypes = placeTypes;
-            this.spawnPositions = spawnPositions;
-        }
         public EventPlace()
         {
             spawnPositions = new List<BlockPos> { };
         }
 
-        /// <summary>
-        /// Whether this place can host an event needing every one of these tags right now. The single
-        /// definition of "usable arena", shared by the scheduler (announce) and the lookup (pick) -
-        /// a looser test in one announces events the other then fails to place.
-        /// </summary>
         public bool IsAvailableFor(string[] searchTypes)
+            => PlaceAvailability.Diagnose(this, searchTypes) == PlaceProblem.None;
+
+        public bool HasAllTags(IEnumerable<string> tags)
         {
-            return placeTypes != null
-                && searchTypes != null
-                && searchTypes.All(t => placeTypes.Contains(t))
-                && !Occupied
-                && Enabled
-                && spawnPositions != null
-                && spawnPositions.Count > 0;
+            if (placeTypes == null || tags == null) return false;
+            foreach (var t in tags)
+                if (!placeTypes.Contains(t)) return false;
+            return true;
         }
         public void AddType(string newType)
         {
@@ -75,10 +60,14 @@ namespace canevents.src.EventPlacesManagers.Places
             }
         }
 
-        /// <summary>
-        /// Sets the footprint from two marked corners, in any order. Callers mark corners by walking to
-        /// them, so sorting here keeps all three entry points from having their own idea of "min".
-        /// </summary>
+        public bool RemoveType(string type)
+        {
+            type = PlaceTags.Normalize(type);
+            if (string.IsNullOrEmpty(type) || placeTypes == null || !placeTypes.Contains(type)) return false;
+            placeTypes = placeTypes.Where(t => t != type).ToArray();
+            return true;
+        }
+
         public void SetBounds(BlockPos a, BlockPos b)
         {
             HasBounds = true;
@@ -86,31 +75,28 @@ namespace canevents.src.EventPlacesManagers.Places
             BoundsMax = new BlockPos(Math.Max(a.X, b.X), Math.Max(a.Y, b.Y), Math.Max(a.Z, b.Z), a.dimension);
         }
 
-        /// <summary>
-        /// Replaces the spawns with the default bounded-arena layout: two opposite edges, one block
-        /// above the platform, level with its middle (spleef-style). No-op without bounds.
-        /// </summary>
-        public void GenerateEdgeSpawns()
+        // Two spawns on opposite X edges. Falls back to the lower corner's Y if no floor is found.
+        public void GenerateEdgeSpawns(Func<int, int, int?> highestSolidY = null)
         {
             if (!HasBounds || BoundsMin == null || BoundsMax == null) return;
 
             spawnPositions ??= new List<BlockPos>();
             spawnPositions.Clear();
-            int spawnY = BoundsMax.Y + 1;
             int centerZ = (BoundsMin.Z + BoundsMax.Z) / 2;
             int dim = BoundsMin.dimension;
-            spawnPositions.Add(new BlockPos(BoundsMin.X + 1, spawnY, centerZ, dim));
-            spawnPositions.Add(new BlockPos(BoundsMax.X - 1, spawnY, centerZ, dim));
+            foreach (int x in new[] { BoundsMin.X + 1, BoundsMax.X - 1 })
+            {
+                int floorY = highestSolidY?.Invoke(x, centerZ) ?? BoundsMin.Y;
+                spawnPositions.Add(new BlockPos(x, floorY + 1, centerZ, dim));
+            }
         }
 
-        /// <summary>Read this place's per-behavior data blob for the given key (see BehaviorKeys).</summary>
         public bool TryGetBehaviorData(string key, out JObject data)
         {
             data = null;
             return BehaviorData != null && BehaviorData.TryGetValue(key, out data) && data != null;
         }
 
-        /// <summary>Get the per-behavior data blob for the given key, creating an empty one if absent.</summary>
         public JObject GetOrCreateBehaviorData(string key)
         {
             BehaviorData ??= new Dictionary<string, JObject>();

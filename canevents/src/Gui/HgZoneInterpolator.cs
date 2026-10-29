@@ -3,16 +3,10 @@ using canevents.src.Network;
 
 namespace canevents.src.Gui
 {
-    /// <summary>
-    /// Turns the server's occasional <see cref="HgZoneStateMsg"/> into a per-frame radius. Single
-    /// source for the HUD and the dome renderer, which used to interpolate separately and disagree.
-    /// </summary>
+    // Shared by the HUD and the dome so both show the same radius.
     public static class HgZoneInterpolator
     {
-        /// <summary>
-        /// Current radius: linear from RadiusNow to RadiusTarget over SecondsToTarget, clamped.
-        /// <paramref name="sinceSeconds"/> is packet age by the client's own clock.
-        /// </summary>
+        // sinceSeconds is packet age by the client clock.
         public static float RadiusAt(HgZoneStateMsg zone, float sinceSeconds)
         {
             if (zone == null) return 0f;
@@ -22,16 +16,13 @@ namespace canevents.src.Gui
             return zone.RadiusNow + (zone.RadiusTarget - zone.RadiusNow) * t;
         }
 
-        /// <summary>Seconds until the zone reaches its target size, never negative.</summary>
         public static float SecondsLeft(HgZoneStateMsg zone, float sinceSeconds)
             => zone == null ? 0f : Math.Max(0f, zone.SecondsToTarget - sinceSeconds);
 
-        /// <summary>Zone is heading to a smaller size; the epsilon keeps a held size from
-        /// reading as a shrink.</summary>
         public static bool IsShrinking(HgZoneStateMsg zone)
             => zone != null && zone.RadiusTarget < zone.RadiusNow - 0.01f;
 
-        /// <summary>Distance from (x, z) to the storm wall: positive inside, negative outside.</summary>
+        // Positive inside, negative outside.
         public static double DistanceToBorder(HgZoneStateMsg zone, float radius, double x, double z)
         {
             if (zone == null) return 0;

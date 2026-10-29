@@ -7,42 +7,25 @@ using Vintagestory.GameContent;
 
 namespace canevents.src.EventManagers
 {
-    // Single owner of the per-player event inventory/health backup, persisted to ModData so it
-    // survives a disconnect or crash. BOTH restore paths (normal end-of-event and crash/reconnect) go
-    // through Restore() here, so the clear-then-restore + MaxHealth-recompute logic can't drift - it
-    // previously did, leaking the loadout and a stale buffed max-health on crash.
-    public static class PlayerInventoryBackup
+    // Per-player inventory/health backup in ModData. Both the normal and the crash/reconnect restore go through Restore().
+    public static partial class PlayerInventoryBackup
     {
         public const string ModDataKey = "canevents_inventory_backup";
 
-        /// <summary>
-        /// Where a snapshot goes when restoring it threw. Kept rather than deleted: by then the event
-        /// loadout has already been stripped, so the blob is the only copy of the player's real items
-        /// left anywhere. An admin can pull it out of ModData; deleting it loses them for good.
-        /// </summary>
+        // Routine taken/returned lines, can be switched off.
+        private static Log Audit(ICoreServerAPI sapi)
+            => Log.For(InventoryAuditLog.Enabled ? sapi?.World?.Logger : null, "inventory");
+
+        // Failures, never silenced.
+        private static Log AuditAlways(ICoreServerAPI sapi) => Log.For(sapi?.World?.Logger, "inventory");
+
+        // Snapshot parked here when Restore threw; loadout is already stripped by then, so it's the only copy.
         public const string FailedModDataKey = "canevents_inventory_backup_failed";
 
-        /// <summary>
-        /// True for a slot that only PROJECTS the contents of a worn bag. The items themselves live
-        /// inside that bag's own ItemStack, which is snapshotted from whatever slot holds the bag, so
-        /// copying these slots as well hands every carried item back twice. Vanilla backpacks work
-        /// this way, and so does every mod bag built on the same IHeldBag API (quivers, sheaths and
-        /// pouches from QuiversAndSheaths) - those put the bag in the gear inventory while its content
-        /// slots appear in the backpack inventory, which is why the two can never be treated as one
-        /// flat list of slots.
-        /// </summary>
+        // Bag content slots only project the bag's own stack; copying them too would dupe the items.
         private static bool IsBagContent(ItemSlot slot) => slot is ItemSlotBagContent;
 
-        /// <summary>
-        /// True if this stack makes OTHER slots exist or function: a bag (its content slots appear in
-        /// the backpack inventory), or a slot enabler like a QuiversAndSheaths belt / back sling.
-        /// A belt is NOT a bag - it holds nothing itself, it only enables the addBelt* gear slots the
-        /// sheaths hang in (CombatOverhaul's IEnableAdditionalSlots, recognised here without a CO
-        /// reference by its vanilla clothescategory) - but it must come back in the same early pass:
-        /// a sheath announced before its belt sits in a disabled slot, which CombatOverhaul answers
-        /// with a force-drop into the single ground slot that re-enters itself until the stack
-        /// overflows. Uncatchable, so the order of restore passes is what prevents it.
-        /// </summary>
+        // Bag or slot enabler (QuiversAndSheaths belt). Must be restored before dependents, or CombatOverhaul recurses into a stack overflow.
         private static bool IsBagOrSlotEnabler(ItemStack stack)
         {
             if (stack?.Collectible == null) return false;
@@ -50,29 +33,49 @@ namespace canevents.src.EventManagers
             return Compat.GearSlotOrderCompat.IsSlotEnabler(stack);
         }
 
-        /// <summary>Snapshot the player's current inventory + health to ModData. Call right before
-        /// clearing their inventory and handing out the event loadout.</summary>
-        /// <param name="gearStaysWithPlayer">
-        /// The player keeps whatever they end the match with, so the snapshot records their state but
-        /// must NEVER put items back - restoring would duplicate everything that dropped on death. The
-        /// flag is stored inside the snapshot because crash recovery reads it without knowing the mode.
-        /// </param>
-        public static void Save(IServerPlayer player, ICoreServerAPI sapi, bool gearStaysWithPlayer = false)
+        // Player inventory with RemoveOnClose=true (e.g. PicoTrashSlot): drops out of InventoryManager when closed,
+        // so we can't snapshot it. Locked for the match by HarmonyPatches.PersonalStashPatch.
+        public static bool IsVanishingStash(IInventory inv)
+            => inv is InventoryBasePlayer && inv.RemoveOnClose;
+
+        // Iterates a copy of the inventory list, so callers may empty slots as they go.
+        private static IEnumerable<ItemSlot> OwnSlots(IServerPlayer player)
         {
-            // NEVER overwrite an existing backup. One is only present here if a prior event didn't
-            // restore it, in which case the current inventory is the event loadout, not the player's
-            // real belongings - overwriting would bury the real items for good.
+            foreach (var inv in player.InventoryManager.Inventories.Values.ToArray())
+            {
+                if (inv.ClassName == "creative") continue;
+                for (int i = 0; i < inv.Count; i++)
+                {
+                    var slot = inv[i];
+                    if (slot == null || IsBagContent(slot)) continue;
+                    yield return slot;
+                }
+            }
+        }
+
+        // gearStaysWithPlayer: snapshot is a record only, never restored (would dupe death drops).
+        // Returns false if a backup already exists; caller must not clear the inventory then.
+        public static bool Save(IServerPlayer player, ICoreServerAPI sapi, bool gearStaysWithPlayer = false,
+            string eventCode = null)
+        {
+            // Existing backup means a previous restore didn't happen; current inventory is a loadout, not real items.
             var existing = player.GetModdata(ModDataKey);
             if (existing != null && existing.Length > 0)
             {
-                sapi.World.Logger.Warning(
-                    "PlayerInventoryBackup: {0} already has an inventory backup; keeping it instead of "
-                    + "overwriting, to avoid losing their real items.", player.PlayerName);
-                return;
+                AuditAlways(sapi).Warning(
+                    "refused to overwrite: {0} already has an inventory backup (event '{1}'); keeping it "
+                    + "instead of overwriting, to avoid losing their real items. Their CURRENT inventory "
+                    + "is not saved anywhere - do not clear it.",
+                    player.PlayerName, eventCode ?? "?");
+                InventoryAuditLog.Record(sapi, InventoryAuditKind.RefusedOverwrite, player.PlayerUID,
+                    player.PlayerName, eventCode, 0,
+                    "an unsettled snapshot was already there; the live inventory was not saved");
+                return false;
             }
 
             var tree = new TreeAttribute();
             int slotIndex = 0;
+            int stackCount = 0;
             foreach (var inv in player.InventoryManager.Inventories.Values)
             {
                 if (inv.ClassName == "creative") continue;
@@ -84,11 +87,13 @@ namespace canevents.src.EventManagers
                 for (int i = 0; i < inv.Count; i++)
                 {
                     var slot = inv[i];
-                    // Skipped, not saved: their contents ride along inside the bag's own stack.
                     if (IsBagContent(slot)) continue;
-                    // Clone: the live stack can be mutated to zero-size if the player drops it during
-                    // the countdown, which would restore a ghost stack.
-                    if (slot?.Itemstack != null) invTree.SetItemstack($"slot_{i}", slot.Itemstack.Clone());
+                    // Clone: dropping it during the countdown zeroes the live stack.
+                    if (slot?.Itemstack != null)
+                    {
+                        invTree.SetItemstack($"slot_{i}", slot.Itemstack.Clone());
+                        stackCount++;
+                    }
                 }
                 tree[$"inv_{slotIndex}"] = invTree;
                 slotIndex++;
@@ -96,10 +101,20 @@ namespace canevents.src.EventManagers
             tree.SetInt("invCount", slotIndex);
             if (gearStaysWithPlayer) tree.SetBool("keepLiveInventory", true);
 
-            // What the player carries in their hands or on their back is not in any inventory - it
-            // hangs off their entity - so it needs its own line in the snapshot. See CarryOnCompat.
+            tree.SetLong("savedAt", UnixTime.Now);
+            tree.SetString("eventCode", eventCode ?? "");
+            tree.SetInt("stackCount", stackCount);
+
+            // CarryOn blocks live on the entity, not in an inventory.
             var carried = Compat.CarryOnCompat.Snapshot(player.Entity);
             if (carried != null) tree["carryon"] = carried;
+
+            // Stat modifiers other mods derived from the inventory we're about to empty.
+            if (!gearStaysWithPlayer)
+            {
+                var stats = Compat.EntityStatsGuard.Snapshot(player.Entity);
+                if (stats != null) tree["stats"] = stats;
+            }
 
             var health = player.Entity.GetBehavior<EntityBehaviorHealth>();
             if (health != null)
@@ -108,10 +123,7 @@ namespace canevents.src.EventManagers
                 tree.SetFloat("maxHealth", health.MaxHealth);
             }
 
-            // An event tops the player up to full saturation, so without a restore the match doubles as
-            // a free meal. The nutrient levels ride along because they are not cosmetic: they feed
-            // UpdateNutrientHealthBoost, which drives the "nutrientHealthMod" max-health modifier, and
-            // every vanilla revive halves them - a respawn mode would cost permanent max health.
+            // Nutrients feed "nutrientHealthMod" max health, and every vanilla revive halves them.
             var hunger = player.Entity.GetBehavior<EntityBehaviorHunger>();
             if (hunger != null)
             {
@@ -126,122 +138,136 @@ namespace canevents.src.EventManagers
             }
 
             player.SetModdata(ModDataKey, tree.ToBytes());
-            sapi.World.Logger.Notification("Saved event inventory for {0}", player.PlayerName);
+
+            Audit(sapi).Notification("taken: {0} - {1} stack(s) into a snapshot for event '{2}'{3}",
+                player.PlayerName, stackCount, eventCode ?? "?",
+                gearStaysWithPlayer ? " (own-gear match: recorded only, never restored)" : "");
+            InventoryAuditLog.Record(sapi, InventoryAuditKind.Taken, player.PlayerUID, player.PlayerName,
+                eventCode, stackCount,
+                gearStaysWithPlayer ? "own-gear match, snapshot is a record only" : null);
+            return true;
         }
 
-        /// <summary>Wipe every non-creative inventory slot. Used before handing out a loadout, on
-        /// respawn / lethal hit (so default items don't reappear), and inside Restore().</summary>
-        /// <summary>
-        /// Drops the pieces of kit that are meant to outlive their owner (see
-        /// IssuedGear.DropOnDeathKey) before the rest is swept up. Call from the death path, ahead of
-        /// <see cref="ClearInventory"/>: by the time the engine would drop anything, the inventory is
-        /// already empty, so a weapon that is supposed to be lootable has to be put on the ground here.
-        /// </summary>
+        // Drops IssuedGear.DropOnDeathKey items. Call before ClearInventory; the engine drop sees an empty inventory.
         public static int DropDeathDrops(IServerPlayer player, ICoreServerAPI sapi)
         {
             if (player?.Entity == null || sapi == null) return 0;
 
             int dropped = 0;
-            foreach (var inv in player.InventoryManager.Inventories.Values.ToArray())
+            foreach (var slot in OwnSlots(player))
             {
-                if (inv.ClassName == "creative") continue;
-                for (int i = 0; i < inv.Count; i++)
-                {
-                    var slot = inv[i];
-                    var stack = slot?.Itemstack;
-                    if (stack == null || IsBagContent(slot)) continue;
-                    if (!eventBehavior.Shared.IssuedGear.DropsOnDeath(stack)) continue;
+                var stack = slot.Itemstack;
+                if (stack == null) continue;
+                if (!eventBehavior.Shared.IssuedGear.DropsOnDeath(stack)) continue;
 
-                    slot.Itemstack = null;
-                    slot.MarkDirty();
-                    sapi.World.SpawnItemEntity(stack, player.Entity.Pos.XYZ);
-                    dropped++;
-                }
+                slot.Itemstack = null;
+                slot.MarkDirty();
+                sapi.World.SpawnItemEntity(stack, player.Entity.Pos.XYZ);
+                dropped++;
             }
             return dropped;
         }
 
-        public static void ClearInventory(IServerPlayer player)
+        // Copies of carried stacks that match. Bag contents count too: ClearInventory takes them with the bag.
+        public static List<ItemStack> CloneCarried(IServerPlayer player, System.Func<ItemStack, bool> match)
         {
-            // Emptied silently first, notified second - the split is load-bearing, not tidiness.
-            //
-            // Notifying a gear slot mid-clear can hang the server for good. CombatOverhaul's
-            // ArmorInventory answers a modified gear slot by dropping the contents of every gear slot
-            // that just lost its parent (take off a belt and the sheaths hanging on it are orphaned)
-            // into the single ground-inventory slot, then marking that slot dirty - which re-enters the
-            // same handler. It only terminates once the slot is actually empty, so the second orphaned
-            // bag, arriving at an already-occupied ground slot, moves nothing and recurses until the
-            // stack overflows. A StackOverflowException cannot be caught: the process dies outright.
-            //
-            // Clearing everything before the first MarkDirty means that by the time the handler runs
-            // there is nothing left for it to drop, so it never re-enters.
-            //
-            // Bag content slots are skipped throughout: their items are already gone once the bag
-            // itself is, and nulling the projection by hand leaves the slot list and the bag's own
-            // stack disagreeing.
-            var emptied = new List<(ItemSlot slot, ItemStack removed)>();
+            var result = new List<ItemStack>();
+            if (player?.InventoryManager == null) return result;
 
             foreach (var inv in player.InventoryManager.Inventories.Values.ToArray())
             {
                 if (inv.ClassName == "creative") continue;
                 for (int i = 0; i < inv.Count; i++)
                 {
-                    var slot = inv[i];
-                    if (slot?.Itemstack == null) continue;
-                    if (IsBagContent(slot)) continue;
-                    emptied.Add((slot, slot.Itemstack));
-                    slot.Itemstack = null;
+                    var stack = inv[i]?.Itemstack;
+                    if (stack == null || !match(stack)) continue;
+                    // Already inside a bag that is taken whole.
+                    if (inv[i] is ItemSlotBagContent content && content.BagIndex < inv.Count
+                        && inv[content.BagIndex]?.Itemstack is ItemStack bag && match(bag)) continue;
+                    result.Add(stack.Clone());
                 }
             }
+            return result;
+        }
 
-            // Dependents-first: the client must never apply "belt removed" while a sheath packet is
-            // still in flight behind it - see GearSlotOrderCompat for the crash that causes.
+        // Diagnostic: non-zero at engine drop time means the death sweep missed something.
+        public static int CountCarried(IServerPlayer player, out string summary)
+        {
+            summary = null;
+            if (player?.InventoryManager == null) return 0;
+
+            int count = 0;
+            var codes = new List<string>();
+            foreach (var slot in OwnSlots(player))
+            {
+                var stack = slot.Itemstack;
+                if (stack == null) continue;
+                count++;
+                if (codes.Count < 12) codes.Add(stack.Collectible?.Code?.ToString() ?? "<null>");
+            }
+
+            if (count > 0)
+                summary = string.Join(", ", codes) + (count > codes.Count ? ", ..." : "");
+            return count;
+        }
+
+        public static void ClearInventory(IServerPlayer player)
+        {
+            // Empty everything before the first MarkDirty: CombatOverhaul's ArmorInventory drops orphaned
+            // gear into one ground slot and re-enters itself, which overflows the stack if anything is left.
+            var emptied = new List<(ItemSlot slot, ItemStack removed)>();
+
+            foreach (var slot in OwnSlots(player))
+            {
+                if (slot.Itemstack == null) continue;
+                emptied.Add((slot, slot.Itemstack));
+                slot.Itemstack = null;
+            }
+
+            // Dependents first, see GearSlotOrderCompat.
             Compat.GearSlotOrderCompat.MarkDirtyAfterClear(emptied);
 
-            // A chest carried on the back is in no inventory at all, so the loop above never sees it.
-            // Left on, it rides to the arena and CarryOn drops it - contents and all - on the first
-            // death. The snapshot Save() took is what puts it back at the end of the match.
+            // CarryOn back chest isn't in any inventory; otherwise it'd drop with contents on first death.
             Compat.CarryOnCompat.Clear(player);
         }
 
-        /// <summary>
-        /// Puts one saved stack back into the slot it came from and returns that slot, so the caller
-        /// can notify it once the whole pass has landed - see ClearInventory for why a gear slot must
-        /// never be marked dirty while the inventory is still half-assembled. Returns null when the
-        /// stack was not placed. Refuses (and logs) rather than forcing it elsewhere: the ways a slot
-        /// can be unusable all mean the item is either already accounted for or does not belong here,
-        /// and shoving it into the next free slot would mint the second copy this method prevents.
-        /// </summary>
-        private static ItemSlot PutBack(IServerPlayer player, ICoreServerAPI sapi, string invId, int slotIndex, ItemStack stack)
+        // Returns the slot without MarkDirty (caller notifies after the pass). null + homeless=false: the stack
+        // already came back inside its bag. null + homeless=true: nowhere to put it, caller must give it.
+        private static ItemSlot PutBack(IServerPlayer player, ICoreServerAPI sapi, string invId, int slotIndex,
+            ItemStack stack, out bool homeless)
         {
+            homeless = false;
+
             IInventory targetInv = null;
             foreach (var inv in player.InventoryManager.Inventories.Values)
                 if (inv.InventoryID == invId) { targetInv = inv; break; }
 
             if (targetInv == null)
             {
-                sapi.World.Logger.Warning("PlayerInventoryBackup {0}: inventory '{1}' missing, '{2}' x{3} not restored",
+                // Usually a mod inventory missing this session.
+                AuditAlways(sapi).Warning("{0}: inventory '{1}' missing, '{2}' x{3} handed over directly",
                     player.PlayerName, invId, stack.Collectible?.Code?.ToString() ?? "<null>", stack.StackSize);
+                homeless = true;
                 return null;
             }
 
-            // Out of range, or the index now belongs to a bag's content projection. The latter is the
-            // normal outcome for a snapshot taken before this dupe fix: those stacks were saved twice,
-            // and the copy inside the bag has already come back with the bag itself in the first pass.
+            // Bag content slot: old snapshots saved these twice, the bag already brought them back.
             if (slotIndex >= targetInv.Count || IsBagContent(targetInv[slotIndex]))
             {
-                sapi.World.Logger.Notification("PlayerInventoryBackup {0}: inv '{1}' slot {2} is not a plain slot anymore, '{3}' x{4} left to the bag that owns it",
+                Audit(sapi).Notification("{0}: inv '{1}' slot {2} is not a plain slot anymore, '{3}' x{4} left to the bag that owns it",
                     player.PlayerName, invId, slotIndex, stack.Collectible?.Code?.ToString() ?? "<null>", stack.StackSize);
                 return null;
             }
 
             var slot = targetInv[slotIndex];
-            if (slot == null) return null;
+            if (slot == null) { homeless = true; return null; }
             if (slot.Itemstack != null)
             {
-                sapi.World.Logger.Warning("PlayerInventoryBackup {0}: inv '{1}' slot {2} already holds '{3}', '{4}' x{5} not restored",
+                // Filled since the clear (a mod re-equipping gear, a bag laying out contents).
+                AuditAlways(sapi).Warning("{0}: inv '{1}' slot {2} already holds '{3}', '{4}' x{5} handed over directly",
                     player.PlayerName, invId, slotIndex, slot.Itemstack.Collectible?.Code?.ToString() ?? "<null>",
                     stack.Collectible?.Code?.ToString() ?? "<null>", stack.StackSize);
+                homeless = true;
                 return null;
             }
 
@@ -249,16 +275,14 @@ namespace canevents.src.EventManagers
             return slot;
         }
 
-        /// <summary>
-        /// Restores from ModData if present: revive if dead, strip the event loadout, put back the
-        /// saved items, restore health (MarkDirty recomputes MaxHealth from the entity's CURRENT
-        /// modifiers, so a buff whose inflated maxhealth was autosaved during a crash drops cleanly),
-        /// then clear the backup. False when there is no backup. Does NOT message the player.
-        /// </summary>
+        // False when there's no backup. Doesn't message the player.
         public static bool Restore(IServerPlayer player, ICoreServerAPI sapi)
         {
             byte[] data = player.GetModdata(ModDataKey);
             if (data == null || data.Length == 0) return false;
+
+            // Slots already returned, so a mid-way failure parks only the rest.
+            var settled = new HashSet<(int inv, int slot)>();
 
             try
             {
@@ -267,22 +291,14 @@ namespace canevents.src.EventManagers
 
                 if (!player.Entity.Alive) player.Entity.Revive();
 
-                // A match played with the players' own gear hands nothing back: putting the snapshot
-                // back would mint a copy of everything that dropped.
                 bool keepLive = tree.GetBool("keepLiveInventory", false);
 
-                // Strip the event loadout first: the per-slot restore below only overwrites slots that
-                // held an item pre-event, so gear issued into then-empty slots would otherwise survive.
+                // Restore below only writes slots that had items, so the loadout must be stripped first.
                 if (!keepLive) ClearInventory(player);
 
-                // Flattened first, then replayed bags-first. A bag restored into its slot makes its
-                // content slots reappear - in the backpack inventory even when the bag itself sits in
-                // the gear inventory - so replaying inventory-by-inventory would write into a slot
-                // layout that the very next inventory is about to change. Enumeration order of
-                // InventoryManager.Inventories is not guaranteed either, so the pass order is the only
-                // thing keeping this deterministic.
+                // Flatten, then replay bags first: a restored bag adds content slots to the backpack inventory.
                 int invCount = keepLive ? 0 : tree.GetInt("invCount", 0);
-                var pending = new List<(string invId, int slotIndex, ItemStack stack)>();
+                var pending = new List<(int invIdx, string invId, int slotIndex, ItemStack stack)>();
                 for (int idx = 0; idx < invCount; idx++)
                 {
                     var invTree = tree[$"inv_{idx}"] as TreeAttribute;
@@ -297,19 +313,19 @@ namespace canevents.src.EventManagers
                         if (stack == null) continue;
                         if (!stack.ResolveBlockOrItem(sapi.World))
                         {
-                            sapi.World.Logger.Warning("PlayerInventoryBackup {0}: inv '{1}' slot {2}: collectible '{3}' unresolved, left empty", player.PlayerName, invId, i, stack.Collectible?.Code?.ToString() ?? "<null>");
+                            AuditAlways(sapi).Warning("{0}: inv '{1}' slot {2}: collectible '{3}' unresolved, left empty", player.PlayerName, invId, i, stack.Collectible?.Code?.ToString() ?? "<null>");
                             continue;
                         }
-                        pending.Add((invId, i, stack));
+                        pending.Add((idx, invId, i, stack));
                     }
                 }
 
-                // Bags land first so that by the time ordinary items are placed, the content slots
-                // their bags own already exist and can be recognised (and skipped) instead of being
-                // written into. Within a pass every stack is seated before anything is marked dirty:
-                // a bag notified while its parent - a belt, say - is still missing counts as an
-                // orphaned gear slot, which sends CombatOverhaul into the unbounded recursion
-                // described in ClearInventory.
+                int placedTotal = 0;
+
+                // Given after both passes; a give mid-pass would notify a half-assembled gear inventory.
+                var homelessStacks = new List<((int inv, int slot) key, ItemStack stack)>();
+
+                // Seat the whole pass before any MarkDirty (see ClearInventory).
                 for (int pass = 0; pass < 2; pass++)
                 {
                     bool bagPass = pass == 0;
@@ -317,11 +333,14 @@ namespace canevents.src.EventManagers
                     foreach (var entry in pending)
                     {
                         if (IsBagOrSlotEnabler(entry.stack) != bagPass) continue;
-                        var slot = PutBack(player, sapi, entry.invId, entry.slotIndex, entry.stack);
-                        if (slot != null) placed.Add(slot);
+                        var slot = PutBack(player, sapi, entry.invId, entry.slotIndex, entry.stack,
+                            out bool homeless);
+                        var key = (entry.invIdx, entry.slotIndex);
+                        if (slot != null) { placed.Add(slot); placedTotal++; settled.Add(key); }
+                        else if (homeless) homelessStacks.Add((key, entry.stack));
+                        else settled.Add(key);   // already back inside the bag that owns the slot
                     }
-                    // Parents-first; a dependent whose parent did not make it back is handed over
-                    // as a plain give rather than announced - see GearSlotOrderCompat.
+                    // Parents first; a dependent without its parent gets a plain give.
                     Compat.GearSlotOrderCompat.MarkDirtyAfterFill(placed, stack =>
                     {
                         sapi.World.Logger.Warning(
@@ -331,17 +350,34 @@ namespace canevents.src.EventManagers
                     });
                 }
 
-                // Carried blocks come back after the inventory pass: putting a chest in the player's
-                // hands re-locks the hand slots CarryOn had locked, so it must not happen while those
-                // slots are still being filled. Skipped for a keep-live match for the same reason the
-                // inventory is - the block dropped on death and restoring it would mint a second one.
+                foreach (var (key, stack) in homelessStacks)
+                {
+                    InventoryUtil.Give(sapi, player, stack, "restore");
+                    settled.Add(key);
+                    placedTotal++;
+                }
+                if (homelessStacks.Count > 0)
+                    AuditAlways(sapi).Warning(
+                        "{0}: {1} stack(s) could not go back to their own slots and were handed over "
+                        + "directly - check the lines above for which, and why.",
+                        player.PlayerName, homelessStacks.Count);
+
+                // After the inventory: CarryOn locks the hand slots.
                 if (!keepLive && tree["carryon"] is ITreeAttribute carriedTree)
                     Compat.CarryOnCompat.Restore(player, carriedTree);
 
-                // Must precede the health block: UpdateNutrientHealthBoost rewrites the
-                // "nutrientHealthMod" modifier from the restored levels, so MarkDirty below recomputes
-                // MaxHealth off the pre-event nutrition, not off what the in-match revives left behind.
-                // A missing subtree is a backup written before hunger was tracked; leave hunger alone.
+                // After inventory, before health: MaxHealth reads "maxhealthExtraPoints".
+                if (!keepLive && tree["stats"] is ITreeAttribute statsTree)
+                {
+                    int fixedUp = Compat.EntityStatsGuard.Restore(player.Entity, statsTree);
+                    if (fixedUp > 0)
+                        sapi.World.Logger.Notification(
+                            "PlayerInventoryBackup {0}: put {1} stat modifier(s) back to their pre-match "
+                            + "values - some mod did not recompute its own after the match.",
+                            player.PlayerName, fixedUp);
+                }
+
+                // Before health: UpdateNutrientHealthBoost rewrites "nutrientHealthMod" that MarkDirty reads.
                 var hunger = player.Entity.GetBehavior<EntityBehaviorHunger>();
                 if (hunger != null && tree["hunger"] is TreeAttribute hungerTree)
                 {
@@ -362,29 +398,129 @@ namespace canevents.src.EventManagers
                 }
 
                 player.RemoveModdata(ModDataKey);
+
+                int expected = tree.GetInt("stackCount", pending.Count);
+                string eventCode = tree.GetString("eventCode", "");
+                long savedAt = tree.GetLong("savedAt", 0);
+                string age = savedAt > 0 ? TimeText.Duration(UnixTime.Now - savedAt) : "unknown";
+
+                if (keepLive)
+                {
+                    Audit(sapi).Notification(
+                        "returned: {0} - nothing to give back, own-gear match '{1}' (snapshot taken {2} ago "
+                        + "was a record only); backup cleared.", player.PlayerName, eventCode, age);
+                    InventoryAuditLog.Record(sapi, InventoryAuditKind.Returned, player.PlayerUID,
+                        player.PlayerName, eventCode, 0, "own-gear match, nothing to return");
+                }
+                else
+                {
+                    string line = "returned: {0} - {1} of {2} stack(s) put back from the '{3}' snapshot taken {4} ago";
+                    if (placedTotal < expected)
+                        AuditAlways(sapi).Warning(
+                            line + "; the missing ones are logged above, each with its reason",
+                            player.PlayerName, placedTotal, expected, eventCode, age);
+                    else
+                        Audit(sapi).Notification(line, player.PlayerName, placedTotal, expected, eventCode, age);
+
+                    InventoryAuditLog.Record(sapi, InventoryAuditKind.Returned, player.PlayerUID,
+                        player.PlayerName, eventCode, placedTotal,
+                        placedTotal < expected
+                            ? placedTotal + " of " + expected + " stacks, snapshot age " + age
+                            : "snapshot age " + age);
+                }
                 return true;
             }
             catch (System.Exception e)
             {
-                // A failed restore must not strand the player in a retry loop - but it must not throw
-                // their belongings away either. The blob is parked under a second key: the loadout is
-                // already stripped by this point, so this is the only copy of their real inventory.
-                sapi.World.Logger.Error(
-                    "PlayerInventoryBackup.Restore for {0}: {1} - snapshot kept under '{2}' in their "
-                    + "ModData for manual recovery.", player.PlayerName, e.Message, FailedModDataKey);
+                // Park the blob instead of retrying or dropping it.
+                AuditAlways(sapi).Error(
+                    "restore failed: {0} - {1}. Their items are NOT lost: the {3} stack slot(s) already "
+                    + "back are kept, the rest is parked under '{2}' in their ModData. Hand it back with "
+                    + "/eventadmin inv restore {0}.",
+                    player.PlayerName, e.Message, FailedModDataKey, settled.Count);
+                InventoryAuditLog.Record(sapi, InventoryAuditKind.RestoreFailed, player.PlayerUID,
+                    player.PlayerName, null, 0, e.Message);
                 try
                 {
-                    player.SetModdata(FailedModDataKey, data);
-                    player.RemoveModdata(ModDataKey);
+                    ParkFailed(player, sapi, data, settled);
                 }
                 catch (System.Exception parkError)
                 {
-                    // Parking failed too; keep the original rather than losing both.
+                    // Active key still holds what's left.
                     sapi.World.Logger.Error("PlayerInventoryBackup: could not park the failed snapshot for {0}: {1}",
                         player.PlayerName, parkError.Message);
                 }
                 return false;
             }
+        }
+
+        // Appends to an earlier parked snapshot instead of overwriting it.
+        // Trimmed copy goes to the active key first so a throw here can't hand anything out twice.
+        private static void ParkFailed(IServerPlayer player, ICoreServerAPI sapi, byte[] data,
+            HashSet<(int inv, int slot)> settled)
+        {
+            var failed = new TreeAttribute();
+            failed.FromBytes(data);
+            bool keepLive = failed.GetBool("keepLiveInventory", false);
+            int remaining = keepLive ? 0 : StripSettled(failed, settled);
+            player.SetModdata(ModDataKey, failed.ToBytes());
+
+            byte[] existing = player.GetModdata(FailedModDataKey);
+            bool hasParked = existing != null && existing.Length > 0;
+
+            if (!keepLive && remaining == 0)
+            {
+                // Every stack is already back; only the tail (health, hunger, stats) failed.
+                AuditAlways(sapi).Warning("{0}: every stack was back before the restore failed; nothing to park.",
+                    player.PlayerName);
+            }
+            else if (!hasParked)
+            {
+                player.SetModdata(FailedModDataKey, failed.ToBytes());
+            }
+            else if (!keepLive)
+            {
+                var parked = new TreeAttribute();
+                parked.FromBytes(existing);
+                if (parked.GetBool("keepLiveInventory", false)) parked = failed;
+                else AppendInventories(parked, failed);
+                player.SetModdata(FailedModDataKey, parked.ToBytes());
+            }
+            player.RemoveModdata(ModDataKey);
+        }
+
+        private static int StripSettled(TreeAttribute snapshot, HashSet<(int inv, int slot)> settled)
+        {
+            int remaining = 0;
+            int invCount = snapshot.GetInt("invCount", 0);
+            for (int idx = 0; idx < invCount; idx++)
+            {
+                if (!(snapshot[$"inv_{idx}"] is TreeAttribute invTree)) continue;
+                int slotCount = invTree.GetInt("slotCount", 0);
+                for (int i = 0; i < slotCount; i++)
+                {
+                    string key = $"slot_{i}";
+                    if (!invTree.HasAttribute(key)) continue;
+                    if (settled != null && settled.Contains((idx, i))) invTree.RemoveAttribute(key);
+                    else remaining++;
+                }
+            }
+            snapshot.SetInt("stackCount", remaining);
+            return remaining;
+        }
+
+        // Hand-back gives every stack instead of seating it, so the merged slot layout doesn't matter.
+        private static void AppendInventories(TreeAttribute into, TreeAttribute from)
+        {
+            int baseIdx = into.GetInt("invCount", 0);
+            int count = from.GetInt("invCount", 0);
+            for (int idx = 0; idx < count; idx++)
+                if (from[$"inv_{idx}"] is TreeAttribute invTree) into[$"inv_{baseIdx + idx}"] = invTree;
+            into.SetInt("invCount", baseIdx + count);
+            into.SetInt("stackCount", into.GetInt("stackCount", 0) + from.GetInt("stackCount", 0));
+
+            string a = into.GetString("eventCode", ""), b = from.GetString("eventCode", "");
+            if (b.Length > 0 && a != b) into.SetString("eventCode", a.Length > 0 ? a + ", " + b : b);
         }
     }
 }

@@ -14,6 +14,12 @@ namespace canevents.src.EventManagers
         {
             public string Code { get; set; }
             public int Quantity { get; set; }
+
+            // Loadouts only; outfits leave both empty.
+            [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+            public string Id { get; set; }
+            [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+            public List<eventBehavior.Shared.UpgradeStep> Upgrades { get; set; }
         }
 
         public class LoadoutSet
@@ -33,11 +39,7 @@ namespace canevents.src.EventManagers
         private readonly object lockObj = new object();
         private readonly Vintagestory.API.Common.ILogger logger;
 
-        /// <summary>
-        /// One store, one folder under ModConfig/canevents/. The folder is a parameter because the
-        /// same "named sets of item codes per event" shape serves more than loadouts - outfits are
-        /// the same thing with every quantity at 1 (see ItemSetKinds).
-        /// </summary>
+        // One store per folder under ModConfig/canevents/; outfits use the same shape (see ItemSetKinds).
         public LoadoutManager(string modConfigBase, Vintagestory.API.Common.ILogger logger = null,
             string subFolder = "loadouts")
         {
@@ -138,43 +140,6 @@ namespace canevents.src.EventManagers
                 if (n > 0) SaveToFileUnlocked(eventCode);
                 return n > 0;
             }
-        }
-
-        public LoadoutSet BuildFromInventory(IServerPlayer player)
-        {
-            var entries = new List<LoadoutEntry>();
-
-            var charInv = player.InventoryManager.GetOwnInventory(GlobalConstants.characterInvClassName);
-            if (charInv != null)
-            {
-                for (int i = 0; i < charInv.Count; i++)
-                {
-                    var slot = charInv[i];
-                    if (slot?.Itemstack?.Collectible == null) continue;
-                    entries.Add(new LoadoutEntry
-                    {
-                        Code = slot.Itemstack.Collectible.Code.ToString(),
-                        Quantity = slot.Itemstack.StackSize
-                    });
-                }
-            }
-
-            var hotbarInv = player.InventoryManager.GetOwnInventory(GlobalConstants.hotBarInvClassName);
-            if (hotbarInv != null)
-            {
-                for (int i = 0; i < hotbarInv.Count; i++)
-                {
-                    var slot = hotbarInv[i];
-                    if (slot?.Itemstack?.Collectible == null) continue;
-                    entries.Add(new LoadoutEntry
-                    {
-                        Code = slot.Itemstack.Collectible.Code.ToString(),
-                        Quantity = slot.Itemstack.StackSize
-                    });
-                }
-            }
-
-            return new LoadoutSet { Items = entries };
         }
 
         public int AddSets(string eventCode, IEnumerable<LoadoutSet> sets)

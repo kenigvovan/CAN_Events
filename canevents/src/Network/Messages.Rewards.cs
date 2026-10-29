@@ -4,17 +4,13 @@ namespace canevents.src.Network
 {
     // Admin reward / entry-fee editor messages
 
-    /// <summary>Admin requests the editable reward + entry-fee config of one event.</summary>
     [ProtoContract]
     public class RequestEventRewardConfigMsg
     {
         [ProtoMember(1)] public string EventCode;
     }
 
-    /// <summary>
-    /// Editable reward + entry-fee config of one event, sent both ways. Item sets are packed
-    /// "code:qty;code:qty" (ItemSetUtil); tri-state flags are 0 inherit / 1 on / 2 off.
-    /// </summary>
+    // Sent both ways. Item sets packed "code:qty;code:qty" (ItemSetUtil); tri-state flags 0 inherit / 1 on / 2 off.
     [ProtoContract]
     public class EventRewardConfigMsg
     {
@@ -30,12 +26,10 @@ namespace canevents.src.Network
         [ProtoMember(10)] public int SeparateRewardCap;      // 0 inherit / 1 on / 2 off
     }
 
-    /// <summary>Admin requests the global reward / anti-farm limits.</summary>
     [ProtoContract]
     public class RequestRewardLimitsMsg { }
 
-    /// <summary>Global reward / anti-farm limits from Config, sent both ways. All values are
-    /// concrete (no inherit), hence plain types.</summary>
+    // Global reward / anti-farm limits, sent both ways. No inherit, hence plain types.
     [ProtoContract]
     public class RewardLimitsMsg
     {

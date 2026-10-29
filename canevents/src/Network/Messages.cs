@@ -3,14 +3,20 @@ using ProtoBuf;
 
 namespace canevents.src.Network
 {
-    // Server → Client messages
+    // Always id 0, fields only appended, so any two mod versions can read it. See CanEventsProtocol.
+    [ProtoContract]
+    public class ProtocolHandshakeMsg
+    {
+        [ProtoMember(1)] public int ProtocolVersion;
 
-    /// <summary>Sent on every event state transition (lobby open, countdown, start, finish).</summary>
+        // Only for the error message, ProtocolVersion decides.
+        [ProtoMember(2)] public string ModVersion;
+    }
+
     [ProtoContract]
     public class EventStateUpdateMsg
     {
-        // ProtoBuf writes an enum as its underlying int, so this stays wire-compatible with the
-        // plain int it used to be.
+        // Was a plain int; protobuf writes enums as int, so still wire-compatible.
         [ProtoMember(1)]
         public EventState EventState;
 
@@ -34,9 +40,15 @@ namespace canevents.src.Network
 
         [ProtoMember(8)]
         public string StartCryLangKey;   // Lang key for the big text shown when countdown hits 0
+
+        // In-match hold like the HG pedestal freeze; start cry waits for it. 0 = no hold.
+        [ProtoMember(9)]
+        public float HoldSeconds;
+
+        [ProtoMember(10)]
+        public string HoldLangKey;
     }
 
-    /// <summary>Sent periodically during Running state with the current scoreboard.</summary>
     [ProtoContract]
     public class ScoreboardUpdateMsg
     {
@@ -46,20 +58,20 @@ namespace canevents.src.Network
         [ProtoMember(2)]
         public long EventId;
 
-        // Optional team-level totals (e.g. KOTH zone-hold seconds, DM team kills).
-        // null = HUD shows only per-player rows.
+        // null = per-player rows only.
         [ProtoMember(3)]
         public int[] TeamScores;
 
-        // KOTH-style zone state. -1 = neutral / no zone, -2 = contested, >=0 = owning team.
+        // -1 = no zone / neutral, -2 = contested, >= 0 = owning team.
         [ProtoMember(4)]
         public int ZoneOwnerTeam;
 
-        // Target the TeamScores race to, so the HUD can draw progress. 0 = no limit.
+        // 0 = no limit.
         [ProtoMember(5)]
         public int TeamScoreLimit;
     }
 
+    // Nested only, not registered on the channel (same for the other *EntryMsg types).
     [ProtoContract]
     public class ScoreEntryMsg
     {
@@ -79,7 +91,6 @@ namespace canevents.src.Network
         public bool Alive;
     }
 
-    /// <summary>Sent on each kill/elimination.</summary>
     [ProtoContract]
     public class KillFeedMsg
     {
@@ -96,7 +107,6 @@ namespace canevents.src.Network
         public long EventId;
     }
 
-    /// <summary>Sent when the event finishes, with final results.</summary>
     [ProtoContract]
     public class EventResultMsg
     {
@@ -113,7 +123,6 @@ namespace canevents.src.Network
         public long EventId;
     }
 
-    /// <summary>Response to the client's request for the event list.</summary>
     [ProtoContract]
     public class EventListMsg
     {
@@ -157,15 +166,14 @@ namespace canevents.src.Network
         [ProtoMember(13)]
         public bool Rated;
 
-        // Entry fee charged at match start, packed "code:qty;code:qty" (null = free). RakePercent is
-        // the share of the pot burned; the winner keeps (100 - rake)%.
+        // Packed "code:qty;code:qty", null = free.
         [ProtoMember(14)]
         public string EntryFeeItems;
+        // Share of the pot burned.
         [ProtoMember(15)]
         public int EntryFeeRakePercent;
 
-        // Payout preview. Either WinnerItems (flat winner reward) or PlacementRewards (per-rank) is set,
-        // never both. ParticipationItems is null when participation is off. All packed "code:qty;...".
+        // Either WinnerItems or PlacementRewards is set, not both. Packed "code:qty;...".
         [ProtoMember(16)]
         public string WinnerItems;
         [ProtoMember(17)]
@@ -173,9 +181,7 @@ namespace canevents.src.Network
         [ProtoMember(18)]
         public string ParticipationItems;
 
-        // Per-viewer winner-reward rate-cap status FOR THIS EVENT: an event may be RateCapExempt, and in
-        // per-event cap mode each event has its own bucket (in global mode all report the same numbers).
-        // RewardCapActive = the cap governs this event for the viewer; RewardsRemaining <= 0 means capped.
+        // Reward rate cap for this viewer and this event. RewardsRemaining <= 0 = capped.
         [ProtoMember(19)]
         public bool RewardCapActive;
         [ProtoMember(20)]
@@ -183,10 +189,13 @@ namespace canevents.src.Network
         [ProtoMember(21)]
         public double SecondsToNextReward;
 
-        /// <summary>How long the viewer has been in this queue. 0 when they are not in it. Their own
-        /// wait, not the queue's oldest: it is the number that decides whether to keep waiting.</summary>
+        // Viewer's own wait in this queue, 0 if not queued.
         [ProtoMember(22)]
         public double QueuedSeconds;
+
+        // Lobbies only: the match runs a shop that may be looked at before joining.
+        [ProtoMember(23)]
+        public bool HasShop;
     }
 
     [ProtoContract]
@@ -196,26 +205,22 @@ namespace canevents.src.Network
         [ProtoMember(2)] public string Items;  // packed "code:qty;code:qty"
     }
 
-    /// <summary>
-    /// Sent once when a player joins, carrying client-relevant config defaults the admin sets
-    /// centrally for first-time players.
-    /// </summary>
+    // Sent once on join.
     [ProtoContract]
     public class ClientConfigSyncMsg
     {
         [ProtoMember(1)]
         public string MainDialogHotkey;
 
-        /// <summary>May this player watch live matches? Sent on join so the browser can show the
-        /// Watch button only to those it will work for. The server re-checks the request itself -
-        /// this is a display hint, not the gate.</summary>
+        // UI hint only, the server re-checks on request.
         [ProtoMember(2)]
         public bool MaySpectate;
+
+        // Enables ClientTrace logging to client-main.log.
+        [ProtoMember(3)]
+        public bool Diagnostics;
     }
 
-    // Client → Server messages
-
-    /// <summary>Client requests to join an event.</summary>
     [ProtoContract]
     public class JoinEventRequestMsg
     {
@@ -226,7 +231,6 @@ namespace canevents.src.Network
         public string LoadoutSet;   // chosen loadout set name, null = default
     }
 
-    /// <summary>Client requests to leave the current event / queue.</summary>
     [ProtoContract]
     public class LeaveEventRequestMsg
     {
@@ -234,13 +238,10 @@ namespace canevents.src.Network
         public string EventCode; // null = leave all, specific code = leave that queue
     }
 
-    /// <summary>Client requests the list of available events.</summary>
     [ProtoContract]
     public class RequestEventListMsg
     {
     }
-
-    // Arena template messages
 
     [ProtoContract]
     public class RequestTemplateListMsg
@@ -270,7 +271,7 @@ namespace canevents.src.Network
         public bool OnDemand;
     }
 
-    /// <summary>Client requests to place an arena template at their current position.</summary>
+    // Placed at the player's position.
     [ProtoContract]
     public class PlaceTemplateMsg
     {
@@ -278,7 +279,6 @@ namespace canevents.src.Network
         public string TemplateCode;
     }
 
-    /// <summary>Client requests to remove a place and restore the original blocks.</summary>
     [ProtoContract]
     public class RemovePlaceWithRestoreMsg
     {
@@ -286,9 +286,6 @@ namespace canevents.src.Network
         public long PlaceId;
     }
 
-    // Template editor messages
-
-    /// <summary>Template-editor actions a client can request. ProtoBuf serializes the underlying int.</summary>
     public enum TplAction
     {
         Start = 0,
@@ -338,8 +335,6 @@ namespace canevents.src.Network
         [ProtoMember(9)]
         public int OriginZ;
     }
-
-    // Schematic management messages
 
     [ProtoContract]
     public class RequestSchematicListMsg

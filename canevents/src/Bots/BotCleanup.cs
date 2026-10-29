@@ -5,11 +5,7 @@ using Vintagestory.API.Server;
 
 namespace canevents.src.Bots
 {
-    /// <summary>
-    /// Removes bot bodies that no longer belong to a live match - a crash or an unloaded chunk can
-    /// leave one behind. Bodies are stored with their chunk (they must be, or the server drops
-    /// bodies the client still renders), so the sweep runs when a chunk brings one back.
-    /// </summary>
+    // Bots are saved with chunks (see EntityArenaBot), so orphans from a crash are removed on load.
     public class BotCleanup
     {
         private readonly ICoreServerAPI sapi;
@@ -37,9 +33,7 @@ namespace canevents.src.Bots
 
             sapi.World.Logger.Notification(
                 "[bots] Removing orphaned bot body {0} at {1} (no live match).", uid ?? "?", entity.Pos.AsBlockPos);
-            // DespawnEntity, not Die(): bots are spawned with AllowDespawn = false (see
-            // ArenaBotManager.Spawn), so Die() would leave the corpse standing here for good - which is
-            // exactly what this sweep exists to clear.
+            // Not Die(): AllowDespawn is false (ArenaBotManager.Spawn).
             sapi.World.DespawnEntity(entity, new EntityDespawnData { Reason = EnumDespawnReason.Removed });
         }
     }

@@ -1,16 +1,10 @@
 using System.Collections.Generic;
+using System.Linq;
 
 namespace canevents.src.EventManagers
 {
-    /// <summary>
-    /// Who is playing this match, and who is still in it. The "...Before" pair is the starting line-up
-    /// and never changes after <see cref="Initialize"/>; the "...StillInEvent" pair shrinks as players
-    /// drop out, and its groups MUST stay a deep copy - sharing the HashSets would let an elimination
-    /// silently empty the starting snapshot that rewards, Elo and the final ranking are computed from.
-    ///
-    /// The starting line-up is a list because its order is meaningful (spawn points are handed out by
-    /// position); the active set is a HashSet, making <see cref="IsActive"/> O(1).
-    /// </summary>
+    // "Before" = starting line-up, fixed except in open matches and lobby regrouping. "StillInEvent" groups must be deep copies, or eliminations
+    // empty the snapshot rewards and Elo are computed from. Line-up order = spawn order.
     public class MatchRoster
     {
         private readonly List<string> participantsBefore = new();
@@ -23,45 +17,32 @@ namespace canevents.src.EventManagers
         public IReadOnlyCollection<string> ParticipantsStillInEvent => participantsStillInEvent;
         public IReadOnlyList<HashSet<string>> ParticipantsByGroupsStillInEvent => participantsByGroupsStillInEvent;
 
-        // Players who went offline during SearchingForLocation. Excluded at Initialize() so they can't
-        // be handed a spawn, win while offline, or stop the online side from ending the match. They
-        // stay in participantsBefore (the reward/Elo snapshot) but never enter play.
+        // Left before the start: kept in participantsBefore for rewards/Elo, never enter play.
         private readonly HashSet<string> preStartDropouts = new();
 
-        // When set, GetWinners() returns this verbatim instead of the single-remaining-group fallback.
-        // Lets team-based EBs pick a winner without mutating the active groups.
+        // Overrides the last-group fallback in GetWinners.
         private HashSet<string> explicitWinners = null;
 
-        // uid → team index. Built on first use and kept, because ParticipantsByGroupsBefore is a
-        // pre-match snapshot that never changes (eliminations mutate the ...StillInEvent lists).
+        // Rebuilt when Admit/Withdraw/Regroup change the "Before" groups.
         private Dictionary<string, int> teamIndexByUid;
         private bool teamIndexBuilt;
 
-        /// <summary>Records the starting line-up. Called once, while the match is being assembled.</summary>
         public void SetStartingLineup(IEnumerable<string> allUids, IEnumerable<HashSet<string>> groups)
         {
             if (groups != null) participantsByGroupsBefore.AddRange(groups);
             if (allUids != null) participantsBefore.AddRange(allUids);
         }
 
-        /// <summary>Marks a participant who disconnected before the match started, so
-        /// <see cref="Initialize"/> leaves them out. No-op once running - use
-        /// <see cref="RemoveFromPlay"/> then.</summary>
+        // No-op once running, use RemoveFromPlay then.
         public void MarkPreStartDropout(string uid)
         {
             if (!string.IsNullOrEmpty(uid)) preStartDropouts.Add(uid);
         }
 
-        /// <summary>Has this player already dropped out before the start? Asked by the ready check,
-        /// which must tell "declined" apart from "has not answered yet".</summary>
         public bool IsPreStartDropout(string uid)
             => !string.IsNullOrEmpty(uid) && preStartDropouts.Contains(uid);
 
-        /// <summary>
-        /// Copies the starting line-up into the active one when the match starts. Groups are
-        /// deep-copied (see the invariant above); pre-start dropouts are skipped and any group left
-        /// empty is dropped, so the online side isn't stuck waiting on a ghost.
-        /// </summary>
+        // Deep copy, minus dropouts; empty groups are dropped.
         public void Initialize()
         {
             participantsStillInEvent.Clear();
@@ -77,26 +58,18 @@ namespace canevents.src.EventManagers
             }
         }
 
-        /// <summary>Position of a player in the starting line-up, or -1. Used for spawn assignment.</summary>
         public int IndexInStartingLineup(string uid) => participantsBefore.IndexOf(uid);
 
-        /// <summary>Is this player still in play (not eliminated, not finished)?</summary>
-        // Goes to the HashSet directly: through the IReadOnlyCollection property this would bind to
-        // Enumerable.Contains and walk the whole set.
+        // Field, not the IReadOnlyCollection property, which would bind to Enumerable.Contains.
         public bool IsActive(string uid) => uid != null && participantsStillInEvent.Contains(uid);
 
-        /// <summary>Did this player start the match? Stays true after elimination: this is the set that
-        /// gets rewards, inventory restores and end-of-match messages.</summary>
+        // Stays true after elimination.
         public bool IsParticipant(string uid) => uid != null && participantsBefore.Contains(uid);
 
-        /// <summary>The team this player started on, or -1 when they are not a participant. Index into
-        /// <see cref="ParticipantsByGroupsBefore"/>, the same numbering spawn points use.</summary>
         public int TeamIndexOf(string uid)
         {
             if (string.IsNullOrEmpty(uid)) return -1;
 
-            // Built once, on the first lookup that finds a non-empty roster. Keyed on a flag rather
-            // than emptiness, or a legitimately empty match would rebuild on every call.
             if (!teamIndexBuilt && participantsByGroupsBefore.Count > 0)
             {
                 teamIndexByUid = new Dictionary<string, int>();
@@ -110,9 +83,7 @@ namespace canevents.src.EventManagers
             return teamIndexByUid != null && teamIndexByUid.TryGetValue(uid, out var index) ? index : -1;
         }
 
-        /// <summary>Takes a player out of play. Says nothing about whether the match is over - that
-        /// rule is the match's (see <see cref="RunningEvent.CheckLastGroupStanding"/>), since respawn
-        /// modes remove players from play without deciding anything.</summary>
+        // Doesn't decide the match, see RunningEvent.CheckLastGroupStanding.
         public void RemoveFromPlay(string playerUid)
         {
             participantsStillInEvent.Remove(playerUid);
@@ -124,15 +95,78 @@ namespace canevents.src.EventManagers
             participantsByGroupsStillInEvent.RemoveAll(g => g.Count == 0);
         }
 
-        /// <summary>Declares the winning UIDs; null/empty means "draw". Takes precedence over the
-        /// single-remaining-group fallback in <see cref="GetWinners"/>.</summary>
+        // Open matches and rounds only: rated results assume the line-up never changes.
+        public bool Admit(string uid, int teamIdx)
+        {
+            if (string.IsNullOrEmpty(uid) || teamIdx < 0 || teamIdx >= participantsByGroupsBefore.Count) return false;
+            if (participantsBefore.Contains(uid)) return false;
+
+            participantsBefore.Add(uid);
+            participantsByGroupsBefore[teamIdx].Add(uid);
+            preStartDropouts.Remove(uid);
+            teamIndexBuilt = false;
+            ReturnToPlay(uid);
+            return true;
+        }
+
+        // Off the roster entirely, so busy checks let go of them.
+        public void Withdraw(string uid)
+        {
+            if (string.IsNullOrEmpty(uid)) return;
+            RemoveFromPlay(uid);
+            participantsBefore.Remove(uid);
+            foreach (var group in participantsByGroupsBefore) group.Remove(uid);
+            teamIndexBuilt = false;
+        }
+
+        // Back into its own live group; the live list drops empty groups, so it may have to come back.
+        public void ReturnToPlay(string uid)
+        {
+            int team = TeamIndexOf(uid);
+            if (team < 0) return;
+
+            participantsStillInEvent.Add(uid);
+            foreach (var live in participantsByGroupsStillInEvent)
+            {
+                if (live.Count > 0 && TeamIndexOf(live.First()) == team)
+                {
+                    live.Add(uid);
+                    return;
+                }
+            }
+            participantsByGroupsStillInEvent.Add(new HashSet<string> { uid });
+        }
+
+        // Pre-start only. Team count stays the same; everyone must land in exactly one group.
+        // Who is still in play doesn't change, only which team they are on.
+        public void Regroup(IReadOnlyList<HashSet<string>> groups)
+        {
+            if (groups == null || groups.Count != participantsByGroupsBefore.Count) return;
+
+            for (int i = 0; i < groups.Count; i++)
+                participantsByGroupsBefore[i] = new HashSet<string>(groups[i]);
+
+            participantsBefore.Clear();
+            foreach (var group in participantsByGroupsBefore) participantsBefore.AddRange(group);
+            teamIndexBuilt = false;
+
+            participantsByGroupsStillInEvent.Clear();
+            foreach (var group in participantsByGroupsBefore)
+            {
+                var live = new HashSet<string>(group.Where(participantsStillInEvent.Contains));
+                if (live.Count > 0) participantsByGroupsStillInEvent.Add(live);
+            }
+        }
+
+        public int CountInTeam(int teamIdx)
+            => teamIdx >= 0 && teamIdx < participantsByGroupsBefore.Count ? participantsByGroupsBefore[teamIdx].Count : 0;
+
+        // null/empty = draw.
         public void SetWinners(IEnumerable<string> winners)
         {
             explicitWinners = winners != null ? new HashSet<string>(winners) : new HashSet<string>();
         }
 
-        /// <summary>The winning group's UIDs, or empty. Prefers explicit winners, else falls back to
-        /// the single remaining group (last team standing).</summary>
         public HashSet<string> GetWinners()
         {
             if (explicitWinners != null) return explicitWinners;

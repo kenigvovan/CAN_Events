@@ -15,13 +15,9 @@ using Vintagestory.GameContent;
 
 namespace canevents.src.EventManagers.eventBehavior
 {
-    // Hunger Games: one-life elimination, FFA by default. Win = last surviving party; time-up goes
-    // to the survivor with most kills (ties -> draw). The zone shrinks over phases and damages
-    // anyone outside; centre+initial radius come from the place, phases from event attributes so
-    // one schedule works across arenas. Kill/death tallies and loadouts live in KillScoringEB.
-    // IDrawsOwnBoundary: the storm ring IS the edge here, and it moves. Outlining the map footprint
-    // as well would draw a border players are not being held to.
-    public class HungerGamesEB : KillScoringEB, IStartCryProvider, IDrawsOwnBoundary
+    // One-life elimination with a shrinking storm. Zone centre/radius come from the place, phases from event attributes.
+    // IDrawsOwnBoundary: the storm ring is the edge, so the map footprint is not outlined.
+    public class HungerGamesEB : EliminatingKillScoringEB, IStartCryProvider, IDrawsOwnBoundary
     {
 
         private readonly ShrinkingZone zone = new ShrinkingZone();
@@ -31,71 +27,58 @@ namespace canevents.src.EventManagers.eventBehavior
 
         private readonly HungerGamesLoot loot = new HungerGamesLoot();
 
-        // The border dome is rendered client-side (HgZoneDomeRenderer); the server only sends the
-        // current shrink segment on start, per phase and as a slow heartbeat (see HgZoneStateMsg).
+        // Dome is drawn client-side (HgZoneDomeRenderer); server sends segments on start, per phase and as heartbeat.
         private bool showZoneParticles = true;
 
-        // Reconnect self-heal: a client that joined mid-match missed the last segment packet.
+        // Heartbeat so a client that reconnected mid-match gets the current segment.
         private const float ZoneStateHeartbeatSeconds = 15f;
         private float lastZoneStateSentAt = float.MinValue;
 
-        // Optional opening truce: no player-vs-player damage for the first graceSeconds (storm and
-        // falls still apply). 0 disables it.
+        // Opening PvP truce; storm and falls still apply. 0 disables.
         private float graceSeconds = 0f;
         private bool graceActive = false;
         private readonly DamageHookSet graceHooks = new DamageHookSet();
 
-        // Time-up tiebreak below kills: with one life every survivor has zero deaths, so kills alone
-        // left too many matches a draw.
+        // Time-up tiebreak after kills.
         private readonly Dictionary<string, float> damageDealt = new Dictionary<string, float>();
         private readonly DamageHookSet damageHooks = new DamageHookSet();
 
-        // No digging in or towering up: block place/break is denied to live tributes for the whole
-        // match (chests open by interaction, so looting is unaffected).
-        private bool blockEditsHooked = false;
+        // No block place/break for live tributes during the match.
+        private readonly ArenaBlockGuard blockGuard = new ArenaBlockGuard();
 
-        /// <summary>Undone in OnEnd - see Unsubscribers. Not the first line here, deliberately: the
-        /// loot rollback above it matters more, and it carries its own explanation.</summary>
-        private readonly Unsubscribers subscriptions = new Unsubscribers();
-
-        // Pedestal freeze: the spawn-ring teleport happens at OnStart (TPThereAndBack runs first),
-        // so the hold covers the first startFreezeSeconds of the match; strays are snapped back.
+        // Pedestal hold for the first startFreezeSeconds; strays are snapped back.
         private float startFreezeSeconds = 5f;
-        private readonly Dictionary<string, Vec3d> freezeAnchors = new Dictionary<string, Vec3d>();
-        private long freezeListenerId = -1;
+        private MovementHold startHold;
 
-        // Feast: at feastAtSeconds the feastTier chests are re-rolled, announced
-        // feastAnnounceSeconds ahead so survivors can converge. 0 disables it.
+        // Feast: feastTier chests re-rolled at feastAtSeconds. 0 disables.
         private float feastAtSeconds = 0f;
         private float feastAnnounceSeconds = 30f;
         private string feastTier = null;
         private bool feastAnnounced, feastOpened;
 
-        // Sponsor gifts: every sponsorEverySeconds a random survivor gets one sponsorTier item
-        // dropped from the sky. 0 disables; keep it 0 for ranked, random gifts skew ratings.
+        // Random sponsorTier item dropped on a survivor every N seconds. 0 disables; keep 0 for ranked.
         private float sponsorEverySeconds = 0f;
         private string sponsorTier = null;
         private float nextSponsorAt = float.MaxValue;
 
-        // Early storm warning, sent once per upcoming shrink while the zone is still flat.
         private const float StormWarnSeconds = 15f;
         private int warnedPhaseIdx = -1;
 
-        // Death order, first death first: battle-royale placement is survival time, not frags
-        // (see GetFinalRanking).
+        // Death order, used for placement.
         private readonly SurvivalRanking survival = new SurvivalRanking();
 
         public HungerGamesEB(string name, JsonObject attributes, RunningEvent runningEvent)
             : base(name, attributes, runningEvent) { }
 
-        public override string Name { get => "HungerGames"; set { } }
+        public override string Name => BehaviorNames.HungerGames;
 
         public string StartCryLangKey => "canevents:hungergames-start-cry";
 
-        public override void Initialize()
+        protected override float DefaultTimeLimitSeconds => BehaviorConfigKeys.HungerGamesTimeLimitSeconds;
+
+        protected override void ReadModeConfig()
         {
-            ParseTimeLimit(900f);
-            showZoneParticles = Config.Bool("showZoneParticles", true);
+            showZoneParticles = Config.Bool(BehaviorConfigKeys.ShowZoneParticles, true);
             graceSeconds = Config.Float("gracePeriodSeconds", 0f);
             startFreezeSeconds = Config.Float("startFreezeSeconds", 5f);
             feastAtSeconds = Config.Float("feastAtSeconds", 0f);
@@ -103,19 +86,16 @@ namespace canevents.src.EventManagers.eventBehavior
             feastTier = Config.String("feastTier");
             sponsorEverySeconds = Config.Float("sponsorEverySeconds", 0f);
             sponsorTier = Config.String("sponsorTier");
-            ParseLoadoutSets();
             zone.ParsePhases(Attributes);
             loot.Parse(Attributes);
 
-            // Zone and loot tables parse their own keys off Attributes; declared here so the
-            // unknown-attribute check does not flag them as typos.
-            Config.Has("zonePhases");
+            // Parsed elsewhere; declared so the unknown-attribute check doesn't flag them.
+            Config.Has(ShrinkingZone.PhasesKey);
             Config.Has("lootContainerBlock");
             Config.Has("defaultLootTier");
             Config.Has("minSlotsPerChest");
             Config.Has("maxSlotsPerChest");
             Config.Has("lootTables");
-            Config.WarnUnknown();
         }
 
         public override void OnBeforeStart()
@@ -127,132 +107,51 @@ namespace canevents.src.EventManagers.eventBehavior
             ResolveZoneFromPlace();
             loot.Place(runningEvent);
 
-            // From here (countdown included) tributes can neither dig down nor build up.
-            if (!blockEditsHooked)
-            {
-                blockEditsHooked = true;
-                runningEvent.sapi.Event.CanPlaceOrBreakBlock += OnCanPlaceOrBreak;
-                subscriptions.Add(() =>
-                {
-                    blockEditsHooked = false;
-                    runningEvent.sapi.Event.CanPlaceOrBreakBlock -= OnCanPlaceOrBreak;
-                });
-            }
+            if (!blockGuard.Active)
+                blockGuard.DenyEditsByActive(runningEvent, BehaviorNames.HungerGamesClaimant,
+                    "canevents-hg-nobuild", "canevents:hg-no-build");
         }
 
-        private bool OnCanPlaceOrBreak(IServerPlayer byPlayer, BlockSelection sel, out string claimant)
-        {
-            claimant = null;
-            if (byPlayer == null || !runningEvent.IsActive(byPlayer.PlayerUID)) return true;
-            // Creative mode means an admin testing the arena, not a tribute cheating.
-            if (byPlayer.WorldData?.CurrentGameMode == EnumGameMode.Creative) return true;
-            claimant = "hungergames";
-            byPlayer.SendIngameError("canevents-hg-nobuild", Lang.Get("canevents:hg-no-build"));
-            return false;
-        }
-
-        // Snap anyone who leaves their pedestal back onto it until the release. Anchors are captured
-        // lazily by the tick: the OnStart teleport (TPThereAndBack) is async (waits for chunk
-        // loading), so ServerPos here may still be the pre-teleport position.
+        // Pedestal hold: the shared MovementHold puts back anyone who steps off.
         private void BeginStartFreeze()
         {
             runningEvent.CombatSuspended = true;
-            // MovementFrozen is the bots' hold: CombatSuspended only stops them picking a target,
-            // they kept walking and were visibly snapped back by the anchor every 250ms.
-            runningEvent.MovementFrozen = true;
-            freezeAnchors.Clear();
-            // Registered through the match so cleanup unregisters it even if EndStartFreeze never
-            // runs; a double-unregister later is harmless.
-            freezeListenerId = runningEvent.RegisterMatchTick(FreezeTick, 250);
-            EventBroadcaster.Broadcast(runningEvent, Lang.Get("canevents:hg-freeze"));
+            startHold ??= new MovementHold(runningEvent, "canevents:hg-hold-error");
+            startHold.Begin();
+            runningEvent.BeginHold(startFreezeSeconds, "canevents:hg-hold-hud");
+            // Players on adjacent pedestals could still trade hits.
+            HookGrace();
+            Announce("canevents:hg-freeze");
         }
 
-        private void FreezeTick(float dt)
-        {
-            // BodyOf, not PlayerByUid: bots stand on pedestals too, and CombatSuspended alone did
-            // not stop them walking off.
-            foreach (var uid in runningEvent.ParticipantsBefore)
-            {
-                var entity = runningEvent.BodyOf(uid);
-                if (entity == null) continue;
-                var pos = entity.Pos;
-
-                FreezeAi(entity);
-
-                if (!freezeAnchors.TryGetValue(uid, out var anchor))
-                {
-                    freezeAnchors[uid] = pos.XYZ;
-                    continue;
-                }
-
-                double dx = pos.X - anchor.X;
-                double dz = pos.Z - anchor.Z;
-                double distSq = dx * dx + dz * dz;
-
-                // >4 blocks in 250ms cannot be movement (sprint-jump covers <2): it is the async
-                // pedestal teleport landing, so re-anchor there instead of yanking them back.
-                if (distSq > 16.0)
-                {
-                    freezeAnchors[uid] = pos.XYZ;
-                    continue;
-                }
-
-                if (distSq > 1.0)
-                    entity.TeleportToDouble(anchor.X, anchor.Y, anchor.Z);
-            }
-        }
-
-        // Stops a bot's AI for this tick. The OnShouldExecuteTask hook (ArenaBotManager.Spawn) only
-        // blocks NEW tasks; one already running when the freeze began is never re-asked, so it and
-        // its handed-off path traverser / controls movement must be stopped explicitly.
-        private void FreezeAi(Entity entity)
-        {
-            if (entity is not EntityAgent agent || entity is EntityPlayer) return;
-
-            var taskAi = agent.GetBehavior<EntityBehaviorTaskAI>();
-            if (taskAi != null)
-            {
-                taskAi.TaskManager.StopTasks();
-                taskAi.PathTraverser?.Stop();
-            }
-
-            agent.Controls.StopAllMovement();
-            agent.Pos.Motion.X = 0;
-            agent.Pos.Motion.Z = 0;
-        }
+        private bool TruceActive => graceActive || startHold?.Active == true;
 
         private void EndStartFreeze()
         {
-            runningEvent.MovementFrozen = false;
-            if (freezeListenerId >= 0)
-            {
-                runningEvent.sapi.Event.UnregisterGameTickListener(freezeListenerId);
-                freezeListenerId = -1;
-            }
-            freezeAnchors.Clear();
+            startHold?.End();
+            runningEvent.EndHold();
         }
 
         private void ResolveZoneFromPlace()
         {
             var place = runningEvent.Place;
 
-            // The radius is this mode's own setting, so it is read here rather than by PlaceZone.
             if (place != null && place.TryGetBehaviorData(BehaviorKeys.HungerGames, out var data)
                 && data["InitialRadius"] != null)
             {
                 zone.InitialRadius = data.Value<float>("InitialRadius");
             }
 
-            var origin = Shared.PlaceZone.TryResolveCentre(place, BehaviorKeys.HungerGames,
+            var origin = PlaceZone.TryResolveCentre(place, BehaviorKeys.HungerGames,
                 out zoneCenterX, out zoneCenterY, out zoneCenterZ);
-            zoneCenterSet = origin != Shared.ZoneOrigin.None;
+            zoneCenterSet = origin != ZoneOrigin.None;
 
-            if (origin == Shared.ZoneOrigin.BoundsCentre)
+            if (origin == ZoneOrigin.BoundsCentre)
             {
                 runningEvent.sapi.World.Logger.Notification(
                     "[HG] Place id={0} has no HungerGames zone center configured; using bounds center.", place.Id);
             }
-            else if (origin == Shared.ZoneOrigin.None)
+            else if (origin == ZoneOrigin.None)
             {
                 runningEvent.sapi.World.Logger.Warning(
                     "[HG] No zone center configured for place id={0} and no bounds to fall back to. Storm damage disabled. Use /caneventplace hgzone <radius>.",
@@ -268,130 +167,104 @@ namespace canevents.src.EventManagers.eventBehavior
             if (graceSeconds > 0f) BeginGrace();
             if (startFreezeSeconds > 0f) BeginStartFreeze();
 
-            // Announce the opening phase here, or the first tick would send a second identical zone
-            // packet. Without a zone, clients still need Active=false to clear a leftover dome.
+            // Without a zone, clients still need Active=false to clear a leftover dome.
             if (zoneCenterSet && zone.HasPhases) AnnouncePhaseIfChanged(0f);
             else if (showZoneParticles) SendZoneState(true);
         }
 
-        // Tally tribute-vs-tribute damage for the whole match (never modifies it). Grace hits don't
-        // count: they're either blocked or shouldn't sway the tiebreak.
+        // Damage tally for the tiebreak, bots included. Re-called from OnTick for late bot bodies.
         private void HookDamageTracking()
+            => damageHooks.HookAll(runningEvent, runningEvent.ParticipantsBefore, TrackDamage, includeBots: true);
+
+        private float TrackDamage(string victimUid, float damage, DamageSource source)
         {
-            foreach (var uid in runningEvent.ParticipantsBefore)
-            {
-                var pl = runningEvent.sapi.World.PlayerByUid(uid) as IServerPlayer;
-                if (pl == null) continue;
-                string victimUid = uid;
-                damageHooks.Hook(pl, (damage, source) =>
-                {
-                    if (graceActive || damage <= 0f) return damage;
-                    if (source?.GetCauseEntity() is EntityPlayer attacker)
-                    {
-                        string au = attacker.PlayerUID;
-                        if (au != victimUid && runningEvent.TeamIndexOf(au) >= 0)
-                            damageDealt[au] = (damageDealt.TryGetValue(au, out var d) ? d : 0f) + damage;
-                    }
-                    return damage;
-                });
-            }
+            if (TruceActive) return damage;
+            if (DamageHookSet.TryHostileHit(runningEvent, victimUid, damage, source, out var au, includeBots: true))
+                damageDealt[au] = DamageDealtBy(au) + damage;
+            return damage;
         }
 
-        // Suspend player-vs-player damage for the opening truce; storm and fall damage pass through.
-        // The hook self-disables when the window ends, so a late teardown can't leave players immortal.
+        private float DamageDealtBy(string uid) => damageDealt.TryGetValue(uid, out var d) ? d : 0f;
+
+        // Hook checks TruceActive itself, so a late teardown can't leave players immortal.
         private void BeginGrace()
         {
             graceActive = true;
             runningEvent.CombatSuspended = true;
-            foreach (var uid in runningEvent.ParticipantsBefore)
-            {
-                var pl = runningEvent.sapi.World.PlayerByUid(uid) as IServerPlayer;
-                if (pl == null) continue;
-                graceHooks.Hook(pl, (damage, source) =>
-                {
-                    if (!graceActive || damage <= 0f) return damage;
-                    // GetCauseEntity() resolves the archer behind an arrow, not the arrow itself.
-                    if (source?.GetCauseEntity() is EntityPlayer attacker
-                        && runningEvent.TeamIndexOf(attacker.PlayerUID) >= 0)
-                        return 0f;
-                    return damage;
-                });
-            }
-            EventBroadcaster.Broadcast(runningEvent, Lang.Get("canevents:hg-grace-start", (int)graceSeconds));
+            HookGrace();
+            Announce("canevents:hg-grace-start", (int)graceSeconds);
+        }
+
+        private void HookGrace()
+            => graceHooks.HookAll(runningEvent, runningEvent.ParticipantsBefore, GraceDamage, includeBots: true);
+
+        private float GraceDamage(string victimUid, float damage, DamageSource source)
+        {
+            if (!TruceActive || damage <= 0f) return damage;
+            // Self-inflicted included.
+            return DamageHookSet.TryParticipantAttacker(runningEvent, source, out _, includeBots: true) ? 0f : damage;
         }
 
         protected override string KillFeedVerb => "eliminated";
 
-        protected override void OnScoredDeath(IServerPlayer victim, KillInfo kill)
+        protected override void OnScoredDeath(string victimUid, Entity victimBody, KillInfo kill)
         {
-            survival.Add(victim.PlayerUID);
-            EventBroadcaster.Broadcast(runningEvent,
-                Lang.Get("canevents:hg-player-eliminated", victim.PlayerName, kill.KillerName));
+            survival.Add(victimUid);
+            Announce("canevents:hg-player-eliminated", runningEvent.NameOf(victimUid), kill.KillerName);
         }
 
-        protected override void AfterScoredDeath(IServerPlayer victim, KillInfo kill)
+        // No MakeSpectator here: CANEventManager.OnDeath does the handoff.
+        protected override void AfterEliminated(string victimUid, Entity victimBody, KillInfo kill)
         {
-            string victimUid = victim.PlayerUID;
-
-            // One life. EliminatePlayer flips ShouldFinish at <=1 group left and GetWinners() returns
-            // that group. CANEventManager.OnDeath handles the spectator handoff after this, so no
-            // explicit MakeSpectator here (unlike ParkourEB, which also eliminates outside deaths).
-            runningEvent.EliminatePlayer(victimUid);
-
-            // The cannon: a boom the whole arena hears, plus the "N tributes remain" tally.
-            var deathPos = victim.Entity?.Pos;
+            var deathPos = victimBody?.Pos;
             if (deathPos != null)
                 runningEvent.sapi.World.PlaySoundAt(new AssetLocation("game:sounds/effect/largeexplosion"),
                     deathPos.X, deathPos.Y, deathPos.Z, null, false, 250f);
 
             int remaining = runningEvent.ParticipantsStillInEvent.Count;
             if (remaining > 1)
-                EventBroadcaster.Broadcast(runningEvent, Lang.Get("canevents:hg-remaining", remaining));
+                Announce("canevents:hg-remaining", remaining);
 
-            // Keep the HUD's alive counter current; the zone packet carries it.
+            // The zone packet carries the HUD alive counter.
             if (showZoneParticles) SendZoneState(true);
         }
 
-        // A mid-match reconnect spawns a fresh entity, leaving the damage and grace hooks on the old
-        // one, so both must be re-attached.
+        // Reconnect spawns a fresh entity; hooks are still on the old one.
         public override void OnParticipantJoinedGame()
         {
-            foreach (var uid in runningEvent.ParticipantsBefore)
-            {
-                var pl = runningEvent.sapi.World.PlayerByUid(uid) as IServerPlayer;
-                if (pl == null) continue;
-                damageHooks.RehookIfStale(pl);
-                graceHooks.RehookIfStale(pl);
-            }
+            damageHooks.RehookAll(runningEvent);
+            graceHooks.RehookAll(runningEvent);
         }
 
-        // Manager ticks behaviors at 1 Hz, so dt ≈ 1s, fine for damage cadence.
+        public override bool WantsTick => true;
+
+        // Ticked at 1 Hz by the manager.
         public override void OnTick(float dt)
         {
             if (MatchResolved) return;
 
             float elapsed = runningEvent.ElapsedSeconds;
 
-            // Release the pedestal hold once its window is over.
-            if (freezeListenerId >= 0 && elapsed >= startFreezeSeconds)
+            if (startHold?.Active == true && elapsed >= startFreezeSeconds)
             {
                 EndStartFreeze();
-                EventBroadcaster.Broadcast(runningEvent, Lang.Get("canevents:hg-freeze-end"));
+                Announce("canevents:hg-freeze-end");
             }
 
-            // Grace ends on its own clock, independent of whether a zone is configured.
             if (graceActive && elapsed >= graceSeconds)
             {
                 graceActive = false;
-                graceHooks.UnhookAll();
-                EventBroadcaster.Broadcast(runningEvent, Lang.Get("canevents:hg-grace-end"));
+                Announce("canevents:hg-grace-end");
             }
 
-            // Freeze window and truce run on separate clocks; bots fight once both are over.
-            if (runningEvent.CombatSuspended && !graceActive && freezeListenerId < 0)
+            // Bot bodies can appear after OnStart (chunk loading); no-op once hooked.
+            HookDamageTracking();
+            if (TruceActive) HookGrace();
+            else graceHooks.UnhookAll();
+
+            if (runningEvent.CombatSuspended && !TruceActive)
                 runningEvent.CombatSuspended = false;
 
-            // Sponsor gifts tick on their own clock, independent of the storm.
             if (sponsorEverySeconds > 0f)
             {
                 if (nextSponsorAt == float.MaxValue) nextSponsorAt = sponsorEverySeconds;
@@ -402,21 +275,19 @@ namespace canevents.src.EventManagers.eventBehavior
                 }
             }
 
-            // The feast is independent of the storm being configured.
             if (feastAtSeconds > 0f)
             {
                 if (!feastAnnounced && elapsed >= feastAtSeconds - feastAnnounceSeconds)
                 {
                     feastAnnounced = true;
-                    EventBroadcaster.Broadcast(runningEvent,
-                        Lang.Get("canevents:hg-feast-soon", (int)Math.Max(1, feastAtSeconds - elapsed)));
+                    Announce("canevents:hg-feast-soon", (int)Math.Max(1, feastAtSeconds - elapsed));
                 }
                 if (!feastOpened && elapsed >= feastAtSeconds)
                 {
                     feastOpened = true;
                     int refilled = loot.RefillTier(runningEvent, feastTier);
                     if (refilled > 0)
-                        EventBroadcaster.Broadcast(runningEvent, Lang.Get("canevents:hg-feast-open", refilled));
+                        Announce("canevents:hg-feast-open", refilled);
                 }
             }
 
@@ -428,25 +299,16 @@ namespace canevents.src.EventManagers.eventBehavior
             AnnouncePhaseIfChanged(elapsed);
             WarnBeforeShrink(elapsed, radius);
 
-            // Heartbeat only: the real sends happen on start and per phase change; the client
-            // interpolates in between on its own.
             if (showZoneParticles && elapsed - lastZoneStateSentAt >= ZoneStateHeartbeatSeconds)
                 SendZoneState(true);
 
             if (dps <= 0f) return;
-            float radiusSq = radius * radius;
             float dmg = dps * dt;
 
-            // BodyOf, not PlayerByUid: the storm must burn bots outside the ring too, or a bot that
-            // never moves outlasts every tribute who played the zone properly.
-            foreach (var uid in runningEvent.ParticipantsStillInEvent.ToArray())
+            // Bodies, not players: the storm burns bots too.
+            foreach (var (_, body) in runningEvent.LiveBodies())
             {
-                var body = runningEvent.BodyOf(uid);
-                if (body == null || !body.Alive) continue;
-                var pos = body.Pos;
-                double dx = pos.X - zoneCenterX;
-                double dz = pos.Z - zoneCenterZ;
-                if (dx * dx + dz * dz > radiusSq)
+                if (!CylinderZone.WithinRadius(body.Pos, zoneCenterX, zoneCenterZ, radius))
                 {
                     body.ReceiveDamage(new DamageSource
                     {
@@ -457,39 +319,25 @@ namespace canevents.src.EventManagers.eventBehavior
             }
         }
 
-        /// <summary>
-        /// Sends the current shrink segment; clients interpolate the radius locally and draw the
-        /// dome. Passing false clears it.
-        /// </summary>
+        // Clients interpolate the radius within the segment. false clears the dome.
         private void SendZoneState(bool active)
         {
             lastZoneStateSentAt = runningEvent.ElapsedSeconds;
 
-            var msg = new Network.HgZoneStateMsg
+            int alive = runningEvent.ParticipantsStillInEvent.Count;
+            if (!(active && zoneCenterSet && zone.HasPhases))
             {
-                Active = active && zoneCenterSet && zone.HasPhases,
-                AliveCount = runningEvent.ParticipantsStillInEvent.Count
-            };
-            if (msg.Active)
-            {
-                var (now, target, seconds) = zone.SegmentAt(runningEvent.ElapsedSeconds);
-                msg.X = zoneCenterX;
-                // zoneCenterY is the middle of the floor block; the dome stands on its surface.
-                msg.Y = Math.Floor(zoneCenterY) + 1.0;
-                msg.Z = zoneCenterZ;
-                msg.RadiusNow = now;
-                msg.RadiusTarget = target;
-                msg.SecondsToTarget = seconds;
+                EventBroadcaster.ZoneState(runningEvent, false, alive);
+                return;
             }
 
-            runningEvent.NetworkHandler?.SendHgZoneState(runningEvent, msg);
+            var (now, target, seconds) = zone.SegmentAt(runningEvent.ElapsedSeconds);
+            // zoneCenterY is the middle of the floor block; the dome stands on its surface.
+            EventBroadcaster.ZoneState(runningEvent, true, alive,
+                zoneCenterX, Math.Floor(zoneCenterY) + 1.0, zoneCenterZ, now, target, seconds);
         }
 
-        /// <summary>
-        /// Heads-up 15s before the zone starts closing, sent once while the current segment is flat
-        /// and a smaller phase is next. Mid-shrink boundaries stay silent: the phase announcement
-        /// already covers those.
-        /// </summary>
+        // Only warns while the zone is flat and a smaller phase is next.
         private void WarnBeforeShrink(float elapsed, float radius)
         {
             int curIdx = zone.PhaseIndexAt(elapsed);
@@ -502,7 +350,7 @@ namespace canevents.src.EventManagers.eventBehavior
             if (!currentlyFlat || secondsToTarget > StormWarnSeconds || nextRadius >= radius - 0.5f) return;
 
             warnedPhaseIdx = nextIdx;
-            EventBroadcaster.Broadcast(runningEvent, Lang.Get("canevents:hg-storm-warning", (int)secondsToTarget));
+            Announce("canevents:hg-storm-warning", (int)secondsToTarget);
             foreach (var uid in runningEvent.ParticipantsStillInEvent)
             {
                 var pl = runningEvent.sapi.World.PlayerByUid(uid) as IServerPlayer;
@@ -513,10 +361,6 @@ namespace canevents.src.EventManagers.eventBehavior
             }
         }
 
-        /// <summary>
-        /// Drops one rolled item above a random survivor, with a marker ring so nearby players can
-        /// see and contest it.
-        /// </summary>
         private void SendSponsorGift()
         {
             var alive = runningEvent.ParticipantsStillInEvent
@@ -532,9 +376,8 @@ namespace canevents.src.EventManagers.eventBehavior
             var pos = target.Entity.Pos;
             runningEvent.sapi.World.SpawnItemEntity(stack, new Vec3d(pos.X, pos.Y + 6, pos.Z));
             ZoneVisualizer.DrawRing(runningEvent.sapi, pos.X, pos.Y + 6, pos.Z, 1.2f, 10,
-                ZoneVisualizer.OwnerColor(-2));
-            EventBroadcaster.Broadcast(runningEvent,
-                Lang.Get("canevents:hg-sponsor", target.PlayerName, stack.GetName()));
+                ZoneVisualizer.SponsorMarkerColor);
+            Announce("canevents:hg-sponsor", target.PlayerName, stack.GetName());
         }
 
         private void AnnouncePhaseIfChanged(float elapsed)
@@ -545,73 +388,51 @@ namespace canevents.src.EventManagers.eventBehavior
             if (idx < 0) return;
 
             var (radius, dps) = zone.PhaseAt(idx);
-            EventBroadcaster.Broadcast(runningEvent,
-                Lang.Get("canevents:hg-storm-phase", idx + 1, zone.PhaseCount, radius, dps));
+            Announce("canevents:hg-storm-phase", idx + 1, zone.PhaseCount, radius, dps);
 
-            // A phase boundary starts a new linear shrink segment, so give the clients its endpoint.
             if (showZoneParticles) SendZoneState(true);
         }
 
-        /// <summary>
-        /// Battle-royale placement: survival time decides, kills only break ties. Overrides
-        /// KillScoringEB's kill-first default, where an early death with 3 kills would outplace the
-        /// runner-up survivor.
-        /// </summary>
+        // Placement by survival time, kills only break ties.
         public override List<HashSet<string>> GetFinalRanking()
-            => survival.Rank(runningEvent, uid => killCounts.TryGetValue(uid, out var k) ? k : 0);
+            => survival.Rank(runningEvent, KillsOf);
 
-        // Time-up: most kills wins, ties broken by damage dealt; still tied or no survivors -> draw.
+        // Time-up: most kills, then damage dealt; still tied -> draw.
         public override void OnBeforeFinish()
         {
             if (MatchResolved) return;
 
-            // One group left is already covered by the default GetWinners(); latch it anyway so a
-            // later call cannot overwrite the result.
+            // Latch so a later call cannot overwrite the result.
             if (runningEvent.ParticipantsByGroupsStillInEvent.Count <= 1)
             {
                 MarkMatchResolved();
                 return;
             }
 
-            string bestUid = null;
-            int bestKills = -1;
-            float bestDmg = -1f;
-            bool tied = false;
-            foreach (var uid in runningEvent.ParticipantsByGroupsStillInEvent.SelectMany(g => g))
-            {
-                int k = killCounts.TryGetValue(uid, out var c) ? c : 0;
-                float d = damageDealt.TryGetValue(uid, out var dd) ? dd : 0f;
-                if (k > bestKills || (k == bestKills && d > bestDmg))
-                {
-                    bestUid = uid; bestKills = k; bestDmg = d; tied = false;
-                }
-                else if (k == bestKills && d == bestDmg)
-                {
-                    tied = true; // equal on both keys with the current leader
-                }
-            }
+            bool decided = ScoringUtil.TryArgMax(
+                runningEvent.ParticipantsByGroupsStillInEvent.SelectMany(g => g),
+                uid => (KillsOf(uid), DamageDealtBy(uid)),
+                out string bestUid);
 
-            // The whole group containing bestUid wins (covers team mode); null = draw.
-            var winnerGroup = bestUid != null && !tied
+            // null = draw.
+            var winnerGroup = decided
                 ? runningEvent.ParticipantsByGroupsStillInEvent.FirstOrDefault(g => g.Contains(bestUid))
                 : null;
-            // The manager is already finishing us (this IS the time-up path).
+            // Already on the manager's finish path.
             ResolveMatch(winnerGroup, "hunger games time-up", requestFinish: false);
         }
 
         public override void OnEnd()
         {
-            // First, and in its own guard: this is the only step here that writes to the world, and a
-            // throw from any of the teardown below it used to leave the chests standing for good.
+            // First and guarded: a throw in later teardown used to leave the chests in the world.
             log.Safely("loot restore", () => loot.Restore(runningEvent));
 
             graceHooks.UnhookAll();
             damageHooks.UnhookAll();
-            EndStartFreeze();   // safety: a match cancelled mid-countdown must not leak the listener
-            subscriptions.UnhookAll();
-            // Clear the dome from every client, or the last radius stays painted forever.
+            EndStartFreeze();   // match may be cancelled mid-hold
+            blockGuard.Release();
             SendZoneState(false);
-            EventBroadcaster.Broadcast(runningEvent, Lang.Get("canevents:hg-ended"));
+            Announce("canevents:hg-ended");
         }
     }
 }

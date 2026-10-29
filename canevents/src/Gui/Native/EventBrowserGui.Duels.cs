@@ -3,12 +3,10 @@ using Vintagestory.API.Config;
 
 namespace canevents.src.Gui.Native
 {
-    // Duels tab: who is free to fight. Clicking one opens the challenge dialog, which is where the
-    // terms of that fight are set - they belong to a challenge, not to the tab.
+    // Duels tab. Terms are set in the challenge dialog, not here.
     public partial class EventBrowserGui
     {
-        /// <summary>The challenge dialog this tab hands off to. Set from the mod system, like
-        /// <see cref="LoadoutPick"/>.</summary>
+        // Set from the mod system, like LoadoutPick.
         public DuelChallengeGui DuelChallenge { get; set; }
 
         private void ComposeDuelsTab()
@@ -41,8 +39,7 @@ namespace canevents.src.Gui.Native
             int theirSize = list?.SideSizes != null && index < list.SideSizes.Length
                 ? list.SideSizes[index] : 1;
 
-            // Uneven sides cannot be played, and the server refuses them. Saying so on the card is
-            // kinder than letting the click fail: the reason is about their party, not about them.
+            // Server refuses uneven sides.
             bool playable = theirSize == yourSize;
 
             var detail = new StringBuilder();
@@ -56,8 +53,6 @@ namespace canevents.src.Gui.Native
             }
             else
             {
-                // The standing score against this one player, on their own row: the first question
-                // anyone asks before picking a fight is whether they usually win it.
                 int wins = At(list?.WinsVs), losses = At(list?.LossesVs), draws = At(list?.DrawsVs);
                 if (wins + losses + draws > 0)
                     detail.Append('\n').Append(
@@ -72,8 +67,7 @@ namespace canevents.src.Gui.Native
                 playable ? DuelClickHandler(index, name) : null);
         }
 
-        // Captured per row: the card keeps the action, and a shared lambda would challenge whoever
-        // happened to be last in the loop.
+        // Per-row capture; a lambda built in the loop would bind the last row.
         private System.Action DuelClickHandler(int index, string name) => () =>
         {
             var list = networkHandler.DuelTargets.Value;
@@ -81,8 +75,7 @@ namespace canevents.src.Gui.Native
 
             if (DuelChallenge == null) return;
 
-            // The browser steps aside for the dialog and comes back if it is dismissed, the same
-            // hand-off the queue-time class pick uses.
+            // Browser reopens if the dialog is dismissed, same as the class pick.
             TryClose();
             DuelChallenge.OpenFor(name, At(list?.WinsVs), At(list?.LossesVs), At(list?.DrawsVs),
                 list?.Modes, list?.DisabledMutators);

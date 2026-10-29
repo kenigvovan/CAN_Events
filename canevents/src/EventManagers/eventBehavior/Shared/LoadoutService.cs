@@ -14,9 +14,9 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
         {
             var result = new List<LoadoutSet>();
 
-            if (attributes["loadoutSets"].Exists)
+            if (attributes[BehaviorConfigKeys.LoadoutSets].Exists)
             {
-                foreach (var setObj in attributes["loadoutSets"].AsArray())
+                foreach (var setObj in attributes[BehaviorConfigKeys.LoadoutSets].AsArray())
                 {
                     var set = new LoadoutSet { Name = setObj["name"].AsString("Default") };
                     if (setObj["items"].Exists)
@@ -66,11 +66,26 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
                     return managed.Select(s => new LoadoutSet
                     {
                         Name = s.Name,
-                        Items = s.Items.Select(i => new LoadoutEntry { Code = i.Code, Quantity = i.Quantity }).ToList()
+                        Items = s.Items.Select(i => new LoadoutEntry
+                        {
+                            Code = i.Code,
+                            Quantity = i.Quantity,
+                            Id = i.Id,
+                            Upgrades = i.Upgrades
+                        }).ToList()
                     }).ToList();
                 }
             }
             return fallback;
+        }
+
+        // The kits a match of this event hands out, with no match running.
+        public static List<LoadoutSet> KitsOf(string eventCode, List<events.CANEventBehavior> behaviors, LoadoutManager lm)
+        {
+            var provider = behaviors?.OfType<ILoadoutProvider>().FirstOrDefault();
+            var inline = provider?.GetInlineLoadoutSets()
+                .Select(t => new LoadoutSet { Name = t.name, Items = t.items.ToList() }).ToList();
+            return GetEffectiveSets(eventCode, lm, inline ?? new List<LoadoutSet>()) ?? new List<LoadoutSet>();
         }
 
         public static string[] GetSetNames(List<LoadoutSet> sets)
@@ -92,8 +107,9 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
                 return string.Join(", ", itemNames);
             }).ToArray();
 
-        // Picks the player's chosen set (or first available) and equips it, mutators applied.
-        public static void Give(IServerPlayer player, RunningEvent runningEvent, List<LoadoutSet> inlineFallback)
+        // adjust gets the picked set (empty if none) and returns what to actually equip; must not mutate it.
+        public static void Give(IServerPlayer player, RunningEvent runningEvent, List<LoadoutSet> inlineFallback,
+            System.Func<LoadoutSet, LoadoutSet> adjust = null)
         {
             var ev = runningEvent.Event;
             var sets = GetEffectiveSets(runningEvent, inlineFallback);
@@ -105,10 +121,7 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
                 if (found != null) chosenSet = found;
             }
 
-            // A forced set overrides any choice. Checked here as well as at pick time: a stale
-            // queue-time choice or a saved default must not slip past the agreed duel terms.
-            // Not when the mode assigns the sets itself, though: a "loadout:Murderer" mutator would
-            // otherwise hand every player the murderer's kit and end the mode's whole point.
+            // Forced set beats a stale choice, except in modes that assign sets themselves.
             bool modeAssigns = runningEvent.Behaviors
                 .OfType<ILoadoutProvider>().FirstOrDefault()?.OffersPlayerChoice == false;
             string forcedName = modeAssigns ? null : ev?.MutatorValue(events.EventMutators.Loadout);
@@ -122,9 +135,17 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
                     forcedName, ev.Code);
             }
 
+            if (adjust != null) chosenSet = adjust(chosenSet ?? new LoadoutSet { Name = "Default" });
             if (chosenSet == null) return;
 
-            EquipSet(player, runningEvent.sapi, chosenSet,
+            GiveExtra(player, runningEvent, chosenSet);
+        }
+
+        // Kit placement rules (worn slots, off-hand, main hand) and mutator filters, for items outside the kit.
+        public static void GiveExtra(IServerPlayer player, RunningEvent runningEvent, LoadoutSet set)
+        {
+            var ev = runningEvent.Event;
+            EquipSet(player, runningEvent.sapi, set,
                 skipWearables: ev?.HasMutator(events.EventMutators.NoArmor) ?? false,
                 skipShields: ev?.HasMutator(events.EventMutators.NoShields) ?? false);
         }
@@ -136,42 +157,30 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
             var hotbarInv = player.InventoryManager.GetOwnInventory(GlobalConstants.hotBarInvClassName);
             bool mainHandFilled = false;
 
+            // MarkDirty deferred and done parents-first: a sheath synced before its belt hangs the CombatOverhaul client.
+            var dressed = new List<ItemSlot>();
+
+            // Retried after the first sync: dependent slots (e.g. sheath on belt) only exist once the parent is synced.
+            var unplaced = new List<(ItemStack stack, EnumCharacterDressType? dressType)>();
+
             foreach (var entry in chosenSet.Items)
             {
-                ItemStack stack = null;
-
-                var item = sapi.World.GetItem(new AssetLocation(entry.Code));
-                if (item != null)
-                {
-                    stack = new ItemStack(item, entry.Quantity);
-                }
-                else
-                {
-                    var block = sapi.World.GetBlock(new AssetLocation(entry.Code));
-                    if (block != null)
-                    {
-                        stack = new ItemStack(block, entry.Quantity);
-                    }
-                }
-
+                var stack = ItemLookup.StackOf(sapi.World, entry.Code, entry.Quantity);
                 if (stack == null)
                 {
                     sapi.World.Logger.Warning("Loadout item not found: {0}", entry.Code);
                     continue;
                 }
 
-                // The mark is what tells issued kit apart from a player's own belongings for the
-                // rest of its life - see IssuedGear and the issuedGearDrop policy.
                 IssuedGear.Mark(stack, player.PlayerName);
+                if (entry.DropOnDeath) IssuedGear.MarkDropOnDeath(stack);
+                if (entry.ShopItem != null) MatchShopEB.MarkBought(stack, entry.ShopItem);
 
-                // A filtered entry is dropped, not given loose: handing "skipped" armor to the
-                // backpack would defeat the point of a no-armor match.
+                // Filtered items are skipped entirely, not put in the backpack.
                 if (skipShields && stack.Collectible is Item shieldCheck
                     && shieldCheck.Code.Path.StartsWith("shield")) continue;
 
-                // Wearable armor → character inventory, always through the slot's own CanHold: writing
-                // by EnumCharacterDressType index lands in slots Combat Overhaul has switched off and
-                // crashes the damage handler - see CharacterInventoryCompat.
+                // Via CanHold, not by dress type index: CO disables some slots and indexing into them crashes its damage handler.
                 string clothesCat = stack.Collectible.Attributes?["clothescategory"]?.AsString(null)
                     ?? stack.Collectible.Attributes?["clothesCategoryByType"]?.AsObject<Dictionary<string, string>>()?.Values.FirstOrDefault();
                 if (clothesCat != null && skipWearables) continue;
@@ -183,16 +192,12 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
                             : (EnumCharacterDressType?)null;
 
                     var worn = Compat.CharacterInventoryCompat.Wear(characterInv, stack, dressType);
-                    if (worn != null)
-                    {
-                        worn.MarkDirty();
-                        continue;
-                    }
-                    sapi.World.Logger.Warning("Could not equip armor {0} on {1}", entry.Code, player.PlayerName);
+                    if (worn != null) dressed.Add(worn);
+                    else unplaced.Add((stack, dressType));
                     continue;
                 }
 
-                // Shield → off-hand (hotbar slot 11)
+                // hotbar slot 11 = off-hand
                 if (hotbarInv != null && stack.Collectible is Item itemObj
                     && itemObj.Code.Path.StartsWith("shield"))
                 {
@@ -205,7 +210,7 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
                     }
                 }
 
-                // First weapon/tool → main hand (hotbar slot 0)
+                // first tool goes to hotbar slot 0
                 if (!mainHandFilled && hotbarInv != null && stack.Collectible.Tool != null)
                 {
                     var mainSlot = hotbarInv[0];
@@ -220,6 +225,72 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
 
                 InventoryUtil.Give(sapi, player, stack, "loadout");
             }
+
+            // Diagnostic for the CO client hang on teleport-in.
+            LogGearOrderDiagnostics(sapi, player, chosenSet.Name, dressed);
+
+            // A dependent without its parent is pulled out and given normally instead of synced.
+            Action<ItemStack> rescue = stack =>
+            {
+                sapi.World.Logger.Warning(
+                    "Loadout for {0}: no wearable slot took '{1}'; given normally instead.",
+                    player.PlayerName, stack.Collectible?.Code?.ToString() ?? "<null>");
+                InventoryUtil.Give(sapi, player, stack, "loadout");
+            };
+            Compat.GearSlotOrderCompat.MarkDirtyAfterFill(dressed, rescue);
+
+            // Second try now that dependent slots may exist.
+            if (unplaced.Count > 0)
+            {
+                var lateDressed = new List<ItemSlot>();
+                foreach (var (stack, dressType) in unplaced)
+                {
+                    var worn = Compat.CharacterInventoryCompat.Wear(characterInv, stack, dressType);
+                    if (worn != null) lateDressed.Add(worn);
+                    else rescue(stack);
+                }
+                Compat.GearSlotOrderCompat.MarkDirtyAfterFill(lateDressed, rescue);
+            }
+        }
+
+        // Logs fill order (JSON order), which is what 1.1.7 synced as-is.
+        private static void LogGearOrderDiagnostics(ICoreServerAPI sapi, IServerPlayer player,
+            string setName, List<ItemSlot> dressed)
+        {
+            var parts = new List<string>();
+            var enablersSeen = new HashSet<string>();
+            bool dependentBeforeParent = false;
+            bool anyHierarchy = false;
+
+            foreach (var slot in dressed)
+            {
+                var stack = slot?.Itemstack;
+                if (stack == null) continue;
+                string role = Compat.GearSlotOrderCompat.RoleOf(stack);
+                string code = stack.Collectible?.Code?.ToString() ?? "<null>";
+                if (role == null) continue;
+
+                anyHierarchy = true;
+                parts.Add(code + " (" + role + ")");
+                int colon = role.IndexOf(':');
+                string kind = role.Substring(colon + 1);
+                if (role.StartsWith("enabler")) enablersSeen.Add(kind);
+                else if (!enablersSeen.Contains(kind)) dependentBeforeParent = true;
+            }
+
+            if (!anyHierarchy) return;
+
+            string summary = string.Format(
+                "Loadout gear-order diag: set '{0}' for {1}, seating order: {2}",
+                setName, player.PlayerName, string.Join(", ", parts));
+
+            if (dependentBeforeParent)
+                sapi.World.Logger.Warning(
+                    "{0} - dependent seated BEFORE its parent; 1.1.7 announced this order verbatim, "
+                    + "which hangs a CombatOverhaul client silently. 1.1.8 reorders it (parents first).",
+                    summary);
+            else
+                sapi.World.Logger.Notification("{0}", summary);
         }
     }
 }

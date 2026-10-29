@@ -3,26 +3,16 @@ using canevents.src.EventManagers.events;
 
 namespace canevents.src.Scoring
 {
-    /// <summary>
-    /// Works out *what* an event pays, without granting anything: per-event set if configured, else the
-    /// global single-item default from Config, else nothing. Shared by the distributor and the event
-    /// browser so the preview cannot drift from the actual payout.
-    /// </summary>
+    // Per-event set, else global Config default. Used by both payout and browser preview.
     public static class RewardResolver
     {
         public static bool ParticipationEnabled(CANEvent ev, Config config)
             => ev.Reward?.Participation ?? config.rewardParticipation;
 
-        /// <summary>
-        /// The anti-throw contribution gate: how long a match must last before its outcome counts.
-        /// Per-event override, else the global default; 0 disables it. Payout and standings must read
-        /// the same value, or a raised per-event threshold would withhold items while still letting
-        /// two accounts farm ranked standings with 5-second matches.
-        /// </summary>
+        // Used by both payout and standings, keep them in sync. 0 disables.
         public static int MinMatchSeconds(CANEvent ev, Config config)
             => ev.Reward?.MinMatchSeconds ?? config.minMatchDurationSecondsForReward;
 
-        /// <summary>Whether this match is too short to count. See <see cref="MinMatchSeconds"/>.</summary>
         public static bool BelowContributionGate(CANEvent ev, Config config, float elapsedSeconds, out int minSeconds)
         {
             minSeconds = MinMatchSeconds(ev, config);
@@ -35,7 +25,7 @@ namespace canevents.src.Scoring
         public static List<RewardItem> ParticipationItems(CANEvent ev, Config config)
             => ResolveSet(ev.Reward?.ParticipationItems, config.rewardParticipationItemCode, config.rewardParticipationQuantity);
 
-        /// <summary>Placement tiers as (1-based place, items), or null when the event has none.</summary>
+        // place is 1-based.
         public static List<(int place, List<RewardItem> items)> PlacementTiers(CANEvent ev)
         {
             var tiers = ev.Reward?.PlacementRewards;
@@ -50,8 +40,6 @@ namespace canevents.src.Scoring
             return result;
         }
 
-        /// <summary>Read-only view of the whole payout for the event browser; placement wins when
-        /// configured, otherwise the flat winner set.</summary>
         public static RewardPreview Preview(CANEvent ev, Config config)
         {
             var preview = new RewardPreview();

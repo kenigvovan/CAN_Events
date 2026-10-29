@@ -21,19 +21,12 @@ namespace canevents.src.EventManagers
         Running,
         Finished,
 
-        /// <summary>
-        /// Assembled, but still asking its players whether they are actually at the keyboard. Runs
-        /// BEFORE the arena search, so a match nobody confirms never occupies one.
-        ///
-        /// Appended rather than inserted: the value travels to clients in EventStateUpdateMsg, and
-        /// renumbering the others would make an older client read every state wrong.
-        /// </summary>
+        // Ready check, before the arena search. Appended last: the int value goes over the wire in EventStateUpdateMsg.
         AwaitingReady
     }
     public class RunningEvent
     {
-        // Persisted across server restarts so EventIds don't collide with stale
-        // client-side state (e.g. a queued LoadoutPickRequest with an old EventId).
+        // Persisted so ids don't collide with stale client state after a restart.
         private const string IdCounterSaveKey = "canevents_event_id_counter";
         private static long lastId = 0;
 
@@ -57,8 +50,7 @@ namespace canevents.src.EventManagers
             }
         }
 
-        // Persists the current max, not a captured value, so interleaved calls still save the largest
-        // issued id.
+        // Reads the current max so interleaved calls still save the largest id.
         private static void PersistIdCounter(ICoreServerAPI sapi)
         {
             try
@@ -75,40 +67,50 @@ namespace canevents.src.EventManagers
         public CANEvent Event { get; set; }
         public List<CANEventBehavior> Behaviors { get; private set; }
 
-        /// <summary>The bot bodies in this match - the physical side only (spawning, gear, despawn);
-        /// the roster itself sees bots and players alike as uids.</summary>
         public ArenaBotManager Bots => bots ??= new ArenaBotManager(this);
         private ArenaBotManager bots;
 
-        /// <summary>Set while the mode forbids fighting (Hunger Games' truce and pedestal freeze).
-        /// Players are held to it by damage hooks; bots read this flag and refuse to pick a target.</summary>
+        // HG truce. Players are held by damage hooks, bots check this flag.
         public bool CombatSuspended { get; set; }
 
-        /// <summary>When non-empty, only these EventPlace ids may host this match (a tournament's
-        /// arena whitelist). Null/empty keeps the normal "any suitable arena" behavior.</summary>
+        // Tournament arena whitelist; null/empty = any arena.
         public HashSet<long> AllowedPlaceIds { get; set; }
 
-        /// <summary>Stakes are owned outside the match (a tournament pot, paid once at the end), so
-        /// EntryFeeSettlement skips it entirely.</summary>
+        // Tournament owns the pot.
         public bool SuppressEntryFeeSettlement { get; set; }
 
-        /// <summary>Keeps this match out of standings and Elo (an exhibition/unrated tournament).</summary>
         public bool SuppressRating { get; set; }
 
-        /// <summary>Pays no event reward: a tournament sub-match, where the bracket pays its own
-        /// prizes once at the end instead of once per round.</summary>
+        // Tournament sub-match; the bracket pays prizes once at the end.
         public bool SuppressRewards { get; set; }
 
-        /// <summary>Chunk columns pinned for this match, released in cleanup: a bots-only match has
-        /// nothing else holding its arena in memory.</summary>
         public List<Vintagestory.API.MathTools.Vec2i> PinnedChunks { get; set; }
 
-        /// <summary>Set while participants must stay put (the pedestal freeze). Separate from
-        /// <see cref="CombatSuspended"/>: during the truce bots may walk, they just may not fight.</summary>
+        // Pedestal freeze. Separate from CombatSuspended: bots may walk during the truce.
         public bool MovementFrozen { get; set; }
 
-        /// <summary>The body playing under this uid - a player's entity or a bot's. Modes that act on
-        /// the world want this instead of PlayerByUid, which silently skips every bot.</summary>
+        // HUD shows a hold countdown until ElapsedSeconds reaches this. 0 = none.
+        public float HoldEndsAtElapsed { get; private set; }
+        public string HoldLangKey { get; private set; }
+
+        // Sent with the next state update.
+        public void BeginHold(float seconds, string langKey)
+        {
+            if (seconds <= 0f) return;
+            HoldEndsAtElapsed = ElapsedSeconds + seconds;
+            HoldLangKey = langKey;
+        }
+
+        // Re-syncs the HUD so the start cry doesn't depend on the client clock.
+        public void EndHold()
+        {
+            if (HoldEndsAtElapsed <= 0f) return;
+            HoldEndsAtElapsed = 0f;
+            HoldLangKey = null;
+            NetworkHandler?.SendStateUpdate(this);
+        }
+
+        // Player or bot entity. Use instead of PlayerByUid, which skips bots.
         public Vintagestory.API.Common.Entities.Entity BodyOf(string uid)
         {
             if (uid == null) return null;
@@ -116,18 +118,27 @@ namespace canevents.src.EventManagers
             return (sapi.World.PlayerByUid(uid) as IServerPlayer)?.Entity;
         }
 
-        /// <summary>This match's behavior of the given type, or null - the same lookup as
-        /// <see cref="CANEvent.GetBehavior{T}"/> but over the per-match clones.</summary>
-        public T GetBehavior<T>() where T : class
+        // Iterates a copy, safe to eliminate inside the loop.
+        public IEnumerable<(string uid, Vintagestory.API.Common.Entities.Entity body)> LiveBodies()
         {
-            for (int i = 0; i < Behaviors.Count; i++)
-                if (Behaviors[i] is T match) return match;
-            return null;
+            foreach (var uid in ParticipantsStillInEvent.ToArray())
+            {
+                var body = BodyOf(uid);
+                if (body != null && body.Alive) yield return (uid, body);
+            }
         }
 
-        // The single behavior that scores/ranks this match, or null. Resolved once in the constructor.
+        public string NameOf(string uid) => NameOf(sapi, uid);
+
+        public static string NameOf(ICoreServerAPI api, string uid)
+            => BotIdentity.IsBot(uid)
+                ? BotIdentity.NameOfUid(uid)
+                : api?.World.PlayerByUid(uid)?.PlayerName ?? uid;
+
+        // Over the per-match clones.
+        public T GetBehavior<T>() where T : class => CANEvent.FirstBehavior<T>(Behaviors);
+
         public IMatchScorer Scorer { get; private set; }
-        // The match roster lives in MatchRoster; the members below forward to it.
         public MatchRoster Roster { get; } = new MatchRoster();
 
         public IReadOnlyList<string> ParticipantsBefore => Roster.ParticipantsBefore;
@@ -135,8 +146,7 @@ namespace canevents.src.EventManagers
         public IReadOnlyCollection<string> ParticipantsStillInEvent => Roster.ParticipantsStillInEvent;
         public IReadOnlyList<HashSet<string>> ParticipantsByGroupsStillInEvent => Roster.ParticipantsByGroupsStillInEvent;
 
-        /// <summary>Everyone in the starting line-up who is online right now; bots and offline
-        /// participants have no player object and are skipped.</summary>
+        // Skips bots and offline players.
         public IEnumerable<IServerPlayer> OnlineParticipants
         {
             get
@@ -146,20 +156,20 @@ namespace canevents.src.EventManagers
             }
         }
 
-        /// <summary>
-        /// Admins watching this match without playing it. Deliberately outside <see cref="MatchRoster"/>:
-        /// an observer must not count towards the head count, the last-team-standing check, winners,
-        /// rewards, standings or the entry-fee pot. The only thing they share with participants is the
-        /// HUD feed - see <see cref="HudAudience"/>.
-        /// </summary>
+        // Same, minus pre-start dropouts and the eliminated.
+        public IEnumerable<IServerPlayer> ActiveOnlineParticipants
+        {
+            get
+            {
+                foreach (var player in OnlineParticipants)
+                    if (IsActive(player.PlayerUID)) yield return player;
+            }
+        }
+
+        // Admin observers, kept out of MatchRoster so they never count for winners/rewards/pot.
         public HashSet<string> Observers { get; } = new HashSet<string>();
 
-        /// <summary>
-        /// Everyone whose client should be drawing this match: the starting line-up (eliminated players
-        /// included - they are watching from the spectator seat) plus the observers. The single
-        /// recipient list for every HUD packet, so an observer cannot end up with half a HUD because
-        /// one send site was missed.
-        /// </summary>
+        // Recipients of every HUD packet: full starting line-up plus observers.
         public IEnumerable<IServerPlayer> HudAudience
         {
             get
@@ -169,50 +179,26 @@ namespace canevents.src.EventManagers
 
                 foreach (var uid in Observers)
                 {
-                    // An observer who somehow also sits on the roster (an admin who joined the match
-                    // and then asked to watch it) must not get every packet twice.
                     if (Roster.IsParticipant(uid)) continue;
                     if (sapi.World.PlayerByUid(uid) is IServerPlayer observer) yield return observer;
                 }
             }
         }
 
-        /// <summary>The same, narrowed to those still in play - eliminated players are left out.</summary>
-        public IEnumerable<IServerPlayer> OnlineActiveParticipants
-        {
-            get
-            {
-                foreach (var uid in ParticipantsStillInEvent)
-                    if (sapi.World.PlayerByUid(uid) is IServerPlayer player) yield return player;
-            }
-        }
-
-        /// <summary>Marks a participant who disconnected before the match started, so
-        /// <see cref="InitializeRoster"/> leaves them out. No-op once running - use
-        /// <see cref="EliminatePlayer"/> then.</summary>
+        // No-op once running, use EliminatePlayer then.
         public void MarkPreStartDropout(string uid) => Roster.MarkPreStartDropout(uid);
 
-        /// <summary>Copies the starting line-up into the active one, at the moment the match actually starts.</summary>
         public void InitializeRoster() => Roster.Initialize();
 
-        /// <summary>Position of a player in the starting line-up, or -1. Used for spawn assignment.</summary>
         public int IndexInStartingLineup(string uid) => Roster.IndexInStartingLineup(uid);
 
-        // Spawn points are handed out by line-up position, so a half-full arena fills the first few
-        // points and leaves the rest empty - on a ring of twelve that is a huddle on one arc rather
-        // than a circle. With this on, the points are dealt in a shuffled order instead. Off by
-        // default: modes where a spawn point means something (a CTF team's own base, whose flag post
-        // is indexed by team number) must keep the order the arena was laid out in.
+        // Off by default: CTF flag posts are indexed by team, so spawn order matters there.
         private bool shuffleSpawns;
         private int[] spawnOrder;
 
-        /// <summary>Deals this match's spawn points in a random order. Call before the first spawn is
-        /// resolved (OnBeforeStart); the order itself is drawn once and then holds for the match, so
-        /// players, bots and respawns all read the same layout.</summary>
+        // Call in OnBeforeStart, before the first spawn is resolved. Order is drawn once per match.
         public void EnableSpawnShuffle() => shuffleSpawns = true;
 
-        /// <summary>Translates a spawn-point index picked by line-up position into the point that
-        /// index actually maps to. The identity when the shuffle is off.</summary>
         public int MapSpawnIndex(int index)
         {
             if (!shuffleSpawns || index < 0) return index;
@@ -220,10 +206,7 @@ namespace canevents.src.EventManagers
             return spawnOrder != null && index < spawnOrder.Length ? spawnOrder[index] : index;
         }
 
-        // Whole teams move together: a team occupies a contiguous run of points (see
-        // TPThereAndBack.ResolveSpawn), so the shuffle permutes runs, never the points inside one -
-        // teammates would end up on opposite sides of the arena. Returns null when there is nothing
-        // to shuffle, which leaves MapSpawnIndex the identity.
+        // Permutes whole team runs (see TPThereAndBack.ResolveSpawn) so teammates stay together.
         private int[] BuildSpawnOrder()
         {
             int count = Place?.spawnPositions?.Count ?? 0;
@@ -246,15 +229,13 @@ namespace canevents.src.EventManagers
             for (int i = 0; i < count; i++)
             {
                 int r = i / run;
-                // The tail that no whole run covers keeps its own index: nothing is dealt from there.
+                // Leftover tail keeps its index.
                 order[i] = r < runs ? perm[r] * run + i % run : i;
             }
             return order;
         }
 
-        // How many consecutive points one team takes. Only the per-player layout (a point each) hands
-        // a team more than one; anything else - unequal team sizes, or fewer points than players -
-        // deals point by point.
+        // >1 only for equal teams with a spawn point per player.
         private int TeamRunLength(int spawnCount)
         {
             var groups = ParticipantsByGroupsBefore;
@@ -270,22 +251,15 @@ namespace canevents.src.EventManagers
 
             return spawnCount >= total ? Math.Max(1, size) : 1;
         }
-        /// <summary>
-        /// Who confirmed they are at the keyboard, while this match sits in
-        /// <see cref="EventState.AwaitingReady"/>. Bots and offline players are never asked; anyone
-        /// missing when the window closes is dropped from the line-up before it starts.
-        /// </summary>
         public HashSet<string> ReadyUids { get; } = new HashSet<string>();
 
-        /// <summary>Server clock at which the ready window closes. 0 when none is running.</summary>
+        // 0 = no ready window.
         public long ReadyDeadlineMs { get; set; }
 
-        /// <summary>Set once the match has a reason to end; the manager picks it up on its next tick.
-        /// Write it through <see cref="RequestFinish"/>, which records why.</summary>
+        // Picked up by the manager on its next tick.
         public bool ShouldFinish { get; private set; }
 
-        /// <summary>Asks for the match to end. Idempotent: the first reason wins, so a mode that both
-        /// eliminates the last player and declares a winner doesn't overwrite the cause. Logged only.</summary>
+        // First reason wins.
         public void RequestFinish(string reason)
         {
             if (ShouldFinish) return;
@@ -293,18 +267,26 @@ namespace canevents.src.EventManagers
             sapi?.World?.Logger?.VerboseDebug("[canevents] Event {0} ({1}) finishing: {2}",
                 Id, Event?.Code, reason ?? "unspecified");
         }
-        /// <summary>Wall-clock limit of the match, compared against <see cref="ElapsedSeconds"/>. Set
-        /// via <see cref="SetDuration"/> before the start or <see cref="ShortenDuration"/> during.</summary>
         public float MaxDurationSeconds { get; private set; } = 300f;
 
-        /// <summary>The mode's time limit, applied in OnBeforeStart. Ignores non-positive values.</summary>
+        // No time limit at all (open matches). SetDuration can't express it: it ignores <= 0.
+        public bool Unlimited { get; set; }
+
+        // Players come and go while it runs; never finishes on its own, unrated, no rewards.
+        public bool IsOpenMatch { get; set; }
+
+        // Every member of a team spawns at its team's point, whatever the spawn count.
+        public bool PerTeamSpawns { get; set; }
+
+        // Lobby side picks, uid -> team index.
+        public Dictionary<string, int> TeamChoices { get; } = new Dictionary<string, int>();
+
         public void SetDuration(float seconds)
         {
             if (seconds > 0f) MaxDurationSeconds = seconds;
         }
 
-        /// <summary>Cuts a running match short (Parkour's grace countdown). Only ever shortens -
-        /// extending would move a deadline players are already racing against. True if it changed.</summary>
+        // Parkour grace countdown. Never extends.
         public bool ShortenDuration(float seconds, string reason)
         {
             if (seconds <= 0f || seconds >= MaxDurationSeconds) return false;
@@ -316,16 +298,13 @@ namespace canevents.src.EventManagers
         }
         public float ElapsedSeconds { get; set; } = 0f;
         public float CountdownSeconds { get; set; } = 0f;
-        // Wall-clock seconds spent in SearchingForLocation, accumulated by the find-location tick. Drives
-        // the give-up timeout so an assembled match whose arena vanished doesn't hold its players forever.
+        // For the arena search timeout.
         public float SearchingSeconds { get; set; } = 0f;
         public EventPlace Place { get; set; }
         public EventState EventState { get; set; }
         public long Id { get; set; } = 0;
         public ICoreServerAPI sapi { get; private set; }
 
-        /// <summary>Services injected at construction, available in every lifecycle hook including
-        /// OnBeforeStart. Never null after the standard constructor.</summary>
         public MatchServices Services { get; private set; }
 
         public Network.ServerNetworkHandler  NetworkHandler => Services?.NetworkHandler;
@@ -334,9 +313,10 @@ namespace canevents.src.EventManagers
         public LoadoutManager                OutfitManager  => Services?.OutfitManager;
         public SpectatorManager              Spectator      => Services?.Spectator;
         public Config                        Config         => Services?.Config;
-        /// <summary>True when the match runs on the players' own gear. Modes MUST check it before
-        /// issuing anything: nothing was cleared and nothing is restored, so an issued kit lands on
-        /// top of real belongings and leaves the arena as minted property.</summary>
+
+        // Behaviors must go through this instead of seating players themselves.
+        public void SeatOutOfPlay(IServerPlayer player) => Services?.SeatOutOfPlay?.Invoke(player, this);
+        // Check before issuing anything: nothing is restored, so issued kit would leave the arena.
         public bool KeepOwnGear
         {
             get
@@ -348,35 +328,63 @@ namespace canevents.src.EventManagers
             }
         }
 
-        // Tick-listener ids for this event's lifetime, bulk-unregistered in FinishEvent. A list, not a
-        // name-keyed dict, so two behaviors with the same Name can't clobber each other.
+        // Unregistered in FinishEvent. A list, so behaviors with the same Name don't clash.
         public List<long> RegisteredTickListeners = new List<long>();
 
-        /// <summary>Registers a tick listener that dies with the match: a listener missing from the
-        /// list keeps firing into a finished match. Returns the handle for early stopping.</summary>
         public long RegisterMatchTick(Action<float> onTick, int intervalMs)
         {
             long id = sapi.Event.RegisterGameTickListener(dt => onTick(dt), intervalMs);
             RegisteredTickListeners.Add(id);
             return id;
         }
-        // Kept separate: needs an explicit unregister mid-life, when the countdown elapses. -1 = not set.
+
+        public void UnregisterMatchTick(long id)
+        {
+            if (id < 0) return;
+            if (!RegisteredTickListeners.Remove(id)) return;
+            sapi?.Event.UnregisterGameTickListener(id);
+        }
+        // Separate: unregistered mid-life when the countdown elapses.
         public long CountdownListenerId = -1;
-        /// <summary>Is this player still in play (not eliminated, not finished)?</summary>
         public bool IsActive(string uid) => Roster.IsActive(uid);
 
-        /// <summary>Did this player start the match? Stays true after elimination: this is the set that
-        /// gets rewards, inventory restores and end-of-match messages.</summary>
+        // Stays true after elimination.
         public bool IsParticipant(string uid) => Roster.IsParticipant(uid);
 
-        /// <summary>The team this player started on, or -1 when they are not a participant. Index into
-        /// <see cref="ParticipantsByGroupsBefore"/>, the same numbering spawn points use.</summary>
+        // Sent home early with their own gear.
+        private readonly HashSet<string> releasedUids = new HashSet<string>();
+
+        public void MarkReleased(string uid)
+        {
+            if (!string.IsNullOrEmpty(uid)) releasedUids.Add(uid);
+        }
+
+        // Open-match rejoin.
+        public void ClearReleased(string uid)
+        {
+            if (!string.IsNullOrEmpty(uid)) releasedUids.Remove(uid);
+        }
+
+        // False once released or a pre-start dropout: the match must not clear their inventory anymore.
+        public bool HoldsPlayer(string uid)
+            => IsParticipant(uid) && !releasedUids.Contains(uid) && !Roster.IsPreStartDropout(uid);
+
+        // Quit mid-match, no participation reward.
+        private readonly HashSet<string> leftInPlayUids = new HashSet<string>();
+
+        public void MarkLeftInPlay(string uid)
+        {
+            if (!string.IsNullOrEmpty(uid)) leftInPlayUids.Add(uid);
+        }
+
+        public bool LeftInPlay(string uid) => leftInPlayUids.Contains(uid);
+
         public int TeamIndexOf(string uid) => Roster.TeamIndexOf(uid);
 
         public Dictionary<string, string> PlayerLoadoutChoices = new Dictionary<string, string>();
-        /// <summary>Uids with an explicit per-player loadout pick; the match-start popup is skipped for them.</summary>
+        // No loadout popup for these.
         public HashSet<string> ExplicitLoadoutChoiceUids = new HashSet<string>();
-        // Players who registered the party; their loadout pick was explicit, so no popup for them.
+        // Party registrants already picked, no popup either.
         public HashSet<string> RegistrantUids = new HashSet<string>();
         public RunningEvent()
         {
@@ -403,8 +411,7 @@ namespace canevents.src.EventManagers
             Roster.SetStartingLineup(ta.GetPlayerGuids(), ta.GetPlayerGuidsGroups());
             this.EventState = EventState.SearchingForLocation;
 
-            // The registrant's pick applies to all party members as a fallback; per-member overrides
-            // come later from saved defaults or match-start popup responses.
+            // Registrant's pick is the party fallback.
             foreach (var shard in ta.Shards)
             {
                 foreach (var reg in shard.Registrations)
@@ -420,7 +427,6 @@ namespace canevents.src.EventManagers
                             PlayerLoadoutChoices[uid] = reg.ChosenLoadoutSet;
                         }
                     }
-                    // Per-member picks made at queue-time override the leader's choice.
                     if (reg.PerPlayerLoadoutChoices != null)
                     {
                         foreach (var kv in reg.PerPlayerLoadoutChoices)
@@ -438,22 +444,34 @@ namespace canevents.src.EventManagers
             PersistIdCounter(api);
         }
 
-        /// <summary>Takes a player out of play and, if that leaves one group or none, ends the match.
-        /// The default for elimination modes (last team standing).</summary>
         public void EliminatePlayer(string playerUid)
         {
             RemoveFromPlay(playerUid);
             CheckLastGroupStanding();
         }
 
-        /// <summary>Takes a player out of play WITHOUT deciding the match. For respawn modes such as
-        /// Juggernaut, where "one group left" says nothing about who is winning.</summary>
+        // No last-team-standing check, for respawn modes like Juggernaut.
         public void RemoveFromPlay(string playerUid) => Roster.RemoveFromPlay(playerUid);
 
-        /// <summary>Ends the match when one group (or none) is left standing. Separate from
-        /// <see cref="RemoveFromPlay"/> so a mode can decide whether this rule applies.</summary>
+        public bool Admit(string uid, int teamIdx)
+        {
+            if (!Roster.Admit(uid, teamIdx)) return false;
+            ClearReleased(uid);
+            leftInPlayUids.Remove(uid);
+            return true;
+        }
+
+        // Keeps PlayerLoadoutChoices: a rejoin's class offer starts on the class they had.
+        public void Withdraw(string uid) => Roster.Withdraw(uid);
+
+        public void ReturnToPlay(string uid) => Roster.ReturnToPlay(uid);
+
+        public int CountInTeam(int teamIdx) => Roster.CountInTeam(teamIdx);
+
         public void CheckLastGroupStanding()
         {
+            // An open match runs on with one team, or none.
+            if (IsOpenMatch) return;
             if (ParticipantsByGroupsStillInEvent.Count > 1) return;
 
             RequestFinish(ParticipantsByGroupsStillInEvent.Count == 1
@@ -461,12 +479,9 @@ namespace canevents.src.EventManagers
                 : "no groups left");
         }
 
-        /// <summary>Declares the winning UIDs; null/empty means "draw". Takes precedence over the
-        /// single-remaining-group fallback in GetWinners().</summary>
+        // null/empty = draw. Overrides the last-group fallback.
         public void SetWinners(IEnumerable<string> winners) => Roster.SetWinners(winners);
 
-        /// <summary>The winning group's UIDs, or empty. Prefers explicit winners, else falls back to
-        /// the single remaining group (last team standing).</summary>
         public HashSet<string> GetWinners() => Roster.GetWinners();
     }
 }

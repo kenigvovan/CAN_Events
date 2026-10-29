@@ -3,44 +3,29 @@ using Vintagestory.API.Common;
 
 namespace canevents.src.EventManagers.eventBehavior.Shared
 {
-    /// <summary>What happens to match-issued kit the moment its holder throws it on the ground.</summary>
+    // What happens when a player throws issued kit on the ground.
     public enum IssuedGearDrop
     {
-        /// <summary>Left alone - what the mod always did.</summary>
         Allow,
-        /// <summary>Handed straight back to whoever dropped it.</summary>
+        // Given back to whoever dropped it.
         Return,
-        /// <summary>Destroyed on the spot.</summary>
         Remove,
-        /// <summary>Dropping works as usual; marked items are swept off the arena when the match ends.</summary>
+        // Swept off the arena at match end.
         Cleanup
     }
 
-    /// <summary>
-    /// The mark every issued kit item carries, and the policy that decides what happens when one is
-    /// thrown away.
-    ///
-    /// The mark is the only thing separating a match sword from a player's own belongings, so it is
-    /// also the safety rail: nothing unmarked is ever touched by the policy. Rewards, entry-fee
-    /// refunds, Hunger Games loot and sponsor drops carry no mark and go on behaving exactly as
-    /// before.
-    /// </summary>
+    // Issued-kit marking and drop policy. Unmarked items (own gear, rewards, HG loot) are never touched.
     public static class IssuedGear
     {
         public const string LoadoutKey = "canevents_loadout";
         public const string IssuedToKey = "canevents_issuedTo";
 
-        /// <summary>Marks a piece of kit that SHOULD hit the ground when its owner dies, against the
-        /// usual rule that issued gear is swept up before the body drops it. For a mode where the
-        /// weapon is the story - a dead sheriff's bow lying there for anyone to pick up.</summary>
+        // Issued item that drops on death instead of being swept up (e.g. the sheriff's bow).
         public const string DropOnDeathKey = "canevents_dropOnDeath";
 
-        /// <summary>Used when a policy string is missing or unreadable. Dropping keeps working, the
-        /// arena just does not accumulate abandoned kit.</summary>
         public const IssuedGearDrop DefaultPolicy = IssuedGearDrop.Cleanup;
 
-        /// <summary>Stamps a stack as issued for a match. <paramref name="issuedTo"/> is a display
-        /// name (a bot has no player object), read only by logs.</summary>
+        // issuedTo is a display name (bots have no player), only for logs.
         public static void Mark(ItemStack stack, string issuedTo)
         {
             if (stack?.Attributes == null) return;
@@ -51,22 +36,16 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
         public static bool IsIssued(ItemStack stack)
             => stack?.Attributes?.GetBool(LoadoutKey, false) == true;
 
-        /// <summary>Who it was handed to, for log lines. Null when the stack is not issued gear.</summary>
         public static string IssuedTo(ItemStack stack)
             => stack?.Attributes?.GetString(IssuedToKey);
 
-        /// <summary>Lets this stack fall to the ground on its owner's death instead of being swept up.</summary>
         public static void MarkDropOnDeath(ItemStack stack)
             => stack?.Attributes?.SetBool(DropOnDeathKey, true);
 
         public static bool DropsOnDeath(ItemStack stack)
             => stack?.Attributes?.GetBool(DropOnDeathKey, false) == true;
 
-        /// <summary>
-        /// Reads the server-wide default. An unreadable value falls back and says so once - the
-        /// admin cannot fix what they are never told about, and throwing here would take the whole
-        /// server down over a typo.
-        /// </summary>
+        // Bad value warns and falls back, never throws.
         public static IssuedGearDrop ParseDefault(string value, Log log)
         {
             if (TryParse(value, out var policy)) return policy;
@@ -76,10 +55,7 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
             return DefaultPolicy;
         }
 
-        /// <summary>
-        /// Reads a per-event override. Absent means "no opinion" and is silent: most events set
-        /// nothing and inherit the server default.
-        /// </summary>
+        // Per-event override; null inherits the server default.
         public static IssuedGearDrop? ParseOverride(string value, Log log)
         {
             if (string.IsNullOrWhiteSpace(value)) return null;

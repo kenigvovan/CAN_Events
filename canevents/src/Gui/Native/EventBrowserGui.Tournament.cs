@@ -9,10 +9,7 @@ using Vintagestory.API.Config;
 
 namespace canevents.src.Gui.Native
 {
-    /// <summary>
-    /// Tournaments from the player's side: the sign-up list (the shared card list) and the bracket
-    /// of the opened one (a <see cref="BracketElement"/> in a clipped, scrollable area).
-    /// </summary>
+    // Tournaments tab: sign-up list and the bracket of the opened one.
     public partial class EventBrowserGui
     {
         private long openBracketId;
@@ -34,15 +31,14 @@ namespace canevents.src.Gui.Native
                 return;
             }
 
-            // Read through the message's accessors: protobuf drops an all-default array entirely, so
-            // the raw fields are null exactly when nothing is set - the common case.
+            // Use the accessors: protobuf drops all-default arrays, leaving the raw fields null.
             int shown = 0;
             for (int i = 0; i < list.Count; i++)
             {
                 long id = list.Ids[i];
                 var state = (TournamentState)list.StateAt(i);
 
-                // Finished ones belong in the History tab.
+                // Finished ones go to the History tab.
                 if (state == TournamentState.Finished || state == TournamentState.Cancelled) continue;
                 shown++;
                 bool joined = list.JoinedAt(i);
@@ -55,7 +51,7 @@ namespace canevents.src.Gui.Native
                       .Append("   ")
                       .Append(Lang.Get("canevents:gui-tournament-entrants", entrants, max));
 
-                // Without this a scheduled draft reads as "draft 0/16" and looks abandoned.
+                // Otherwise a scheduled draft reads as "draft 0/16".
                 long opensAt = list.OpensAt(i);
                 if (state == TournamentState.Draft && opensAt > 0)
                     detail.Append("   ").Append(Lang.Get("canevents:gui-tournament-opens-in",
@@ -75,8 +71,7 @@ namespace canevents.src.Gui.Native
                     detail.Append('\n').Append(Lang.Get("canevents:gui-tournament-pot",
                         GuiItemUtil.DescribePacked(capi, pot)));
 
-                // A card always opens the bracket, never signs up: join/leave live inside the bracket
-                // view, so watching is possible and entering is an informed choice.
+                // Card opens the bracket; join/leave live inside the bracket view.
                 bool canJoin = state == TournamentState.Signup && !joined && entrants < max;
                 string badge = canJoin
                     ? Lang.Get("canevents:gui-tournament-open-join")
@@ -99,40 +94,30 @@ namespace canevents.src.Gui.Native
                 ButtonAt(0, ControlsY), EnumButtonStyle.Normal);
         }
 
-        /// <summary>
-        /// Finished and cancelled tournaments for the History tab. Includes archived ones, which is
-        /// why the history is requested from the server explicitly.
-        /// </summary>
+        // Includes archived ones, so history is requested from the server explicitly.
         private void ComposeTournamentHistory()
         {
-            var list = networkHandler.TournamentList.Value;
-            int shown = 0;
+            // Broadcasts carry active tournaments only.
+            var entries = networkHandler.TournamentHistoryEntries();
+            if (entries.Count > 0) AddHeader(Lang.Get("canevents:gui-tab-tournaments"));
 
-            if (list != null)
+            foreach (var (list, i) in entries)
             {
-                for (int i = 0; i < list.Count; i++)
-                {
-                    var state = (TournamentState)list.StateAt(i);
-                    if (state != TournamentState.Finished && state != TournamentState.Cancelled) continue;
+                var state = (TournamentState)list.StateAt(i);
+                long id = list.Ids[i];
+                var detail = new StringBuilder();
+                detail.Append(StateWord(state))
+                      .Append("   ")
+                      .Append(Lang.Get("canevents:gui-tournament-entrants",
+                          list.EntrantsAt(i), list.MaxEntrantsAt(i)));
 
-                    long id = list.Ids[i];
-                    var detail = new StringBuilder();
-                    detail.Append(StateWord(state))
-                          .Append("   ")
-                          .Append(Lang.Get("canevents:gui-tournament-entrants",
-                              list.EntrantsAt(i), list.MaxEntrantsAt(i)));
+                string events = list.EventsAt(i).Replace(";", ", ");
+                if (events.Length > 0) detail.Append('\n').Append(events.ToUpperInvariant());
 
-                    string events = list.EventsAt(i).Replace(";", ", ");
-                    if (events.Length > 0) detail.Append('\n').Append(events.ToUpperInvariant());
-
-                    if (shown == 0) AddHeader(Lang.Get("canevents:gui-tab-tournaments"));
-                    shown++;
-
-                    AddCard(list.NameAt(i), detail.ToString(),
-                        Lang.Get("canevents:gui-tournament-view"),
-                        state == TournamentState.Cancelled ? Palette.Stop : Palette.Idle,
-                        () => { curTab = 5; OpenBracket(id); });
-                }
+                AddCard(list.NameAt(i), detail.ToString(),
+                    Lang.Get("canevents:gui-tournament-view"),
+                    state == TournamentState.Cancelled ? Palette.Stop : Palette.Idle,
+                    () => { curTab = 5; OpenBracket(id); });
             }
         }
 
@@ -160,8 +145,7 @@ namespace canevents.src.Gui.Native
             var view = BracketView.FromMsg(msg);
             if (view.Matches.Count == 0)
             {
-                // Fewer than two entrants: no tree to preview yet, so show the field - and, for a
-                // scheduled tournament opened in this state, the schedule is the only news there is.
+                // Fewer than two entrants: no tree yet, show the field and schedule.
                 AddHeader(view.Name);
                 string schedule = ScheduleSummary(msg);
                 if (schedule.Length > 0) AddCard(schedule, accent: Palette.Info);
@@ -174,12 +158,9 @@ namespace canevents.src.Gui.Native
                 return;
             }
 
-            // The detail line gets a strip of its own below the tree: over the canvas it covered
-            // nodes, at the button row it collided with the buttons.
             double canvasHeight = viewportHeight - DetailStripHeight;
 
-            // Fit the whole tree into the canvas by default; only past the legibility floor does it
-            // stay big and scroll instead.
+            // Fit to canvas by default; scroll once boxes would go below MinBoxWidth.
             BracketLayout.Layout layout;
             double scale = 1;
             if (bracketZoomed)
@@ -199,8 +180,7 @@ namespace canevents.src.Gui.Native
                 Math.Max(canvasHeight, element.ContentHeight));
             element.Bounds = innerBounds;
 
-            // Spelled out instead of copied off viewBounds below: the fork rearranges its child's
-            // fixed coords, and a copy taken afterwards draws the frame ListTop pixels too high.
+            // Not copied from viewBounds: the fork rewrites its child's fixed coords.
             var insetBounds = ElementBounds.Fixed(-6, ListTop - 6, DialogWidth + 12, canvasHeight + 12);
             var clip = viewBounds.ForkBoundingParent();
             var vScroll = ElementBounds.Fixed(DialogWidth + 10, ListTop, 12, canvasHeight);
@@ -221,7 +201,7 @@ namespace canevents.src.Gui.Native
             ComposeBracketControls();
         }
 
-        /// <summary>Room reserved under the canvas for the match detail panel (heading + body).</summary>
+        // Match detail panel under the canvas (heading + body).
         private const double DetailStripHeight = 46;
         private bool bracketZoomed;
         private double bracketCanvasHeight;
@@ -230,10 +210,7 @@ namespace canevents.src.Gui.Native
         private double bracketPanMax;
         private double bracketScrollMax;
 
-        /// <summary>
-        /// Gives the bracket's scrollbar its range; without it the bar draws but does nothing. The
-        /// viewport and content heights are only final after Compose. See UpdateScrollbar.
-        /// </summary>
+        // Heights are only final after Compose. See UpdateScrollbar.
         private void UpdateBracketScrollbar()
         {
             var scrollbar = SingleComposer?.GetScrollbar("bracketscrolly");
@@ -259,7 +236,7 @@ namespace canevents.src.Gui.Native
             bracketElement.Bounds.CalcWorldBounds();
         }
 
-        // Two buttons rather than a scrollbar: the native composer has no horizontal one.
+        // Buttons: the native composer has no horizontal scrollbar.
         private void PanBracket(double delta)
         {
             bracketScrollX = (float)Math.Clamp(bracketScrollX + delta, 0, bracketPanMax);
@@ -268,10 +245,6 @@ namespace canevents.src.Gui.Native
             bracketElement.Bounds.CalcWorldBounds();
         }
 
-        /// <summary>
-        /// The panel under the tree: what the clicked match is, who is in it and how it ended. The
-        /// boxes have room for a name and nothing else, so everything else lives here.
-        /// </summary>
         private void ComposeBracketDetail(BracketView view, double y)
         {
             var m = view.Matches.FirstOrDefault(x => x.Id == selectedBracketMatch);
@@ -290,7 +263,6 @@ namespace canevents.src.Gui.Native
             }
             else if (m == null)
             {
-                // Nothing picked yet: show the tournament's pot and final placement.
                 heading = view.Name;
                 body = view.FinalPlacement.Count > 0
                     ? string.Join("   ", view.FinalPlacement.Take(3)
@@ -312,7 +284,6 @@ namespace canevents.src.Gui.Native
                 {
                     if (string.IsNullOrEmpty(id)) return Lang.Get("canevents:gui-tournament-tbd");
                     string name = view.NameOf(id) ?? "?";
-                    // A team's line-up, which its one-line label cannot show.
                     string roster = view.MembersOf(id);
                     if (!string.IsNullOrEmpty(roster) && roster != name) name += " (" + roster + ")";
                     if (m.IsAbsent(id)) name += " " + Lang.Get("canevents:gui-tournament-noshow");
@@ -342,10 +313,6 @@ namespace canevents.src.Gui.Native
             }
         }
 
-        /// <summary>
-        /// The right-hand status word. Wording and colour come from the shared table; only the two
-        /// states carrying a value (countdown, winner's name) need anything from here.
-        /// </summary>
         private (string text, double[] color) MatchStatus(BracketView view, BracketView.Match m)
         {
             string key = BracketPalette.StatusKey(m.State);
@@ -375,7 +342,6 @@ namespace canevents.src.Gui.Native
                 () => { networkHandler.RequestTournamentBracket(openBracketId); return true; },
                 ButtonAt(80, ControlsY), EnumButtonStyle.Normal);
 
-            // Join / leave sits here, next to what the player is entering.
             long id = openBracketId;
             int index = IndexOf(id);
             if (index >= 0)
@@ -387,8 +353,7 @@ namespace canevents.src.Gui.Native
                             && list.EntrantsAt(index) < list.MaxEntrantsAt(index);
                 bool canLeave = joined && (state == TournamentState.Signup || state == TournamentState.Seeded);
 
-                // A team bracket gets a name box: joined names do not fit a bracket box, so a side is
-                // labelled "Leader +4" unless the team picks something better.
+                // Without a team name a side shows as "Leader +4".
                 bool teamBracket = list.TeamSizeAt(index) > 1;
                 double buttonX = 170;
                 if (teamBracket && (canJoin || canLeave))
@@ -403,8 +368,7 @@ namespace canevents.src.Gui.Native
                     buttonX = 330;
                 }
 
-                // No re-request after these: BroadcastTournamentUpdate pushes the new list and bracket
-                // on accept, and polling would only race the push and mask a broken one.
+                // No re-request: BroadcastTournamentUpdate pushes list and bracket on accept.
                 if (canJoin)
                     SingleComposer.AddSmallButton(Lang.Get("canevents:gui-tournament-signup"),
                         () => { networkHandler.SendTournamentSignup(id, true, teamNameInput); return true; },
@@ -421,8 +385,7 @@ namespace canevents.src.Gui.Native
                         ButtonAt(teamBracket ? buttonX + 90 : buttonX, ControlsY), EnumButtonStyle.Normal);
                 }
 
-                // Class pick, once for the whole bracket, via the queue's dialog. Only offered when
-                // the tournament's mode has classes to choose between.
+                // One class pick for the whole bracket, via the queue's dialog.
                 if (canLeave && LoadoutPick != null)
                 {
                     var ev = FindEventEntry(list.EventsAt(index));
@@ -439,7 +402,6 @@ namespace canevents.src.Gui.Native
                 }
             }
 
-            // Fit / full size. Only offered when the tree does not fit at full size anyway.
             if (bracketZoomed || bracketPanMax > 0 || bracketScrollMax > 0)
             {
                 SingleComposer.AddSmallButton(
@@ -455,7 +417,6 @@ namespace canevents.src.Gui.Native
                     ButtonAt(DialogWidth - 200, ControlsY), EnumButtonStyle.Normal);
             }
 
-            // Panning only matters in the zoomed view; the fitted one has nothing off-screen.
             if (bracketPanMax > 0)
             {
                 SingleComposer.AddSmallButton("<", () => { PanBracket(-160); return true; },
@@ -465,7 +426,7 @@ namespace canevents.src.Gui.Native
             }
         }
 
-        /// <summary>The event-list entry for the tournament's first mode, for its class list.</summary>
+        // Entry for the tournament's first mode, for its class list.
         private EventListEntryMsg FindEventEntry(string packedCodes)
         {
             var events = networkHandler.EventList.Value?.Events;
@@ -484,10 +445,7 @@ namespace canevents.src.Gui.Native
             return -1;
         }
 
-        /// <summary>
-        /// One line of "when does this happen": signup countdown, window length, repeat. Empty for a
-        /// one-off opened by hand.
-        /// </summary>
+        // Empty for a one-off opened by hand.
         private static string ScheduleSummary(TournamentBracketMsg msg)
         {
             var parts = new List<string>();

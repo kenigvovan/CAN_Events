@@ -6,29 +6,37 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
 {
     public static class EventBroadcaster
     {
-        /// <summary>
-        /// Says something to everyone following this match. HudAudience rather than OnlineParticipants:
-        /// an observer watching the fight needs the same running commentary the fighters get
-        /// ("player eliminated", the truce ending) - without it the HUD moves and nothing explains why.
-        /// </summary>
+        // HudAudience, so spectators get the same messages as fighters.
         public static void Broadcast(RunningEvent runningEvent, string message)
         {
             foreach (var player in runningEvent.HudAudience)
                 player.SendMessage(0, message, EnumChatType.Notification);
         }
 
-        /// <summary>
-        /// Announces to everyone online, unlike <see cref="Broadcast"/>, which speaks only to the
-        /// players in a match.
-        /// </summary>
+        public static void KillFeed(RunningEvent runningEvent, string killerName, string victimName, string verb)
+            => runningEvent?.NetworkHandler?.SendKillFeed(runningEvent, killerName, victimName, verb);
+
+        public static void Scoreboard(RunningEvent runningEvent, ScoreboardData data)
+            => runningEvent?.NetworkHandler?.SendScoreboard(runningEvent, data);
+
+        public static void FlagCarriers(RunningEvent runningEvent, string[] carrierUids, int[] flagTeams)
+            => runningEvent?.NetworkHandler?.SendCtfCarriers(runningEvent, carrierUids, flagTeams);
+
+        // active=false clears the dome.
+        public static void ZoneState(RunningEvent runningEvent, bool active, int aliveCount,
+            double x = 0, double y = 0, double z = 0, float radiusNow = 0, float radiusTarget = 0, float secondsToTarget = 0)
+            => runningEvent?.NetworkHandler?.SendHgZoneState(runningEvent, active, aliveCount,
+                x, y, z, radiusNow, radiusTarget, secondsToTarget);
+
         public static void BroadcastToServer(ICoreServerAPI sapi, string message)
         {
             foreach (var player in sapi.World.AllOnlinePlayers)
-                (player as IServerPlayer)?.SendMessage(0, message, EnumChatType.Notification);
+            {
+                if (!(player is IServerPlayer sp) || AnnouncementPrefs.IsQuiet(sp)) continue;
+                sp.SendMessage(0, message, EnumChatType.Notification);
+            }
         }
 
-        /// <summary>Tops a player up to their current max health. Takes IPlayer because many call
-        /// sites hold a PlayerByUid result, which is not typed as a server player.</summary>
         public static void Heal(IPlayer player)
         {
             var healthBehavior = player?.Entity?.GetBehavior<EntityBehaviorHealth>();
@@ -38,8 +46,7 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
             }
         }
 
-        /// <summary>The "health:0.5" mutator: start health as a fraction of max. Current health only -
-        /// max health is deliberately untouched, so a crash leaves nothing to clean up.</summary>
+        // "health:0.5" mutator. Only current health, max is untouched so a crash leaves nothing behind.
         public static void SetHealthFraction(IPlayer player, float fraction)
         {
             var healthBehavior = player?.Entity?.GetBehavior<EntityBehaviorHealth>();
@@ -49,22 +56,30 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
             }
         }
 
-        /// <summary>Stat code of the "speed" mutator, shared by apply and the restore-path removal.</summary>
+        // Separate walkspeed stat code per source, so one doesn't overwrite or clear another.
         public const string SpeedStatCode = "canevents-mutator";
+        public const string MurdererSpeedStatCode = "canevents-mm-murderer";
+        public const string DisarmSlowStatCode = "canevents-mm-disarm";
 
-        /// <summary>The "speed:1.5" mutator. Non-persistent by design: the stat is not written to the
-        /// save, so a crash or relog sheds it without any cleanup of ours.</summary>
+        private static readonly string[] AllSpeedStatCodes = { SpeedStatCode, MurdererSpeedStatCode, DisarmSlowStatCode };
+
+        // persistent=false: not saved, so a crash or relog drops it.
+        public static void ApplySpeed(IPlayer player, string statCode, float multiplier)
+            => player?.Entity?.Stats.Set("walkspeed", statCode, multiplier - 1f, false);
+
+        public static void ClearSpeed(IPlayer player, string statCode)
+            => player?.Entity?.Stats.Remove("walkspeed", statCode);
+
         public static void ApplySpeedMutator(IPlayer player, float multiplier)
-            => player?.Entity?.Stats.Set("walkspeed", SpeedStatCode, multiplier - 1f, false);
+            => ApplySpeed(player, SpeedStatCode, multiplier);
 
+        // Clears all speed stat codes, not just the mutator.
         public static void ClearSpeedMutator(IPlayer player)
-            => player?.Entity?.Stats.Remove("walkspeed", SpeedStatCode);
+        {
+            foreach (var code in AllSpeedStatCodes) ClearSpeed(player, code);
+        }
 
-        /// <summary>
-        /// The mutators that touch the player rather than their kit. One place for both call sites -
-        /// the match start (every mode, loadouts or not) and a respawn, where the mode's own heal
-        /// would otherwise wipe the reduced health.
-        /// </summary>
+        // Called at match start and on respawn (after the mode's heal).
         public static void ApplyStatMutators(IPlayer player, events.CANEvent ev)
         {
             if (player == null || ev == null) return;
@@ -76,21 +91,17 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
             if (System.Math.Abs(speed - 1f) > 0.001f) ApplySpeedMutator(player, speed);
         }
 
-        /// <summary>Fills a player's food bar, so a match is never a hunger race decided by what
-        /// they ate beforehand. PlayerInventoryBackup restores the pre-event value at the end, so
-        /// this is not free food; nutrient levels are deliberately untouched.</summary>
+        // PlayerInventoryBackup restores the pre-event saturation at the end.
         public static void Feed(IPlayer player)
         {
             var hunger = player?.Entity?.GetBehavior<EntityBehaviorHunger>();
-            // MaxSaturation is 0 only if the hunger tree was never initialised; writing off that
-            // would starve the player instead.
+            // MaxSaturation 0 = hunger tree not initialised yet.
             if (hunger != null && hunger.MaxSaturation > 0f)
             {
                 hunger.Saturation = hunger.MaxSaturation;
             }
         }
 
-        /// <summary>Heals every participant that is still online.</summary>
         public static void HealAll(RunningEvent runningEvent)
         {
             foreach (var player in runningEvent.OnlineParticipants) Heal(player);

@@ -8,39 +8,32 @@ using Vintagestory.API.MathTools;
 
 namespace canevents.src.Gui.Native
 {
-    /// <summary>
-    /// The broadcaster panel: who is on the field, how much health they have left, how far away they
-    /// are, and a button per fighter that puts the camera on them. Only drawn for an observer the
-    /// server told us is privileged - an eliminated player watching from the spectator seat gets the
-    /// ordinary match HUD and nothing more, because live positions of the people still fighting is
-    /// exactly the information their team would want them to leak.
-    ///
-    /// The rows are real buttons rather than a drawn list: clicking a name is the fastest way to
-    /// follow the fight, and the two hotkeys only cover "next" and "previous".
-    /// </summary>
+    // Broadcaster panel. Privileged observers only: eliminated players must not see live positions.
     public class SpectatorPanelGui : HudElement
     {
         public const string NextHotkeyCode = "caneventsspectatenext";
         public const string PrevHotkeyCode = "caneventsspectateprev";
 
-        /// <summary>Telemetry older than this is drawn greyed: the feed stopped, so the positions on
-        /// screen are no longer where anyone is.</summary>
+        // Older telemetry is drawn greyed.
         private const long StaleAfterMs = 3000;
 
         private const double PanelWidth = 260;
         private const double RowHeight = 24;
         private const double HeaderHeight = 26;
-        // Two hint lines plus a little breathing room below the last one.
+        // Two hint lines plus padding.
         private const double FooterHeight = 38;
 
         private readonly ClientNetworkHandler networkHandler;
         private readonly Action onStateChanged;
 
-        // What the current composition was built for. A row is a button, so the row COUNT and who is
-        // in each row are both part of the shape.
+        // Shape of the current composition: row count and roster.
         private int composedRows = -1;
         private int composedRosterHash;
         private int composedFrameH;
+
+        // Min gap between text redraws, well under the telemetry interval.
+        private const long TextIntervalMs = 200;
+        private long lastTextMs;
 
         public SpectatorPanelGui(ICoreClientAPI capi, ClientNetworkHandler networkHandler) : base(capi)
         {
@@ -69,8 +62,7 @@ namespace canevents.src.Gui.Native
         public override bool Focusable => false;
         public override bool ShouldReceiveKeyboardEvents() => false;
 
-        /// <summary>Steps the camera one fighter along. Wired to the two hotkeys; a no-op when not
-        /// observing, so the keys stay free for everyone else.</summary>
+        // Hotkey handler; no-op when not observing so the keys stay free.
         public bool TryStep(int step)
         {
             if (!ShouldShow()) return false;
@@ -89,8 +81,16 @@ namespace canevents.src.Gui.Native
                 return;
             }
 
-            if (ShapeChanged()) Compose();
-            UpdateTexts();
+            // Reset the throttle, or fresh empty rows blink blank for up to TextIntervalMs.
+            if (ShapeChanged()) { Compose(); lastTextMs = 0; }
+
+            // Throttled: distance changes every frame in flight, defeating SetNewText's same-string guard.
+            long now = capi.ElapsedMilliseconds;
+            if (now - lastTextMs >= TextIntervalMs)
+            {
+                lastTextMs = now;
+                UpdateTexts();
+            }
 
             base.OnRenderGUI(deltaTime);
         }
@@ -106,8 +106,7 @@ namespace canevents.src.Gui.Native
             return t?.Uids?.Length ?? 0;
         }
 
-        // Names and team colours live in the composition, so a roster change is a shape change.
-        // Health and position do not - they are per-frame text.
+        // Names and team colours are composed; health and distance are dynamic text.
         private int RosterHash()
         {
             var t = networkHandler.Telemetry;
@@ -135,8 +134,7 @@ namespace canevents.src.Gui.Native
             double height = HeaderHeight + composedRows * RowHeight + FooterHeight;
             double screenH = capi.Render.FrameHeight / RuntimeEnv.GUIScale;
 
-            // Left edge, vertically centred: the ordinary HUD owns the top and the bottom-left, and
-            // this panel has to coexist with all of it.
+            // Left edge, centred: vanilla HUD owns the top and bottom-left.
             var bounds = ElementBounds.Fixed(10, Math.Max(10, screenH / 2 - height / 2), PanelWidth, height);
             var bg = ElementBounds.Fixed(0, 0, PanelWidth, height);
 
@@ -155,13 +153,7 @@ namespace canevents.src.Gui.Native
                 var font = CairoFont.WhiteSmallText()
                     .WithColor(alive ? TeamColor(Team(telemetry, i)) : Palette.Idle);
 
-                // Text, not buttons. A HUD panel is not focusable - it is on screen for the whole
-                // match and grabbing the mouse would take away the flying it exists to support - and
-                // an unfocused dialog never frees the cursor, so a button here can be drawn but never
-                // clicked. The camera moves on the hotkeys instead.
-                //
-                // The name is composed (its colour is), the readout beside it is dynamic: health and
-                // distance change with every packet, and recomposing that often would flicker.
+                // Text, not buttons: an unfocused HUD never frees the cursor, so buttons can't be clicked.
                 composer
                     .AddStaticText(RowLabel(telemetry, i), font,
                         ElementBounds.Fixed(10, y + 3, PanelWidth - 100, 18))
@@ -169,8 +161,6 @@ namespace canevents.src.Gui.Native
                         ElementBounds.Fixed(PanelWidth - 88, y + 3, 80, 18), "info" + i);
             }
 
-            // Two lines: how to move the camera, and how to get out. The way out belongs on screen -
-            // a spectator with no idea how to stop being one is stuck looking for the answer in chat.
             double footerY = HeaderHeight + composedRows * RowHeight;
             var hintFont = CairoFont.WhiteSmallText().WithColor(Palette.Detail);
 
@@ -224,11 +214,9 @@ namespace canevents.src.Gui.Native
         private static string RowLabel(SpectatorTelemetryMsg t, int i)
         {
             string name = t.Names != null && i < t.Names.Length ? t.Names[i] : "?";
-            // The dagger is the same marker the scoreboard uses for a dead player.
+            // Same dead marker as the scoreboard.
             if (!Alive(t, i)) return "† " + name;
-            // A bot name reads like a player name on the roster; the observer is the one person who
-            // needs to know which is which. Spelled out rather than a symbol: the GUI font has no
-            // glyph for most of them and draws an empty box instead.
+            // Spelled out: the GUI font lacks most symbol glyphs.
             if (t.IsBot != null && i < t.IsBot.Length && t.IsBot[i]) return name + " (bot)";
             return name;
         }
@@ -245,7 +233,7 @@ namespace canevents.src.Gui.Native
         private static float At(float[] values, int i)
             => values != null && i < values.Length ? values[i] : 0f;
 
-        // The same colours the scoreboard and the in-world team rings use.
+        // Must match the scoreboard and in-world team rings.
         private static double[] TeamColor(int teamId)
         {
             var rgba = TeamPalette.Rgba(teamId);

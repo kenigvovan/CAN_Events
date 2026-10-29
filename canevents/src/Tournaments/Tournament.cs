@@ -24,31 +24,21 @@ namespace canevents.src.Tournaments
         Void            // both sides forfeited / draw - nobody advances
     }
 
-    /// <summary>
-    /// One side of the bracket: a player for a solo tournament, a whole party for a team one. The uid
-    /// list is a snapshot taken at signup and deliberately survives party churn.
-    /// </summary>
+    // A player or a whole party. Uids are a snapshot from signup and don't follow party changes.
     public class Entrant
     {
         public string Id { get; set; }                       // guid, stable across restarts
         public List<string> Uids { get; set; } = new List<string>();
 
-        /// <summary>
-        /// What the bracket calls this side. Cached, not looked up, so a node still has a label when
-        /// its players are offline. For a party: the team name, or "Leader +4".
-        /// </summary>
+        // Cached so the bracket has a label while players are offline. Team name or "Leader +4".
         public string DisplayName { get; set; }
 
-        /// <summary>The team's own name, when they set one. Empty means the default label is used.</summary>
         public string TeamName { get; set; }
 
-        /// <summary>Every member, spelled out - for the detail line and tooltips, not the box.</summary>
+        // Full member list for tooltips.
         public string MembersText { get; set; }
 
-        /// <summary>
-        /// Class each member picked for the whole tournament (uid -> loadout set name), chosen once at
-        /// signup instead of in every round's countdown. A set the round's event lacks is ignored.
-        /// </summary>
+        // uid -> loadout set picked at signup. Sets the round's event lacks are ignored.
         public Dictionary<string, string> LoadoutChoices { get; set; } = new Dictionary<string, string>();
 
         public int Seed { get; set; }                        // 1-based, assigned at Begin()
@@ -58,35 +48,23 @@ namespace canevents.src.Tournaments
         public bool Contains(string uid) => Uids != null && Uids.Contains(uid);
     }
 
-    /// <summary>
-    /// A node of the bracket. Winner/loser routing is explicit rather than derived from round
-    /// geometry, so a losers' bracket can be added later without a data migration.
-    /// </summary>
+    // Winner/loser routing is stored explicitly, not derived from round geometry.
     public class BracketMatch
     {
         public int Id { get; set; }
         public int Round { get; set; }                       // 0 = first round
         public int SlotInRound { get; set; }
 
-        /// <summary>
-        /// The sides playing this match, one per slot; null/empty means TBD. A list rather than an A/B
-        /// pair because a node is not always a duel - see <see cref="Arity"/>.
-        /// </summary>
+        // Entrant id per slot, null/empty = TBD.
         public List<string> Slots { get; set; } = new List<string>();
 
-        /// <summary>How many sides this match seats. 2 for a duel, more for a free-for-all mode.</summary>
+        // 2 for a duel, more for free-for-all.
         public int Arity { get; set; } = 2;
 
-        /// <summary>
-        /// How many sides come out of this match. 1 is a knockout; a heat can send its top few on,
-        /// which is what makes big fields work without dozens of rounds.
-        /// </summary>
+        // 1 = knockout, more = heat.
         public int AdvanceCount { get; set; } = 1;
 
-        /// <summary>
-        /// Where each advancing place goes: Feeds[0] is the winner's seat, Feeds[1] the runner-up's.
-        /// Empty in the final.
-        /// </summary>
+        // Feeds[0] = winner's seat, Feeds[1] = runner-up's. Empty in the final.
         public List<FeedTarget> Feeds { get; set; } = new List<FeedTarget>();
 
         public int LoserFeedsMatchId { get; set; } = -1;     // only the semis of a duel bracket
@@ -101,16 +79,15 @@ namespace canevents.src.Tournaments
         public long ReadyDeadlineUnix { get; set; }
         public List<string> ReadyUids { get; set; } = new List<string>();
 
-        /// <summary>
-        /// Sides that were called and did not turn up. They stay in their slots on purpose: erasing
-        /// the name would make a walkover indistinguishable from a slot that was never filled.
-        /// </summary>
+        // Give up retrying a failed start at this time. 0 until the first failure.
+        public long StartDeadlineUnix { get; set; }
+
+        // No-shows. They keep their slot so a walkover differs from an empty slot.
         public List<string> AbsentSides { get; set; } = new List<string>();
 
-        /// <summary>Everyone who came out of this match, best first. Usually one name.</summary>
+        // Best first.
         public List<string> WinnerEntrantIds { get; set; } = new List<string>();
 
-        /// <summary>The top place, for the many callers that only care who won.</summary>
         public string WinnerEntrantId
         {
             get => WinnerEntrantIds.Count > 0 ? WinnerEntrantIds[0] : null;
@@ -125,12 +102,6 @@ namespace canevents.src.Tournaments
         public string ResultKind { get; set; }               // played|bye|technical|doubleforfeit|admin|void
         public long FinishedUnix { get; set; }
 
-        // Reserved for BO3/BO5: kept in the model so adding series support needs no data migration.
-        public List<long> RunningEventIds { get; set; } = new List<long>();
-        public int WinsA { get; set; }
-        public int WinsB { get; set; }
-
-        /// <summary>The slots that actually hold a side, in slot order.</summary>
         public List<string> FilledSlots
         {
             get
@@ -143,7 +114,7 @@ namespace canevents.src.Tournaments
 
         public int FilledCount => FilledSlots.Count;
 
-        /// <summary>The sides that will actually play: everyone in a slot who has not dropped out.</summary>
+        // Filled slots minus absent sides.
         public List<string> ActiveSides
         {
             get
@@ -156,7 +127,7 @@ namespace canevents.src.Tournaments
 
         public bool IsAbsent(string entrantId) => AbsentSides.Contains(entrantId);
 
-        /// <summary>Ready to be played: every slot that will ever be filled is, and there are ≥2 sides.</summary>
+        // Full test is BracketBuilder.ReadyToPlay.
         public bool IsPlayable => FilledCount >= 2 && FilledCount == Slots.Count;
 
         public bool Contains(string entrantId)
@@ -173,21 +144,20 @@ namespace canevents.src.Tournaments
                              || State == BracketMatchState.Void;
     }
 
-    /// <summary>A seat in a later match that one advancing place feeds into.</summary>
     public class FeedTarget
     {
         public int MatchId { get; set; } = -1;
         public int Slot { get; set; }
     }
 
-    /// <summary>One player's stake, kept so a withdrawal or a cancellation can hand back exactly what was taken.</summary>
+    // Kept so withdrawal/cancel refunds exactly what was taken.
     public class PotContribution
     {
         public string Uid { get; set; }
         public List<RewardItem> Items { get; set; }
     }
 
-    /// <summary>A payout owed to someone who was offline when it was due. Delivered on reconnect.</summary>
+    // Owed to an offline player, delivered on reconnect.
     public class PendingPayout
     {
         public string Uid { get; set; }
@@ -216,84 +186,55 @@ namespace canevents.src.Tournaments
 
         public bool ThirdPlaceMatch { get; set; } = true;
 
-        /// <summary>
-        /// How many sides advance out of each match. 1 is a straight knockout; above 1 turns each node
-        /// into a qualifying heat. Requires a mode that ranks its players, unlike a plain duel.
-        /// </summary>
+        // >1 makes each node a heat; needs a mode that ranks players.
         public int AdvancePerMatch { get; set; } = 1;
 
-        /// <summary>
-        /// How many sides meet in one bracket match. 0 = derive it from the first event's party count
-        /// (so a battle-royale mode runs real groups); 2 keeps the classic duel bracket.
-        /// </summary>
+        // Sides per match. 0 = take the first event's party count.
         public int PartiesPerMatch { get; set; }
         public int ReadyCheckSeconds { get; set; } = 60;
         public int MaxConcurrentMatches { get; set; } = 1;
 
-        /// <summary>
-        /// Nothing is called until an admin says so, for events paced by hand (commentary between
-        /// rounds, a stage to reset, a break).
-        /// </summary>
+        // Matches are only called by an admin.
         public bool ManualMatchStart { get; set; }
         public long SignupDeadlineUnix { get; set; }         // 0 = closed by hand only
 
         // scheduling
 
-        /// <summary>A Draft opens its own signup at this moment. 0 = opened by hand.</summary>
+        // Draft opens signup at this time. 0 = by hand.
         public long OpenAtUnix { get; set; }
 
-        /// <summary>How long signup stays open, in minutes. A duration, not a moment, so a repeating
-        /// tournament can re-derive its deadline every run. 0 = no window.</summary>
+        // Minutes, so repeats can recompute the deadline. 0 = no window.
         public int SignupWindowMinutes { get; set; }
 
-        /// <summary>Come back this many minutes after this one ENDS (so a long bracket never
-        /// overlaps its successor). 0 = one-off.</summary>
+        // Minutes after the previous run ENDS. 0 = one-off.
         public int RepeatEveryMinutes { get; set; }
 
-        /// <summary>Come back at these times of day (minutes from midnight, server local). Takes
-        /// precedence over <see cref="RepeatEveryMinutes"/>.</summary>
+        // Minutes from midnight, server local. Overrides RepeatEveryMinutes.
         public List<int> RepeatAtMinutesOfDay { get; set; } = new List<int>();
 
-        /// <summary>Whether this tournament comes back at all.</summary>
         public bool Repeats => RepeatEveryMinutes > 0
                             || (RepeatAtMinutesOfDay != null && RepeatAtMinutesOfDay.Count > 0);
 
-        /// <summary>Whether players see this draft in their list before signup opens (an
-        /// announcement). Admins always see everything.</summary>
+        // Players see the draft before signup opens. Admins always do.
         public bool ShowBeforeSignup { get; set; } = true;
 
-        /// <summary>
-        /// Start by itself once this many entrants have signed up. 0 = wait for an admin (or the
-        /// deadline). Set it to MaxEntrants for the usual "start when full".
-        /// </summary>
+        // Auto start at this many entrants. 0 = admin or deadline.
         public int AutoStartEntrants { get; set; }
 
-        /// <summary>
-        /// Grace period between reaching that count and starting, so the player who completed the
-        /// field is not yanked straight into a match.
-        /// </summary>
         public int AutoStartDelaySeconds { get; set; } = 15;
 
-        /// <summary>When the countdown is running, the moment it fires. 0 = not armed.</summary>
+        // 0 = not armed.
         public long AutoStartAtUnix { get; set; }
-        /// <summary>
-        /// Whether the class picked at signup is fixed for the whole bracket. Locked stops
-        /// counter-picking after the draw; unlocked lets people switch between rounds.
-        /// </summary>
+        // Class picked at signup can't be changed between rounds.
         public bool LockLoadout { get; set; }
 
-        /// <summary>
-        /// Which classes may be played, by loadout set name. Empty means every class the mode offers.
-        /// </summary>
+        // Empty = all classes of the mode.
         public List<string> AllowedLoadouts { get; set; } = new List<string>();
 
         public bool AllowsLoadout(string setName)
             => AllowedLoadouts.Count == 0 || AllowedLoadouts.Contains(setName);
 
-        /// <summary>
-        /// Players fight with their own gear instead of an arena kit, and keep the risk: dying drops
-        /// it and nothing is restored. See SavePlayerAttributes.KeepOwnGear.
-        /// </summary>
+        // Own gear, dropped on death and not restored. See SavePlayerAttributes.KeepOwnGear.
         public bool BringOwnGear { get; set; }
 
         public int SeedMode { get; set; }                    // 0 = random, 1 = by Elo
@@ -335,7 +276,7 @@ namespace canevents.src.Tournaments
         public string NameOfEntrant(string entrantId) => FindEntrant(entrantId)?.DisplayName ?? "TBD";
     }
 
-    /// <summary>Root of tournaments.json.</summary>
+    // Root of tournaments.json.
     public class TournamentData
     {
         public long NextId { get; set; } = 1;

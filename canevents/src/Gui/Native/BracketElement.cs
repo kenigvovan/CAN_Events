@@ -8,21 +8,17 @@ using Vintagestory.API.MathTools;
 
 namespace canevents.src.Gui.Native
 {
-    /// <summary>
-    /// The tournament bracket for players, drawn once into a Cairo texture (plus a second one with
-    /// the hovered match lit up) and blitted per frame. Geometry comes from the shared
-    /// <see cref="BracketLayout"/>, so the player and admin views cannot drift apart.
-    /// </summary>
+    // Drawn once into a Cairo texture (plus a hover variant), blitted per frame. Geometry from BracketLayout.
     public class BracketElement : GuiElement
     {
         private readonly BracketView view;
         private readonly BracketLayout.Layout layout;
-        // Not readonly: generateTexture takes them by ref (it may replace the instance on resize).
+        // Not readonly: generateTexture takes them by ref.
         private LoadedTexture texture;
         private LoadedTexture hoverTexture;
 
         public const double DefaultBoxWidth = 190;
-        /// <summary>Below this a box cannot hold a seed and a name; the view pans instead of shrinking further.</summary>
+        // Below this the view pans instead of shrinking.
         public const double MinBoxWidth = 120;
         public const double BoxH = 46;
         public const double HGap = 46;
@@ -32,10 +28,11 @@ namespace canevents.src.Gui.Native
         private int hoveredMatchId = -1;
         private int composedHoverId = -1;
 
-        /// <summary>Raised with the match id when the player clicks a node.</summary>
         public Action<int> OnMatchClicked;
 
-        /// <summary>Text is scaled with the boxes, or a shrunk bracket would be all font and no room.</summary>
+        // Null: a right click is a plain click.
+        public Action<int> OnMatchRightClicked;
+
         private readonly double fontScale;
 
         public BracketElement(ICoreClientAPI capi, BracketView view, ElementBounds bounds,
@@ -48,7 +45,7 @@ namespace canevents.src.Gui.Native
             hoverTexture = new LoadedTexture(capi);
         }
 
-        /// <summary>Unscaled size the whole tree needs; the caller sizes the scrollable area from it.</summary>
+        // Unscaled.
         public double ContentWidth => layout.Width + Margin * 2;
         public double ContentHeight => layout.Height + Margin * 2;
 
@@ -85,7 +82,7 @@ namespace canevents.src.Gui.Native
             double ox = scaled(Margin);
             double oy = scaled(Margin);
 
-            // Connectors first, so a box always sits on top of the line that reaches it.
+            // Connectors first so boxes draw over them.
             ctx.LineWidth = scaled(2);
             ctx.SetSourceRGBA(0.85, 0.78, 0.62, 0.30);
             foreach (var e in layout.Edges)
@@ -133,7 +130,6 @@ namespace canevents.src.Gui.Native
             double textX = x + scaled(8 * fontScale);
             double textW = w - scaled(14 * fontScale);
 
-            // One row per slot: two for a duel, as many as the node seats for a free-for-all.
             int rows = Math.Max(2, m.Slots.Count);
             double rowH = h / rows;
             for (int i = 0; i < rows; i++)
@@ -143,7 +139,6 @@ namespace canevents.src.Gui.Native
             }
         }
 
-        // A side is dimmed once the match is decided against it.
         private void DrawSide(Context ctx, BracketView.Match m, string entrantId,
             double x, double rowTop, double rowH, double w)
         {
@@ -155,14 +150,13 @@ namespace canevents.src.Gui.Native
             if (lost || string.IsNullOrEmpty(entrantId))
                 font.Color = new double[] { 0.62, 0.60, 0.55, 0.85 };
 
-            // Empty slot = undecided; a forfeited one keeps its name and is marked as a no-show.
+            // Empty slot = undecided; a forfeit keeps its name, marked as no-show.
             string text = string.IsNullOrEmpty(entrantId)
                 ? Vintagestory.API.Config.Lang.Get("canevents:gui-tournament-tbd")
                 : m.IsAbsent(entrantId)
                     ? LabelFor(entrantId) + " " + Vintagestory.API.Config.Lang.Get("canevents:gui-tournament-noshow")
                     : LabelFor(entrantId);
 
-            // Vertically centred in its row.
             font.SetupContext(ctx);
             var extents = font.GetFontExtents();
             double baseline = rowTop + (rowH - (extents.Ascent + extents.Descent)) / 2 + extents.Ascent;
@@ -177,7 +171,6 @@ namespace canevents.src.Gui.Native
             return seed > 0 ? seed + ". " + name : name;
         }
 
-        /// <summary>Trims to the box width with an ellipsis.</summary>
         private static string Clip(CairoFont font, string text, double maxWidth)
         {
             if (font.GetTextExtents(text).Width <= maxWidth) return text;
@@ -206,7 +199,7 @@ namespace canevents.src.Gui.Native
                 (int)Bounds.InnerWidth, (int)Bounds.InnerHeight, 50f);
         }
 
-        /// <summary>Match under a screen position, or -1. Also the clip check for a scrolled node.</summary>
+        // -1 if none. Also the clip check for a scrolled node.
         private int MatchAt(int mouseX, int mouseY)
         {
             if (Bounds.PositionInside(mouseX, mouseY) == null) return -1;
@@ -229,7 +222,11 @@ namespace canevents.src.Gui.Native
             int id = MatchAt(args.X, args.Y);
             if (id < 0) return;
             api.Gui.PlaySound("menubutton_press");
-            OnMatchClicked?.Invoke(id);
+            // Right click handler is set by the admin panel's result menu.
+            if (args.Button == Vintagestory.API.Common.EnumMouseButton.Right && OnMatchRightClicked != null)
+                OnMatchRightClicked(id);
+            else
+                OnMatchClicked?.Invoke(id);
             args.Handled = true;
         }
 

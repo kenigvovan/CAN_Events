@@ -1,0 +1,80 @@
+{
+    "code": "battle_bots",
+    "rated": false,
+    "EventType": "Battle",
+    "EventPlaceTypes": [ "BATTLE" ],
+    "behaviors": [
+        { "name": "ArenaProtection", "attributes": {} },
+        { "name": "TeamMarkers", "attributes": {} },
+        {
+            "name": "ByPartsPartyCollected",
+            "attributes": {
+                "maxPartiesCount": 2,
+                "minPartiesCount": 1,
+                "maxPartySize": 1,
+                "minPartySize": 1,
+                "botFillToParties": 2
+            }
+        },
+        {
+            "name": "WaitingRoom",
+            "attributes": {
+                "lobbySeconds": 20,
+                "maxImbalance": 1,
+                "earlyStartSeconds": 3
+            }
+        },
+        {
+            "name": "SavePlayerAttributes",
+            "attributes": { "spectateOnElimination": true }
+        },
+        {
+            "name": "TPThereAndBack",
+            "attributes": { "randomizeSpawns": false }
+        },
+        {
+            "name": "NoFriendlyFire",
+            "attributes": {}
+        },
+        {
+            "name": "BattleRounds",
+            "attributes": {
+                "winsToWin": 3,
+                "roundTimeLimitSeconds": 120,
+                "intermissionSeconds": 6,
+                "loadoutSets": [
+                    {
+                        "name": "Spearman",
+                        "items": [
+                            { "code": "game:spear-generic-steel", "quantity": 1 },
+                            { "code": "game:bread-spelt-charred", "quantity": 12 },
+                            { "code": "game:armor-head-scale-steel", "quantity": 1 },
+                            { "code": "game:armor-body-chain-steel", "quantity": 1 },
+                            { "code": "game:armor-legs-scale-steel", "quantity": 1 }
+                        ]
+                    },
+                    {
+                        "name": "Archer",
+                        "items": [
+                            { "code": "game:bow-long", "quantity": 1 },
+                            { "code": "game:arrow-steel", "quantity": 64 },
+                            { "code": "game:bread-amaranth-perfect", "quantity": 10 },
+                            { "code": "game:club-scrap-scrap", "quantity": 1 }
+                        ]
+                    }
+                ]
+            }
+        },
+        {
+            "name": "ArenaBots",
+            "attributes": {
+                "health": 15,
+                "meleeDamage": 2,
+                "weapons": [
+                    "game:spear-generic-flint",
+                    "game:club-generic-wood"
+                ]
+            }
+        }
+    ]
+}

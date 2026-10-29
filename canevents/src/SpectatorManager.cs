@@ -5,6 +5,7 @@ using System.Text;
 using canevents.src.Compat;
 using canevents.src.EventManagers;
 using Vintagestory.API.Common;
+using Vintagestory.API.Common.Entities;
 using Vintagestory.API.Config;
 using Vintagestory.API.Datastructures;
 using Vintagestory.API.MathTools;
@@ -12,41 +13,36 @@ using Vintagestory.API.Server;
 
 namespace canevents.src
 {
-    /// <summary>Why a player is sitting in the spectator seat. The seat itself is identical either
-    /// way; the difference is who is allowed to leave it and when it ends by itself.</summary>
     public enum SpectatorRole
     {
-        /// <summary>A participant who was knocked out of a match they were playing. The seat lasts
-        /// until that match finishes.</summary>
+        // Knocked out participant, seated until the match ends.
         Eliminated,
 
-        /// <summary>An admin watching a match they are not in. They may leave at any time, and are
-        /// teleported back to where they came from when they do.</summary>
+        // Admin watching a match they're not in; can leave anytime, gets teleported back.
         Observer
     }
 
     public class SpectatorManager
     {
-        private const string ModDataKey = "canevents_original_gamemode";
+        public const string ModDataKey = "canevents_original_gamemode";
         private const string ReturnPosKey = "canevents_spectator_returnpos";
         private const double MaxDistanceFromArena = 50.0;
 
-        /// <summary>Slack added to an observer's leash beyond the arena's own footprint, for a
-        /// fighter who stepped just outside it.</summary>
+        // Extra leash beyond the arena bounds for observers.
         private const double ObserverLeashMargin = 40.0;
 
-        /// <summary>How close to a participant still counts as "filming them" rather than "wandered
-        /// off", whatever the distance to the arena's middle says.</summary>
+        // An observer this close to any participant is never pulled back.
         private const double ObserverCameraRange = 60.0;
 
-        // How far above the arena an observer is dropped in. Higher than an eliminated player's perch:
-        // an observer arrives to look at the whole fight, not at the spot they died on.
         private const int ObserverHoverHeight = 18;
         private const int EliminatedHoverHeight = 10;
 
+        // How far past the arena bounds an eliminated player may fly.
+        private const double EliminatedBoundsMargin = 8.0;
+
         private ICoreServerAPI sapi;
 
-        // The seat a player currently occupies; only while online. Keyed by playerUID.
+        // Online players only, by uid.
         private Dictionary<string, SpectatorSeat> seats = new Dictionary<string, SpectatorSeat>();
 
         private class SpectatorSeat
@@ -55,11 +51,12 @@ namespace canevents.src
             public long EventId;
             public SpectatorRole Role;
 
-            /// <summary>How far from the anchor this seat may roam. An eliminated player is kept on a
-            /// short leash above the arena they died in; an observer needs the run of the whole
-            /// footprint, or the broadcaster camera is yanked back the moment it jumps to a fighter
-            /// on the far side of a Hunger Games map.</summary>
+            // Max distance from Anchor; observers get the whole arena (see LeashFor).
             public double Leash;
+
+            // Arena bounds, when it has them: the leash is then this box, not a sphere around Anchor,
+            // which sits above the top and would keep spectators off a deep arena's floor.
+            public BlockPos BoundsMin, BoundsMax;
         }
 
         public SpectatorManager(ICoreServerAPI sapi)
@@ -71,22 +68,19 @@ namespace canevents.src
         {
             SaveOriginalWorldData(player);
 
-            // Delayed so revive runs after the engine's death broadcast (we are inside
-            // TriggerPlayerDeath). A player respawn or an event finish may get here first.
+            // Delayed so revive runs after the engine's death broadcast (we're inside
+            // TriggerPlayerDeath). Respawn or FinishEvent may get here first.
             sapi.Event.RegisterCallback((float dt) =>
             {
-                // FinishEvent already handled everything
                 if (runningEvent.EventState == EventState.Finished) return;
 
-                // OnRespawn already handled it
                 if (seats.ContainsKey(player.PlayerUID)) return;
 
                 ApplySpectatorState(player, runningEvent);
             }, 100);
         }
 
-        /// <summary>Revive if dead, set gamemode, teleport above the arena. Called from the delayed
-        /// callback or from OnRespawn, whichever comes first.</summary>
+        // Called from the delayed callback or OnRespawn, whichever comes first.
         public void ApplySpectatorState(IServerPlayer player, RunningEvent runningEvent)
         {
             if (seats.ContainsKey(player.PlayerUID)) return;
@@ -96,10 +90,6 @@ namespace canevents.src
             player.SendMessage(0, Lang.Get("canevents:spectator-enter"), EnumChatType.Notification);
         }
 
-        /// <summary>
-        /// Seats a player who is NOT in the match as an observer of it, remembering where they stood so
-        /// leaving puts them back. Returns false when they are already spectating something.
-        /// </summary>
         public bool MakeObserver(IServerPlayer player, RunningEvent runningEvent)
         {
             if (player?.Entity == null || runningEvent == null) return false;
@@ -111,55 +101,47 @@ namespace canevents.src
             return true;
         }
 
-        // The seat itself: strip whatever state the body is in, switch to Spectator, park above the
-        // arena and remember the anchor the bounds check pulls them back to.
         private void Seat(IServerPlayer player, RunningEvent runningEvent, SpectatorRole role, int hover)
         {
             if (!player.Entity.Alive) player.Entity.Revive();
 
-            // A knock-down mod (Downed) leaves the body crawling, immobilized and possibly mounted on
-            // a drag seat. Nothing in that mod will undo any of it for a player we pull aside, and the
-            // engine skips its own body-metrics update in Spectator mode - so clear it here.
+            // Downed won't clear its crawl/immobile/drag-seat state for us, and the engine skips
+            // body-metrics updates in Spectator mode.
             DownedCompat.Clear(player);
 
             player.WorldData.CurrentGameMode = EnumGameMode.Spectator;
-            // Free flight is what vanilla's /gamemode spectator turns on, and without it the
-            // "spectator" just hangs in place: the engine skips gravity in Spectator mode, so they
-            // float where they were put and cannot move. Being mounted (a drag seat, a boat) forces
-            // FreeMove back off behind our back, hence the unmount in DownedCompat.Clear.
+            // Without FreeMove a spectator can't move at all (no gravity in Spectator). Mounting resets it.
             player.WorldData.FreeMove = true;
 
-            // No-clip only for an observer, who is filming and needs to get through the arena wall.
-            // An eliminated player must NOT have it: their team is still fighting, and a dead
-            // teammate drifting through walls to read the enemy's position is a voice-chat wallhack.
-            // They still fly, they just cannot leave the room.
+            // No noclip for eliminated players, otherwise they can scout enemies through walls for their team.
             player.WorldData.NoClip = role == SpectatorRole.Observer;
             player.BroadcastPlayerData();
 
             var anchor = AnchorOf(runningEvent);
             if (anchor != null)
             {
+                var place = runningEvent.Place;
+                bool bounded = place.HasBounds && place.BoundsMin != null && place.BoundsMax != null;
                 seats[player.PlayerUID] = new SpectatorSeat
                 {
                     Anchor = anchor.Copy(),
                     EventId = runningEvent.Id,
                     Role = role,
-                    Leash = LeashFor(runningEvent, role)
+                    Leash = LeashFor(runningEvent, role),
+                    BoundsMin = bounded ? place.BoundsMin.Copy() : null,
+                    BoundsMax = bounded ? place.BoundsMax.Copy() : null
                 };
-                player.Entity.TeleportToDouble(anchor.X + 0.5, anchor.Y + hover, anchor.Z + 0.5);
+                EventTeleport.Send(sapi, player, anchor, 0.5, hover, 0.5,
+                    role == SpectatorRole.Observer ? "observer seat" : "eliminated, spectator seat");
             }
             else
             {
-                // No arena to hover over yet: still record the seat, or nothing would ever release
-                // the gamemode. The bounds check skips a seat with no anchor.
+                // Still record the seat so the gamemode gets restored later.
                 seats[player.PlayerUID] = new SpectatorSeat { EventId = runningEvent.Id, Role = role };
             }
         }
 
-        // How far this seat may go. An eliminated player stays on the default leash - the point is to
-        // keep them looking at the fight, not wandering off to fetch gear. An observer gets the whole
-        // arena plus a margin, measured from its footprint: they are meant to follow the fighters,
-        // and a Hunger Games map is far wider than any fixed number would allow.
+        // Observers get half the arena diagonal plus a margin (big maps like Hunger Games).
         private static double LeashFor(RunningEvent runningEvent, SpectatorRole role)
         {
             if (role != SpectatorRole.Observer) return MaxDistanceFromArena;
@@ -168,8 +150,6 @@ namespace canevents.src
             if (place == null || !place.HasBounds || place.BoundsMin == null || place.BoundsMax == null)
                 return MaxDistanceFromArena;
 
-            // Half-diagonal reaches every corner from the middle; the margin covers a fighter who
-            // stepped just outside, so the camera does not fight the leash at the edge.
             double dx = place.BoundsMax.X - place.BoundsMin.X;
             double dy = place.BoundsMax.Y - place.BoundsMin.Y;
             double dz = place.BoundsMax.Z - place.BoundsMin.Z;
@@ -178,8 +158,7 @@ namespace canevents.src
             return Math.Max(MaxDistanceFromArena, halfDiagonal + ObserverLeashMargin);
         }
 
-        // Where a spectator hovers: the middle of the arena footprint when there is one, else the
-        // first spawn point (which is all an unbounded place has).
+        // Arena center if it has bounds, else first spawn point.
         private static BlockPos AnchorOf(RunningEvent runningEvent)
         {
             var place = runningEvent?.Place;
@@ -200,7 +179,6 @@ namespace canevents.src
             return null;
         }
 
-        /// <summary>Restore gamemode for an online player.</summary>
         public void RemoveSpectator(IServerPlayer player)
         {
             if (player == null) return;
@@ -211,13 +189,11 @@ namespace canevents.src
             RestoreOriginalWorldData(player);
             seats.Remove(player.PlayerUID);
 
-            // An observer walked into this on purpose from somewhere else in the world, so put them
-            // back there. An eliminated participant is handled by their match's TPThereAndBack.
+            // Eliminated players are returned by the match's TPThereAndBack.
             if (wasObserver) ReturnToSavedPosition(player);
         }
 
-        /// <summary>Remove all spectators for a finishing event; offline ones are fixed by
-        /// RestoreOnReconnect.</summary>
+        // Offline ones are handled by RestoreOnReconnect.
         public void RemoveAllSpectators(RunningEvent runningEvent)
         {
             foreach (var plGuid in runningEvent.ParticipantsBefore)
@@ -229,8 +205,7 @@ namespace canevents.src
                 }
             }
 
-            // Observers are not on the roster, so they need their own pass. Snapshot first:
-            // RemoveSpectator mutates the dictionary.
+            // Observers aren't in ParticipantsBefore.
             foreach (var uid in seats.Where(kv => kv.Value.EventId == runningEvent.Id
                                                   && kv.Value.Role == SpectatorRole.Observer)
                                      .Select(kv => kv.Key).ToList())
@@ -244,25 +219,19 @@ namespace canevents.src
             }
         }
 
-        /// <summary>On join, restore the original gamemode if they left as a spectator.</summary>
         public void RestoreOnReconnect(IServerPlayer player)
         {
             if (player?.GetModdata(ModDataKey) == null) return;
 
             RestoreOriginalWorldData(player);
-            // Deferred: the engine is still placing the player at this point, and an immediate
-            // teleport is overwritten by its own join-time positioning.
+            // Delayed, otherwise the engine's join positioning overrides the teleport.
             ReturnToSavedPosition(player, delayMs: 300);
 
             player.SendMessage(0, Lang.Get("canevents:spectator-gamemode-restored"), EnumChatType.Notification);
             sapi.World.Logger.Notification("SpectatorManager: Restored gamemode for {0} on reconnect", player.PlayerName);
         }
 
-        /// <summary>
-        /// Pulls spectators of this match back if they wandered off. Called from the match's own tick,
-        /// and only looks at seats belonging to it - with two matches live, a manager-wide sweep ran
-        /// twice per tick and each pass re-checked the other match's seats for nothing.
-        /// </summary>
+        // Called from each match's own tick, so only that match's seats are checked.
         public void EnforceSpectatorBounds(RunningEvent runningEvent)
         {
             if (runningEvent == null) return;
@@ -274,35 +243,51 @@ namespace canevents.src
                 var player = sapi.World.PlayerByUid(kvp.Key) as IServerPlayer;
                 if (player?.Entity == null) continue;
 
+                // Skip while a teleport is pending: re-teleporting resets CurrentChunkSentRadius and
+                // the client can end up never finishing chunk loading.
+                if (player.Entity.Teleporting) continue;
+
                 var anchor = kvp.Value.Anchor;
                 if (anchor == null) continue;
 
                 int hover = kvp.Value.Role == SpectatorRole.Observer
                     ? ObserverHoverHeight : EliminatedHoverHeight;
 
-                double leash = kvp.Value.Leash > 0 ? kvp.Value.Leash : MaxDistanceFromArena;
+                if (kvp.Value.BoundsMin != null)
+                {
+                    double margin = kvp.Value.Role == SpectatorRole.Observer ? ObserverLeashMargin : EliminatedBoundsMargin;
+                    if (InsideBounds(player.Entity.Pos, kvp.Value, margin, hover)) continue;
+                }
+                else
+                {
+                    double leash = kvp.Value.Leash > 0 ? kvp.Value.Leash : MaxDistanceFromArena;
+                    double dx = player.Entity.Pos.X - (anchor.X + 0.5);
+                    double dy = player.Entity.Pos.Y - (anchor.Y + hover);
+                    double dz = player.Entity.Pos.Z - (anchor.Z + 0.5);
+                    if (dx * dx + dy * dy + dz * dz <= leash * leash) continue;
+                }
 
-                double dx = player.Entity.Pos.X - (anchor.X + 0.5);
-                double dy = player.Entity.Pos.Y - (anchor.Y + hover);
-                double dz = player.Entity.Pos.Z - (anchor.Z + 0.5);
-                double distSq = dx * dx + dy * dy + dz * dz;
-
-                if (distSq <= leash * leash) continue;
-
-                // Filming a fighter who ran to the far edge is the whole job, and a leash measured
-                // from the arena's middle cannot know how far that is - especially on a place with no
-                // recorded footprint, where the leash is just the default. Being next to a
-                // participant counts as being where you belong.
+                // Observer near a fighter is fine even past the leash.
                 if (kvp.Value.Role == SpectatorRole.Observer && IsNearAParticipant(runningEvent, player))
                     continue;
 
-                player.Entity.TeleportToDouble(anchor.X + 0.5, anchor.Y + hover, anchor.Z + 0.5);
+                EventTeleport.Send(sapi, player, anchor, 0.5, hover, 0.5, "spectator pulled back");
                 player.SendMessage(0, Lang.Get("canevents:spectator-too-far"), EnumChatType.Notification);
             }
         }
 
-        // Is this observer within camera range of anyone in the match? Bots count: a bots-only match
-        // is still something to film.
+        // The top gets the hover height on top of the margin, so the seat itself is always inside.
+        private static bool InsideBounds(EntityPos pos, SpectatorSeat seat, double margin, int hover)
+        {
+            var min = seat.BoundsMin;
+            var max = seat.BoundsMax;
+            return pos.Dimension == min.dimension
+                   && pos.X >= Math.Min(min.X, max.X) - margin && pos.X <= Math.Max(min.X, max.X) + 1 + margin
+                   && pos.Z >= Math.Min(min.Z, max.Z) - margin && pos.Z <= Math.Max(min.Z, max.Z) + 1 + margin
+                   && pos.Y >= Math.Min(min.Y, max.Y) - margin && pos.Y <= Math.Max(min.Y, max.Y) + hover + margin;
+        }
+
+        // Bots count too.
         private static bool IsNearAParticipant(RunningEvent runningEvent, IServerPlayer observer)
         {
             var pos = observer.Entity.Pos;
@@ -321,8 +306,7 @@ namespace canevents.src
             return false;
         }
 
-        /// <summary>Drop the in-memory seat only; ModData stays for RestoreOnReconnect. A stale
-        /// seat would make a mid-event reconnect look "already spectating" and skip the restore.</summary>
+        // ModData stays for RestoreOnReconnect; a stale seat would make it skip the restore.
         public void OnSpectatorDisconnect(string playerUid)
         {
             seats.Remove(playerUid);
@@ -333,30 +317,15 @@ namespace canevents.src
             return seats.ContainsKey(playerUid);
         }
 
-        /// <summary>Is this player watching a match they are not playing in?</summary>
-        public bool IsObserving(string playerUid)
-            => seats.TryGetValue(playerUid, out var seat) && seat.Role == SpectatorRole.Observer;
-
-        /// <summary>The match this player is seated for, or 0.</summary>
         public long SeatedEventId(string playerUid)
             => seats.TryGetValue(playerUid, out var seat) ? seat.EventId : 0;
 
-        /// <summary>Every player currently observing the given match.</summary>
-        public IEnumerable<string> ObserversOf(long eventId)
-        {
-            foreach (var kv in seats)
-                if (kv.Value.EventId == eventId && kv.Value.Role == SpectatorRole.Observer)
-                    yield return kv.Key;
-        }
-
-        // ModData, not memory: the original world data must survive a disconnect or crash. Written
-        // once - a second seat (respawn, re-entry) must not overwrite it with the spectator values.
+        // In ModData to survive disconnects/crashes. Written once so a re-seat doesn't save spectator values.
         private void SaveOriginalWorldData(IServerPlayer player)
         {
             if (player == null || player.GetModdata(ModDataKey) != null) return;
 
-            // "<gamemode>|<freemove>|<noclip>". The single-number form older builds wrote is still
-            // read back (see RestoreOriginalWorldData), so an upgrade mid-match loses nothing.
+            // "<gamemode>|<freemove>|<noclip>"; old builds stored just the gamemode number.
             string packed = string.Format("{0}|{1}|{2}",
                 (int)player.WorldData.CurrentGameMode,
                 player.WorldData.FreeMove ? 1 : 0,
@@ -375,8 +344,7 @@ namespace canevents.src
                 ? (EnumGameMode)modeInt
                 : EnumGameMode.Survival;
 
-            // Free flight and no-clip were turned on for the seat; anything not recorded (old data)
-            // goes back to off, which is what a survival player had.
+            // Missing in old data -> off.
             player.WorldData.FreeMove = parts.Length > 1 && parts[1] == "1";
             player.WorldData.NoClip = parts.Length > 2 && parts[2] == "1";
 
@@ -384,8 +352,7 @@ namespace canevents.src
             player.SetModdata(ModDataKey, null);
         }
 
-        // Where an observer stood before they started watching. ModData so a disconnect mid-watch
-        // still gets them home on the next login.
+        // ModData so it survives a disconnect.
         private void SaveReturnPosition(IServerPlayer player)
         {
             var pos = player.Entity?.Pos;
@@ -395,6 +362,8 @@ namespace canevents.src
             tree.SetDouble("x", pos.X);
             tree.SetDouble("y", pos.Y);
             tree.SetDouble("z", pos.Z);
+            // Pos.Y is dimension-local, so store the dimension too.
+            tree.SetInt("dim", pos.Dimension);
             player.SetModdata(ReturnPosKey, tree.ToBytes());
         }
 
@@ -404,6 +373,7 @@ namespace canevents.src
             if (data == null || data.Length == 0) return;
 
             double x, y, z;
+            int dim;
             try
             {
                 var tree = new TreeAttribute();
@@ -411,6 +381,7 @@ namespace canevents.src
                 x = tree.GetDouble("x");
                 y = tree.GetDouble("y");
                 z = tree.GetDouble("z");
+                dim = tree.GetInt("dim");
             }
             catch (Exception e)
             {
@@ -420,20 +391,20 @@ namespace canevents.src
                 return;
             }
 
-            // Cleared first: a teleport that throws must not leave a marker that fires again on every
-            // later login and yanks the player back mid-game.
+            // Clear before teleporting so a throw doesn't make it fire on every login.
             player.RemoveModdata(ReturnPosKey);
 
             if (delayMs <= 0)
             {
-                player.Entity?.TeleportToDouble(x, y, z);
+                EventTeleport.Send(sapi, player, x, y, z, dim, "observer leaving the seat");
                 return;
             }
 
             string uid = player.PlayerUID;
             sapi.Event.RegisterCallback(_ =>
             {
-                (sapi.World.PlayerByUid(uid) as IServerPlayer)?.Entity?.TeleportToDouble(x, y, z);
+                if (sapi.World.PlayerByUid(uid) is IServerPlayer pl)
+                    EventTeleport.Send(sapi, pl, x, y, z, dim, "spectator restored on reconnect");
             }, delayMs);
         }
     }

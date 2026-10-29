@@ -1,21 +1,12 @@
 using System.Collections.Generic;
-using System.Numerics;
-using ImGuiNET;
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
 
 namespace canevents.src.Gui
 {
-    /// <summary>
-    /// Item-code plumbing shared by the admin panel and the event browser; previously duplicated
-    /// and drifted on details like block fallback and tooltips.
-    /// </summary>
     public static class GuiItemUtil
     {
-        /// <summary>
-        /// Resolves an item code to a stack, trying items then blocks (either is valid here).
-        /// Null for unknown codes, e.g. on a client missing the mod that defines them.
-        /// </summary>
+        // Items first, then blocks. Null if the client lacks the mod defining the code.
         public static ItemStack Resolve(ICoreClientAPI capi, string code, int quantity = 1)
         {
             if (capi == null || string.IsNullOrEmpty(code)) return null;
@@ -30,10 +21,6 @@ namespace canevents.src.Gui
             return null;
         }
 
-        /// <summary>
-        /// The held stack as (code, quantity); false when the hand is empty. Lets the panel fill an
-        /// item field by holding the thing instead of typing its code.
-        /// </summary>
         public static bool TryReadHeldItem(ICoreClientAPI capi, out string code, out int quantity)
         {
             code = "";
@@ -47,10 +34,7 @@ namespace canevents.src.Gui
             return true;
         }
 
-        /// <summary>
-        /// Reads one of the player's own inventories as (code, quantity) pairs, merging stacks of
-        /// the same item. Shared by the loadout and reward editors, which had drifting copies.
-        /// </summary>
+        // Stacks of the same code are merged.
         public static List<(string code, int qty)> ReadInventory(ICoreClientAPI capi, string inventoryClassName)
         {
             var result = new List<(string code, int qty)>();
@@ -70,10 +54,7 @@ namespace canevents.src.Gui
             return result;
         }
 
-        /// <summary>
-        /// Splits a packed "code:qty;code:qty" set into stacks, skipping unresolvable codes. The
-        /// optional quantity is parsed off the LAST colon - item codes contain colons themselves.
-        /// </summary>
+        // "code:qty;code:qty". Qty is after the last colon, codes have colons too.
         public static List<ItemStack> ResolvePacked(ICoreClientAPI capi, string packed)
         {
             var result = new List<ItemStack>();
@@ -98,10 +79,7 @@ namespace canevents.src.Gui
             return result;
         }
 
-        /// <summary>
-        /// A packed item set as readable text ("Copper Knife x1, Charred Bread x4"), for the native
-        /// GUI which has no hover tooltips. Falls back to the raw packed string when nothing resolves.
-        /// </summary>
+        // For the native GUI, which has no item tooltips.
         public static string DescribePacked(ICoreClientAPI capi, string packed)
         {
             var stacks = ResolvePacked(capi, packed);
@@ -117,17 +95,6 @@ namespace canevents.src.Gui
             return sb.ToString();
         }
 
-        /// <summary>Draws one icon, or a "?" placeholder when the code cannot be resolved.</summary>
-        public static void DrawIcon(ItemIconAtlas atlas, ICoreClientAPI capi, string code,
-            float size = 28f, bool tooltip = true)
-        {
-            if (atlas == null) { ImGui.Text("?"); return; }
-            var stack = Resolve(capi, code);
-            if (stack == null) { ImGui.Text("?"); return; }
-            atlas.Draw(stack, new Vector2(size, size), tooltip);
-        }
-
-        /// <summary>Compact "Xh Ym" / "Ym" / "&lt;1m", for countdowns.</summary>
         public static string FormatDuration(double seconds)
         {
             if (seconds < 60) return "<1m";
@@ -137,7 +104,6 @@ namespace canevents.src.Gui
             return h > 0 ? string.Format("{0}h {1}m", h, m) : string.Format("{0}m", m);
         }
 
-        /// <summary>Seconds as "Xm SSs" / "Xs" - for short, live timers.</summary>
         public static string FormatShortDuration(float seconds)
         {
             if (seconds < 0) return "-";

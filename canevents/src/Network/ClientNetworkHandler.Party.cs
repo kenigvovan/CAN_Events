@@ -18,7 +18,7 @@ namespace canevents.src.Network
 
         public void SendPartyAction(PartyAction action, string targetName = null, string inviterName = null)
         {
-            clientChannel.SendPacket(new PartyActionMsg { Action = action, TargetName = targetName, InviterName = inviterName });
+            Send(new PartyActionMsg { Action = action, TargetName = targetName, InviterName = inviterName });
         }
 
         public void RequestPartyState() => SendPartyAction(PartyAction.RequestState);

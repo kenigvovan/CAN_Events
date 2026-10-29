@@ -5,23 +5,18 @@ using Vintagestory.GameContent;
 
 namespace canevents.src.Bots
 {
-    /// <summary>
-    /// The body of an event bot: a seraph-shaped agent that wears and holds real items via
-    /// EntityBehaviorSeraphInventory (the same 19-slot player gear inventory).
-    /// Deliberately not the game's EntityPlayerBot: it derives from EntityAnimalBot, whose scripted
-    /// command queue and path traversers would fight the AI tasks over the entity's controls.
-    /// </summary>
+    // Seraph-shaped agent with EntityBehaviorSeraphInventory for gear.
+    // Not EntityPlayerBot: its EntityAnimalBot command queue fights the AI tasks for controls.
     public class EntityArenaBot : EntityAgent
     {
-        // InventoryGear slot layout: 0-14 worn gear, 15 right hand, 16 left hand.
+        // InventoryGear: 0-14 worn gear, 15 right hand, 16 left hand.
         private const int RightHandSlotId = 15;
         private const int LeftHandSlotId = 16;
 
         private EntityBehaviorSeraphInventory inventoryBehavior;
 
-        // StoreWithChunk stays at the base default (true): returning false made the server drop
-        // bodies the client was still rendering, so the bot could not be hit. Bots that outlive
-        // their match are cleaned up on load instead, see BotCleanup.
+        // StoreWithChunk left true: false made the server drop bodies the client still rendered.
+        // Leftover bots are removed on load by BotCleanup.
 
         public override ItemSlot RightHandItemSlot
             => inventoryBehavior != null ? inventoryBehavior.Inventory[RightHandSlotId] : base.RightHandItemSlot;
@@ -29,11 +24,7 @@ namespace canevents.src.Bots
         public override ItemSlot LeftHandItemSlot
             => inventoryBehavior != null ? inventoryBehavior.Inventory[LeftHandSlotId] : base.LeftHandItemSlot;
 
-        /// <summary>
-        /// Arena bots never sleep: the server parks entities as Inactive with no player in
-        /// simulation range, and an inactive entity runs no AI or physics (bot-only matches stood
-        /// still forever). A match must run whether or not anyone is watching.
-        /// </summary>
+        // Server marks entities Inactive with no player nearby, which stops AI (bot-only matches froze).
         public override bool AlwaysActive { get => true; set { } }
 
         public override void Initialize(EntityProperties properties, ICoreAPI api, long chunkindex3d)
@@ -46,7 +37,7 @@ namespace canevents.src.Bots
         {
             base.OnEntitySpawn();
 
-            // Without this the held weapon is invisible in the world and the bot swings empty-handed.
+            // Otherwise the held weapon isn't rendered.
             if (World.Side == EnumAppSide.Client
                 && Properties.Client.Renderer is EntityShapeRenderer renderer)
             {

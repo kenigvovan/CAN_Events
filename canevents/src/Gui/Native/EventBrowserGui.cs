@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using canevents.src.Network;
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
@@ -6,13 +7,7 @@ using Vintagestory.API.Config;
 
 namespace canevents.src.Gui.Native
 {
-    /// <summary>
-    /// The player-facing events dialog on the game's own GUI, unlike the ImGui
-    /// <see cref="Gui.EventBrowserDialog"/>, which needs VSImGui installed on every client.
-    ///
-    /// GuiComposer builds an immutable element tree, so the whole dialog is recomposed whenever the
-    /// data behind it changes - on packets, not per frame. Tabs live in the sibling partials.
-    /// </summary>
+    // GuiComposer trees are immutable, so the dialog recomposes on packets. Tabs live in the partials.
     public partial class EventBrowserGui : GuiDialog
     {
         public const string HotkeyCode = "canevents_browser";
@@ -20,8 +15,7 @@ namespace canevents.src.Gui.Native
         private readonly ClientNetworkHandler networkHandler;
         private int curTab;
 
-        // Detachable handlers: the network handler outlives this dialog across a hot-reload, and a
-        // surviving subscription would recompose a dead dialog.
+        // Kept for unsubscribing: the network handler outlives this dialog across a hot-reload.
         private readonly Action onEventList;
         private readonly Action onLeaderboard;
         private readonly Action onHistory;
@@ -33,14 +27,13 @@ namespace canevents.src.Gui.Native
         private readonly Action<string> onHotkeyPush;
         private readonly Action<EventInviteMsg> onInvite;
         private readonly Action<EventInviteClosedMsg> onInviteEnded;
+        private readonly Action onInventoryAudit;
+        private readonly Action onInventoryDetail;
 
-        /// <summary>Opens the HUD layout editor - wired up by the mod system, see canevents.cs.</summary>
+        // Wired up in canevents.cs.
         public Action OnEditHudLayout { get; set; }
 
-        /// <summary>
-        /// The class-picking dialog, shared with the match-start flow (the server can raise it with
-        /// the browser closed). Set by the mod system.
-        /// </summary>
+        // Shared with the match-start flow; the server can raise it with the browser closed.
         public LoadoutPickGui LoadoutPick { get; set; }
 
         public EventBrowserGui(ICoreClientAPI capi, ClientNetworkHandler networkHandler, string defaultHotkey = "K")
@@ -65,8 +58,7 @@ namespace canevents.src.Gui.Native
             onTournaments = () => RecomposeIfOpen();
             onBracket    = () => RecomposeIfOpen();
             onHotkeyPush = ApplyServerDefaultHotkey;
-            // A window opening or closing changes both the card order and whether the live countdown
-            // line exists at all, so it is a recompose, not a text update.
+            // Sign-up windows change card order and the countdown line, so recompose.
             onInvite      = _ => RecomposeIfOpen();
             onInviteEnded = _ => RecomposeIfOpen();
 
@@ -81,12 +73,18 @@ namespace canevents.src.Gui.Native
             networkHandler.OnMainDialogHotkeyReceived += onHotkeyPush;
             networkHandler.OnEventInvited += onInvite;
             networkHandler.OnEventInviteClosed += onInviteEnded;
+
+            // Admins only; the server refuses everyone else.
+            onInventoryAudit = () => RecomposeIfOpen();
+            onInventoryDetail = () => RecomposeIfOpen();
+            networkHandler.InventoryAudit.Changed += onInventoryAudit;
+            networkHandler.InventoryBackupDetail.Changed += onInventoryDetail;
             if (networkHandler.MainDialogHotkey != null) ApplyServerDefaultHotkey(networkHandler.MainDialogHotkey);
         }
 
         public override string ToggleKeyCombinationCode => HotkeyCode;
 
-        // Pulled fresh on open: there is no live feed, the server answers these on request.
+        // No live feed; the server answers these on request.
         public override void OnGuiOpened()
         {
             base.OnGuiOpened();
@@ -95,19 +93,18 @@ namespace canevents.src.Gui.Native
             networkHandler.RequestMatchHistory();
             networkHandler.RequestPartyState();
             networkHandler.RequestLoadoutDefaults();
-            // With history: the History tab lists finished tournaments, already archived out of the
-            // live list.
+            // History tab needs archived tournaments.
             networkHandler.RequestTournamentList(includeHistory: true);
-            // Who is free to fight changes minute to minute, so it is fetched with everything else
-            // and again whenever the tab is opened.
             networkHandler.RequestDuelTargets();
+            // The sweep reads player data server-side; only when reopening on that tab.
+            if (curTab == InventoryTab && MayAuditInventories) RequestInventoryAudit();
             ComposeDialog();
         }
 
         public override void OnRenderGUI(float deltaTime)
         {
             base.OnRenderGUI(deltaTime);
-            // The two numbers here that move without a packet behind them.
+            // These tick without packets.
             UpdateSignupNotice();
             UpdateQueueNotice();
         }
@@ -119,7 +116,7 @@ namespace canevents.src.Gui.Native
 
         private void ComposeDialog()
         {
-            var tabs = new[]
+            var tabList = new List<GuiTab>
             {
                 new GuiTab { Name = Lang.Get("canevents:gui-tab-ranked"),      DataInt = 0 },
                 new GuiTab { Name = Lang.Get("canevents:gui-tab-casual"),      DataInt = 1 },
@@ -130,9 +127,17 @@ namespace canevents.src.Gui.Native
                 new GuiTab { Name = Lang.Get("canevents:gui-tab-duels"),       DataInt = 6 },
             };
 
+            // Last so other tab indices don't shift. Server re-checks permissions anyway.
+            if (MayAuditInventories)
+                tabList.Add(new GuiTab { Name = Lang.Get("canevents:gui-tab-inventory"), DataInt = InventoryTab });
+
+            var tabs = tabList.ToArray();
+
+            // Tab may have disappeared (privilege lost).
+            if (curTab >= tabs.Length) curTab = 0;
+
             var tabFont = CairoFont.WhiteDetailText();
-            // x=5 keeps the first tab inside the window edge; -24 sits the row directly on the 31px
-            // title bar strip instead of over the gap a plain title bar leaves.
+            // x=5 keeps the first tab inside the edge; y=-24 puts the row on the 31px title bar.
             var tabBounds = ElementBounds.Fixed(5, -24, DialogWidth - 5, 25);
 
             var bgBounds = ElementBounds.Fill.WithFixedPadding(GuiStyle.ElementToDialogPadding);
@@ -143,8 +148,7 @@ namespace canevents.src.Gui.Native
             SingleComposer = capi.Gui
                 .CreateCompo("canevents-browser", dialogBounds)
                 .AddShadedDialogBG(bgBounds)
-                // WithBg: the plain title bar is transparent, leaving a gap between the tab row and
-                // the top of the window frame.
+                // WithBg: the plain title bar is transparent and leaves a gap under the tabs.
                 .AddDialogTitleBarWithBg(Lang.Get("canevents:gui-browser-title"), OnTitleBarClose)
                 .AddHorizontalTabs(tabs, tabBounds, OnTabClicked, tabFont,
                     tabFont.Clone().WithColor(GuiStyle.ActiveButtonTextColor), "tabs")
@@ -152,15 +156,11 @@ namespace canevents.src.Gui.Native
 
             SingleComposer.GetHorizontalTabs("tabs").activeElement = curTab;
 
-            // One height for every tab. Letting a list hug its content made the window jump between
-            // Ranked and Casual - and moved the buttons under the pointer - for no gain: the tab row
-            // is a switch you use repeatedly, so a stable frame is worth the empty space under a
-            // short list.
+            // Same height on every tab so the window doesn't jump when switching.
             MinListHeight = MaxListHeight;
 
-            // Rosters and ladders are lists of rows, not a grid of choices. Duel targets are a roster
-            // too - one player per row reads better than a grid of names.
-            SingleColumnCards = curTab == 2 || curTab == 3 || curTab == 4 || curTab == 6;
+            SingleColumnCards = curTab == 2 || curTab == 3 || curTab == 4 || curTab == 6
+                                || curTab == InventoryTab;
 
             switch (curTab)
             {
@@ -170,17 +170,18 @@ namespace canevents.src.Gui.Native
                 case 3: ComposeLeaderboardTab(); break;
                 case 4: ComposeHistoryTab(); break;
                 case 6: ComposeDuelsTab(); break;
+                case InventoryTab: ComposeInventoryTab(); break;
                 default: ComposeTournamentTab(); break;
             }
 
             ComposeFooter();
 
             SingleComposer.EndChildElements().Compose();
+            RestoreInventoryTabState();
             UpdateScrollbar();
             UpdateBracketScrollbar();
 
-            // Row heights are only known after Compose, so the snap is a second pass. Runs at most
-            // once: the rows do not depend on the viewport height.
+            // Row heights are known only after Compose; at most one extra pass.
             if (!adjustingViewport && AdjustViewport())
             {
                 adjustingViewport = true;
@@ -191,10 +192,9 @@ namespace canevents.src.Gui.Native
 
         private bool adjustingViewport;
 
-        // Common bottom row: spectator escape hatch (only while spectating) and the HUD editor.
         private void ComposeFooter()
         {
-            // Right-aligned: the per-tab buttons own the left side.
+            // Per-tab buttons own the left side.
             var right = ElementBounds.Fixed(EnumDialogArea.RightFixed, 0, ControlsY, 0, 0)
                 .WithFixedPadding(9, 4);
 
@@ -216,14 +216,14 @@ namespace canevents.src.Gui.Native
 
         private bool OnLeaveSpectator()
         {
-            // Via the chat command so the server-side rule stays in one place.
-            capi.SendChatMessage("/canspectate off");
+            // Covers both eliminated players and observers.
+            networkHandler.SendStopSpectating();
             return true;
         }
 
         private bool OnOpenHudEditor()
         {
-            // Logged and caught: this button once took the whole client down with nothing in the log.
+            // Caught and logged: this once crashed the client with nothing in the log.
             var log = HudLayoutEditorGui.LogFor(capi);
             try
             {
@@ -244,18 +244,22 @@ namespace canevents.src.Gui.Native
             curTab = index;
             scrollOffset = 0f;
 
-            // Who is available is the one list that goes stale while the window sits open - people
-            // start matches and finish them. Re-asked on arrival rather than on a timer.
+            // These go stale while the window is open; refresh on tab switch.
             if (curTab == 6) networkHandler.RequestDuelTargets();
+
+            if (curTab == InventoryTab && MayAuditInventories)
+            {
+                invDetailUid = null;
+                invConfirmingUid = null;
+                RequestInventoryAudit();
+            }
 
             ComposeDialog();
         }
 
         private void OnTitleBarClose() => TryClose();
 
-        // Applies the server-supplied default key unless the player rebound it. Current and default
-        // mapping are kept in sync so VS does not persist the server value as a user override, which
-        // would stop later admin-config changes from propagating.
+        // Current and default mapping kept in sync so VS doesn't persist the server key as a user override.
         private void ApplyServerDefaultHotkey(string keyName)
         {
             if (string.IsNullOrWhiteSpace(keyName)) return;
@@ -290,6 +294,8 @@ namespace canevents.src.Gui.Native
             networkHandler.OnMainDialogHotkeyReceived -= onHotkeyPush;
             networkHandler.OnEventInvited -= onInvite;
             networkHandler.OnEventInviteClosed -= onInviteEnded;
+            networkHandler.InventoryAudit.Changed -= onInventoryAudit;
+            networkHandler.InventoryBackupDetail.Changed -= onInventoryDetail;
         }
     }
 }

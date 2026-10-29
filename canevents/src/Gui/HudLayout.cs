@@ -3,14 +3,10 @@ using Vintagestory.API.Client;
 
 namespace canevents.src.Gui
 {
-    /// <summary>
-    /// Where each HUD panel sits on this player's screen; client-side and cosmetic only. Positions
-    /// are normalised (0..1 of the viewport) so a layout survives resolution changes; a panel never
-    /// moved keeps <see cref="Unset"/> and falls back to its hardcoded default spot.
-    /// </summary>
+    // Client-only. Positions are 0..1 of the viewport.
     public class HudLayout
     {
-        /// <summary>Sentinel for "never moved by the player". Any real position is within 0..1.</summary>
+        // Never moved, use the default spot.
         public const float Unset = -1f;
 
         public class PanelPos
@@ -26,22 +22,18 @@ namespace canevents.src.Gui
         public PanelPos Zone { get; set; } = new PanelPos();
         public PanelPos Scoreboard { get; set; } = new PanelPos();
         public PanelPos KillFeed { get; set; } = new PanelPos();
-        /// <summary>The "registration is open" toast. Shown between matches, not during one.</summary>
+        // "Registration is open" toast.
         public PanelPos Invite { get; set; } = new PanelPos();
+        // Match shop points.
+        public PanelPos ShopPoints { get; set; } = new PanelPos();
 
-        /// <summary>
-        /// How much of the invite toast this player wants: the full panel, a single line, or none at
-        /// all. Off is a real choice - the countdown is still on the event's card in the browser - so
-        /// the panel is never forced on someone who finds it in the way.
-        /// </summary>
         public enum InviteDisplay { Full, Mini, Off }
 
-        // Written as "full"/"mini"/"off" rather than 0/1/2: this file is meant to be hand-editable,
-        // and a bare number says nothing about which mode it is.
+        // Stored as a string so the json stays hand-editable.
         [Newtonsoft.Json.JsonConverter(typeof(Newtonsoft.Json.Converters.StringEnumConverter))]
         public InviteDisplay InviteMode { get; set; } = InviteDisplay.Full;
 
-        // Older or hand-edited json can leave these null; heal instead of throwing on frame one.
+        // Old or hand-edited json can leave these null.
         public void EnsureComplete()
         {
             Timer ??= new PanelPos();
@@ -49,6 +41,7 @@ namespace canevents.src.Gui
             Scoreboard ??= new PanelPos();
             KillFeed ??= new PanelPos();
             Invite ??= new PanelPos();
+            ShopPoints ??= new PanelPos();
         }
 
         public void ResetAll()
@@ -58,13 +51,11 @@ namespace canevents.src.Gui
             Scoreboard.Clear();
             KillFeed.Clear();
             Invite.Clear();
+            ShopPoints.Clear();
             InviteMode = InviteDisplay.Full;
         }
 
-        /// <summary>
-        /// Top-left corner to draw a panel at: the stored position, or the caller's default.
-        /// Clamped so a panel cannot end up off-screen after a resolution change.
-        /// </summary>
+        // Clamped to the screen in case the resolution changed.
         public static Vector2 Resolve(PanelPos pos, Vector2 viewport, Vector2 size, Vector2 fallback)
         {
             var wanted = pos != null && pos.IsSet
@@ -93,7 +84,6 @@ namespace canevents.src.Gui
             try { loaded = capi.LoadModConfig<HudLayout>(FileName); }
             catch (System.Exception e)
             {
-                // A corrupt layout file must not cost the player their HUD.
                 capi.Logger.Warning("[canevents] Could not read {0}, using default HUD layout: {1}", FileName, e.Message);
             }
             loaded ??= new HudLayout();

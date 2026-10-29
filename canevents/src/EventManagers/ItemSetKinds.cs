@@ -2,24 +2,17 @@ using System.Collections.Generic;
 
 namespace canevents.src.EventManagers
 {
-    /// <summary>
-    /// The kinds of item-set store the mod keeps, each a <see cref="LoadoutManager"/> over its own
-    /// folder under ModConfig/canevents/. Both hold the same thing - named sets of item codes per
-    /// event - and are edited by the same panel and the same packets; the kind picks the store.
-    ///
-    /// Adding a third kind (reward bundles, HG chest fills) is a folder name here plus a line in
-    /// CANEventManager: the network handlers and the admin panel already work off this list.
-    /// </summary>
+    // Item-set stores, each a LoadoutManager over its own folder; same panel and packets, the kind picks
+    // the store. A new kind is a folder name here plus a line in CANEventManager.
     public static class ItemSetKinds
     {
-        /// <summary>Gear handed out at match start. The historic store, folder "loadouts".</summary>
+        // Gear handed out at match start.
         public const string Loadout = "loadout";
 
-        /// <summary>Plain clothes worn over the loadout, so players can be told apart and described
-        /// ("the murderer wore red"). Folder "outfits"; quantities are ignored.</summary>
+        // Clothes over the loadout so players can be told apart; quantities are ignored.
         public const string Outfit = "outfit";
 
-        /// <summary>kind -> folder name. The order is the order the admin panel shows them in.</summary>
+        // kind -> folder, in admin panel order.
         public static readonly IReadOnlyDictionary<string, string> Folders =
             new Dictionary<string, string>
             {
@@ -27,8 +20,7 @@ namespace canevents.src.EventManagers
                 { Outfit, "outfits" }
             };
 
-        /// <summary>Normalises what arrived from a client: an absent kind means the loadout store,
-        /// which is what every pre-outfit client sends.</summary>
+        // An absent kind means loadouts, which is what pre-outfit clients send.
         public static string Normalize(string kind)
             => string.IsNullOrEmpty(kind) ? Loadout : kind;
 

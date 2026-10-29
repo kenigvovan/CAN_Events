@@ -3,18 +3,16 @@ using System.Linq;
 
 namespace canevents.src.Network
 {
-    // Everything the admin panel does to event places: create, bounds, spawn points, the
-    // spleef platform and cage, plus the cached place list they all refresh.
     public partial class ClientNetworkHandler
     {
         public readonly ServerState<PlaceListMsg> PlaceList = new ServerState<PlaceListMsg>();
-        public PlaceOperationResultMsg LastPlaceResult { get; private set; }
+        // Floor zones (join/leave/side); resent after every zone edit.
+        public readonly ServerState<PadListMsg> PadList = new ServerState<PadListMsg>();
         public event Action<PlaceOperationResultMsg> OnPlaceOperationResult;
 
         private void OnPlaceList(PlaceListMsg msg)
         {
-            // Mirror of the server-side send log: disagreeing counts mean loss on the wire,
-            // matching ones mean the panel isn't showing what it has.
+            // Compare with the server-side send log.
             int withBounds = msg?.Places?.Count(p => p.HasBounds) ?? -1;
             capi.Logger.VerboseDebug(string.Format(
                 "[canevents] PlaceList<-server: got {0} places, {1} with bounds: {2}",
@@ -25,50 +23,32 @@ namespace canevents.src.Network
             PlaceList.Set(msg);
         }
 
-        private void OnPlaceResult(PlaceOperationResultMsg msg)
-        {
-            LastPlaceResult = msg;
-            OnPlaceOperationResult?.Invoke(msg);
-        }
+        private void OnPlaceResult(PlaceOperationResultMsg msg) => OnPlaceOperationResult?.Invoke(msg);
 
         public void RequestPlaceList()
         {
-            clientChannel.SendPacket(new RequestPlaceListMsg());
+            Send(new RequestPlaceListMsg());
         }
 
         public void SendCreatePlace(string name, string[] types, bool noAutoSpawns = false)
         {
-            clientChannel.SendPacket(new CreatePlaceMsg { Name = name, Types = types, NoAutoSpawns = noAutoSpawns });
-        }
-
-        public void SendCreatePlaceWithBounds(string name, string[] types,
-            int minX, int minY, int minZ, int maxX, int maxY, int maxZ, bool noAutoSpawns = false)
-        {
-            clientChannel.SendPacket(new CreatePlaceMsg
-            {
-                Name = name,
-                Types = types,
-                UseBounds = true,
-                BoundsMinX = minX, BoundsMinY = minY, BoundsMinZ = minZ,
-                BoundsMaxX = maxX, BoundsMaxY = maxY, BoundsMaxZ = maxZ,
-                NoAutoSpawns = noAutoSpawns
-            });
+            Send(new CreatePlaceMsg { Name = name, Types = types, NoAutoSpawns = noAutoSpawns });
         }
 
         public void SendAddSpawnPoint(long placeId)
         {
-            clientChannel.SendPacket(new AddSpawnPointMsg { PlaceId = placeId });
+            Send(new AddSpawnPointMsg { PlaceId = placeId });
         }
 
         public void SendMoveSpawnPoint(long placeId, int index)
         {
-            clientChannel.SendPacket(new MoveSpawnPointMsg { PlaceId = placeId, Index = index });
+            Send(new MoveSpawnPointMsg { PlaceId = placeId, Index = index });
         }
 
         public void SendSetPlaceBounds(long placeId, int minX, int minY, int minZ,
             int maxX, int maxY, int maxZ, bool generateSpawns)
         {
-            clientChannel.SendPacket(new SetPlaceBoundsMsg
+            Send(new SetPlaceBoundsMsg
             {
                 PlaceId = placeId,
                 BoundsMinX = minX, BoundsMinY = minY, BoundsMinZ = minZ,
@@ -79,39 +59,109 @@ namespace canevents.src.Network
 
         public void SendClearPlaceBounds(long placeId)
         {
-            clientChannel.SendPacket(new SetPlaceBoundsMsg { PlaceId = placeId, Clear = true });
+            Send(new SetPlaceBoundsMsg { PlaceId = placeId, Clear = true });
         }
 
         public void SendRemoveSpawnPoint(long placeId, int spawnIndex)
         {
-            clientChannel.SendPacket(new RemoveSpawnPointMsg { PlaceId = placeId, SpawnIndex = spawnIndex });
-        }
-
-        public void SendDeletePlace(long placeId)
-        {
-            clientChannel.SendPacket(new DeletePlaceMsg { PlaceId = placeId });
+            Send(new RemoveSpawnPointMsg { PlaceId = placeId, SpawnIndex = spawnIndex });
         }
 
         public void SendRemovePlaceWithRestore(long placeId)
         {
-            clientChannel.SendPacket(new RemovePlaceWithRestoreMsg { PlaceId = placeId });
+            Send(new RemovePlaceWithRestoreMsg { PlaceId = placeId });
         }
 
         public void SendTogglePlace(long placeId)
         {
-            clientChannel.SendPacket(new TogglePlaceMsg { PlaceId = placeId });
+            Send(new TogglePlaceMsg { PlaceId = placeId });
+        }
+
+        public void SendEditPlaceInfo(long placeId, string name, string description, string[] tags)
+        {
+            Send(new EditPlaceInfoMsg { PlaceId = placeId, Name = name, Description = description, Tags = tags });
+        }
+
+        public void SendBulkEditPlaces(long[] placeIds, BulkEnabledMode enabledMode,
+            string addType = null, string removeType = null)
+        {
+            Send(new BulkEditPlacesMsg
+            {
+                PlaceIds = placeIds, EnabledMode = enabledMode, AddType = addType, RemoveType = removeType
+            });
+        }
+
+        public void SendBulkDeletePlaces(long[] placeIds)
+        {
+            Send(new DeletePlacesMsg { PlaceIds = placeIds });
         }
 
         public void SendTeleportToPlace(long placeId)
         {
-            clientChannel.SendPacket(new TeleportToPlaceMsg { PlaceId = placeId });
+            Send(new TeleportToPlaceMsg { PlaceId = placeId });
         }
 
-        // Spleef platform and cage
+        public void SendTeleportToSpawn(long placeId, int spawnIndex)
+        {
+            Send(new TeleportToPlaceMsg { PlaceId = placeId, SpawnNumber = spawnIndex + 1 });
+        }
+
+        public void SendTeleportToHgLoot(long placeId, int spotIndex)
+        {
+            Send(new TeleportToHgLootSpotMsg { PlaceId = placeId, SpotIndex = spotIndex });
+        }
+
+        public void SendSetParkourCheckpoint(long placeId, bool isFinish)
+        {
+            Send(new SetParkourCheckpointMsg { PlaceId = placeId, IsFinish = isFinish });
+        }
+
+        public void SendRemoveParkourCheckpoint(long placeId, int x, int y, int z, int dim)
+        {
+            Send(new RemoveParkourCheckpointMsg { PlaceId = placeId, X = x, Y = y, Z = z, Dim = dim });
+        }
+
+        public void SendSetParkourCheckpointIndex(long placeId, int x, int y, int z, int dim, int index)
+        {
+            Send(new SetParkourCheckpointIndexMsg { PlaceId = placeId, X = x, Y = y, Z = z, Dim = dim, Index = index });
+        }
+
+        public void SendSetParkourLives(long placeId, int lives)
+        {
+            Send(new SetParkourLivesMsg { PlaceId = placeId, Lives = lives });
+        }
+
+        // height <= 0 = default.
+        public void SendSetKothHill(long placeId, float radius, float height)
+        {
+            Send(new SetKothHillMsg { PlaceId = placeId, Radius = radius, Height = height });
+        }
+
+        public void SendSetWaitingRoom(long placeId)
+        {
+            Send(new SetWaitingRoomMsg { PlaceId = placeId });
+        }
+
+        // op: see PadEditMsg. padId only for the list's row actions.
+        public void SendPadEdit(string op, string eventCode = null, int team = 0, int padId = 0)
+        {
+            Send(new PadEditMsg { Op = op, EventCode = eventCode, Team = team, PadId = padId });
+        }
+
+        // side/reshape with the box marked in the panel (PlaceHighlighter marks).
+        public void SendPadBox(string op, string eventCode, int team, long placeId,
+            int x1, int y1, int z1, int x2, int y2, int z2)
+        {
+            Send(new PadEditMsg
+            {
+                Op = op, EventCode = eventCode, Team = team, PlaceId = placeId,
+                HasBox = true, X = x1, Y = y1, Z = z1, X2 = x2, Y2 = y2, Z2 = z2
+            });
+        }
 
         public void SendSetCagePos(long placeId, int width, int depth, int height, string block)
         {
-            clientChannel.SendPacket(new SetCagePosMsg
+            Send(new SetCagePosMsg
             {
                 PlaceId = placeId,
                 Width   = width,
@@ -123,51 +173,43 @@ namespace canevents.src.Network
 
         public void SendClearCagePos(long placeId)
         {
-            clientChannel.SendPacket(new ClearCagePosMsg { PlaceId = placeId });
+            Send(new ClearCagePosMsg { PlaceId = placeId });
         }
 
-        /// <summary>Sets team's CTF flag post at the caller's feet, on this exact place.</summary>
         public void SendSetCtfPost(long placeId, int team)
         {
-            clientChannel.SendPacket(new SetCtfPostMsg { PlaceId = placeId, Team = team });
+            Send(new SetCtfPostMsg { PlaceId = placeId, Team = team });
         }
 
         public void SendClearCtfPosts(long placeId)
         {
-            clientChannel.SendPacket(new ClearCtfPostsMsg { PlaceId = placeId });
+            Send(new ClearCtfPostsMsg { PlaceId = placeId });
         }
 
-        /// <summary>Marks a Murder Mystery weapon-pickup spot at the caller's feet, on this exact place.</summary>
         public void SendAddMmPickup(long placeId)
         {
-            clientChannel.SendPacket(new AddMmPickupMsg { PlaceId = placeId });
+            Send(new AddMmPickupMsg { PlaceId = placeId });
         }
 
         public void SendClearMmPickups(long placeId)
         {
-            clientChannel.SendPacket(new ClearMmPickupsMsg { PlaceId = placeId });
+            Send(new ClearMmPickupsMsg { PlaceId = placeId });
         }
 
         public void SendRemoveMmPickup(long placeId, int index)
         {
-            clientChannel.SendPacket(new RemoveMmPickupMsg { PlaceId = placeId, Index = index });
+            Send(new RemoveMmPickupMsg { PlaceId = placeId, Index = index });
         }
 
-        public void SendListMmPickups(long placeId)
-        {
-            clientChannel.SendPacket(new ListMmPickupsMsg { PlaceId = placeId });
-        }
-
-        /// <summary>Asks for a Murder Mystery event's editable settings; null eventCode lets the
-        /// server pick the variant that fits this place.</summary>
+        // null eventCode = server picks the variant.
         public void SendRequestMmConfig(long placeId, string eventCode = null)
         {
-            clientChannel.SendPacket(new RequestMmConfigMsg { PlaceId = placeId, EventCode = eventCode });
+            Send(new RequestMmConfigMsg { PlaceId = placeId, EventCode = eventCode });
         }
 
         public void SendSaveMmConfig(long placeId, string eventCode, string attributesJson)
         {
-            clientChannel.SendPacket(new SaveMmConfigMsg
+            Send(new SaveMmConfigMsg
             {
                 PlaceId = placeId,
                 EventCode = eventCode,
@@ -175,89 +217,83 @@ namespace canevents.src.Network
             });
         }
 
-        /// <summary>Sets the HG storm centre at the caller's feet with this radius, on this place.</summary>
-        public void SendSetHgZone(long placeId, float radius)
+        public void SendSetHgZone(long placeId, float radius, HgZoneMode mode = HgZoneMode.AtFeet)
         {
-            clientChannel.SendPacket(new SetHgZoneMsg { PlaceId = placeId, Radius = radius });
+            Send(new SetHgZoneMsg { PlaceId = placeId, Radius = radius, Mode = mode });
         }
 
         public void SendAddHgLoot(long placeId, string tier)
         {
-            clientChannel.SendPacket(new AddHgLootMsg { PlaceId = placeId, Tier = tier });
+            Send(new AddHgLootMsg { PlaceId = placeId, Tier = tier });
         }
 
         public void SendClearHgLoot(long placeId)
         {
-            clientChannel.SendPacket(new ClearHgLootMsg { PlaceId = placeId });
+            Send(new ClearHgLootMsg { PlaceId = placeId });
         }
 
-        public void SendListHgLoot(long placeId)
-        {
-            clientChannel.SendPacket(new ListHgLootMsg { PlaceId = placeId });
-        }
-
-        /// <summary>Asks for the full HG setup picture (tiers, overview, current loot spots) of a place.
-        /// eventCode picks which HG variant's config comes back; null lets the server choose.</summary>
+        // null eventCode = server picks the variant.
         public void SendRequestHgSetup(long placeId, string eventCode = null)
         {
-            clientChannel.SendPacket(new RequestHgSetupMsg { PlaceId = placeId, EventCode = eventCode });
+            Send(new RequestHgSetupMsg { PlaceId = placeId, EventCode = eventCode });
         }
 
         public void SendRemoveHgLoot(long placeId, int index)
         {
-            clientChannel.SendPacket(new RemoveHgLootMsg { PlaceId = placeId, Index = index });
+            Send(new RemoveHgLootMsg { PlaceId = placeId, Index = index });
         }
 
         public void SendSetHgLootTier(long placeId, int index, string tier)
         {
-            clientChannel.SendPacket(new SetHgLootTierMsg { PlaceId = placeId, Index = index, Tier = tier });
+            Send(new SetHgLootTierMsg { PlaceId = placeId, Index = index, Tier = tier });
         }
 
-        /// <summary>One-click HG arena: ring of spawns + zone + tiered loot from the caller's feet.
-        /// Radius &lt;= 0 fits the place bounds.</summary>
-        public void SendGenerateHgLayout(long placeId, float radius, bool snapToTerrain)
+        // radius <= 0 fits the place bounds.
+        public void SendGenerateHgLayout(long placeId, float radius, bool snapToTerrain, int spawnCount)
         {
-            clientChannel.SendPacket(new GenerateHgLayoutMsg { PlaceId = placeId, Radius = radius, SnapToTerrain = snapToTerrain });
+            Send(new GenerateHgLayoutMsg
+            {
+                PlaceId = placeId, Radius = radius, SnapToTerrain = snapToTerrain, SpawnCount = spawnCount
+            });
         }
 
-        /// <summary>Toggles the in-world zone/loot/spawn preview for this place for the calling admin.</summary>
         public void SendHgPreview(long placeId, bool enabled)
         {
-            clientChannel.SendPacket(new HgPreviewMsg { PlaceId = placeId, Enabled = enabled });
+            Send(new HgPreviewMsg { PlaceId = placeId, Enabled = enabled });
         }
 
-        /// <summary>Saves edited HG loot tables + zone phases (as JSON) for an event; PlaceId refreshes the panel.</summary>
         public void SendSaveHgConfig(string eventCode, string lootTablesJson, string zonePhasesJson, long placeId,
-            bool applyToAllHgEvents = false)
+            bool applyToAllHgEvents = false, string scoreboardVisibility = null)
         {
-            clientChannel.SendPacket(new SaveHgConfigMsg
+            Send(new SaveHgConfigMsg
             {
                 EventCode = eventCode,
                 LootTablesJson = lootTablesJson,
                 ZonePhasesJson = zonePhasesJson,
                 PlaceId = placeId,
-                ApplyToAllHgEvents = applyToAllHgEvents
+                ApplyToAllHgEvents = applyToAllHgEvents,
+                ScoreboardVisibility = scoreboardVisibility
             });
         }
 
         public void SendPlatformEditStart(long placeId)
         {
-            clientChannel.SendPacket(new PlatformEditStartMsg { PlaceId = placeId });
+            Send(new PlatformEditStartMsg { PlaceId = placeId });
         }
 
         public void SendPlatformEditStop(long placeId, bool save)
         {
-            clientChannel.SendPacket(new PlatformEditStopMsg { PlaceId = placeId, Save = save });
+            Send(new PlatformEditStopMsg { PlaceId = placeId, Save = save });
         }
 
         public void SendPlatformFillShape(long placeId, bool circle, int radius, string blockCode)
         {
-            clientChannel.SendPacket(new PlatformFillShapeMsg { PlaceId = placeId, Circle = circle, Radius = radius, BlockCode = blockCode });
+            Send(new PlatformFillShapeMsg { PlaceId = placeId, Circle = circle, Radius = radius, BlockCode = blockCode });
         }
 
         public void SendPlatformFloodFill(long placeId, int maxRadius, string blockCode)
         {
-            clientChannel.SendPacket(new PlatformFloodFillMsg { PlaceId = placeId, MaxRadius = maxRadius, BlockCode = blockCode });
+            Send(new PlatformFloodFillMsg { PlaceId = placeId, MaxRadius = maxRadius, BlockCode = blockCode });
         }
 
         public readonly ServerState<PlatformEditStateMsg> PlatformEditState = new ServerState<PlatformEditStateMsg>();

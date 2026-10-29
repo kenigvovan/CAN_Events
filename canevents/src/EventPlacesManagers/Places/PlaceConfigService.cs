@@ -7,294 +7,340 @@ using Vintagestory.API.MathTools;
 
 namespace canevents.src.EventPlacesManagers.Places
 {
-    /// <summary>Outcome of one place edit: what to tell the caller, and whether it happened.</summary>
-    public readonly struct PlaceEditResult
-    {
-        public readonly bool Ok;
-        public readonly string Message;
-
-        private PlaceEditResult(bool ok, string message)
-        {
-            Ok = ok;
-            Message = message;
-        }
-
-        public static PlaceEditResult Success(string message) => new PlaceEditResult(true, message);
-        public static PlaceEditResult Fail(string message) => new PlaceEditResult(false, message);
-    }
-
-    /// <summary>
-    /// The single definition of every per-behavior place edit (HG zone/loot, CTF posts, KOTH hill).
-    /// The /canep commands and the admin panel's packets used to carry drifting copies of each edit;
-    /// they now only decide WHICH place is edited and hand the work here. Deliberately front-end
-    /// agnostic: no IServerPlayer, no packets, no TextCommandResult.
-    /// </summary>
-    public class PlaceConfigService
+    // All place edits, shared by /canep and the admin panel. Edits are refused while a match uses the place.
+    public partial class PlaceConfigService
     {
         private readonly DefaultEventPlacesManager placeManager;
+        // Getter because the placer is created after this service.
+        private readonly Func<SchematicPlacer> placer;
 
-        /// <summary>Guard, not a rule: the grow-loop below allocates one slot per team, so an
-        /// unbounded index is an OOM from a single bad packet.</summary>
+        // Caps the per-team grow loop so a bad packet can't allocate unbounded slots.
         public const int MaxCtfTeams = 8;
 
-        public PlaceConfigService(DefaultEventPlacesManager placeManager)
+        // Cage is built block by block on the main thread.
+        public const int MinCageDim = 1;
+        public const int MaxCageDim = 128;
+
+        public const string DefaultCageBlock = "game:glass-plain";
+
+        public PlaceConfigService(DefaultEventPlacesManager placeManager, Func<SchematicPlacer> placer = null)
         {
             this.placeManager = placeManager;
+            this.placer = placer;
         }
 
-        // Hunger Games
+        public const int MaxNameLength = 40;
+        public const int MaxDescriptionLength = 200;
 
-        /// <summary>Centres the storm on <paramref name="floorPos"/> (the block under the admin's feet).</summary>
-        public PlaceEditResult SetHungerGamesZone(EventPlace place, BlockPos floorPos, float radius)
+        // File name is sanitized separately in DefaultEventPlacesManager.FileNameFor.
+        public static string CleanText(string raw, int maxLength)
         {
-            if (!TryEdit(place, out var busy)) return busy;
-            if (radius <= 0f) return PlaceEditResult.Fail(Lang.Get("canevents:hg-radius-min"));
-
-            var data = place.GetOrCreateBehaviorData(BehaviorKeys.HungerGames);
-            data["X"] = floorPos.X;
-            data["Y"] = floorPos.Y;
-            data["Z"] = floorPos.Z;
-            data["InitialRadius"] = radius;
-            Persist(place);
-
-            return PlaceEditResult.Success(string.Format("HG zone set on '{0}' at ({1}, {2}, {3}) r={4}.",
-                place.Name, floorPos.X, floorPos.Y, floorPos.Z, radius));
-        }
-
-        /// <summary>Marks a chest spot. Re-marking the same block re-tiers it instead of stacking a
-        /// second spot there. A blank tier means "the event's default tier".</summary>
-        public PlaceEditResult AddHungerGamesLoot(EventPlace place, BlockPos floorPos, string tier)
-        {
-            if (!TryEdit(place, out var busy)) return busy;
-
-            var arr = GetOrCreateArray(place, BehaviorKeys.HungerGames, "LootSpots");
-
-            for (int i = arr.Count - 1; i >= 0; i--)
-                if (arr[i] is JObject e && JsonPos.Matches(e, floorPos)) arr.RemoveAt(i);
-
-            tier = string.IsNullOrWhiteSpace(tier) ? null : tier.Trim();
-
-            var entry = JsonPos.Write(floorPos);
-            if (tier != null) entry["Tier"] = tier;
-            arr.Add(entry);
-            Persist(place);
-
-            return PlaceEditResult.Success(string.Format(
-                "HG loot spot added on '{0}' at ({1}, {2}, {3}) tier={4}. Total: {5}.",
-                place.Name, floorPos.X, floorPos.Y, floorPos.Z, tier ?? "(default)", arr.Count));
-        }
-
-        public PlaceEditResult ClearHungerGamesLoot(EventPlace place)
-        {
-            if (!TryEdit(place, out var busy)) return busy;
-
-            if (place.TryGetBehaviorData(BehaviorKeys.HungerGames, out var data))
-            {
-                data["LootSpots"] = new JArray();
-                Persist(place);
-            }
-            return PlaceEditResult.Success(string.Format("HG loot spots cleared on '{0}'.", place.Name));
-        }
-
-        /// <summary>Removes one spot by its index in the stored array - the same index the panel
-        /// renders, so the two stay aligned.</summary>
-        public PlaceEditResult RemoveHungerGamesLoot(EventPlace place, int index)
-        {
-            if (!TryEdit(place, out var busy)) return busy;
-            if (!TryGetLootArray(place, index, out var arr))
-                return PlaceEditResult.Fail(Lang.Get("canevents:hg-loot-invalid-index"));
-
-            // No JObject check: a malformed entry still occupies an index the panel shows, and
-            // removing it is how an admin gets rid of one.
-            arr.RemoveAt(index);
-            Persist(place);
-            return PlaceEditResult.Success(string.Format("Removed HG loot spot #{0} on '{1}'. Left: {2}.",
-                index, place.Name, arr.Count));
-        }
-
-        public PlaceEditResult SetHungerGamesLootTier(EventPlace place, int index, string tier)
-        {
-            if (!TryEdit(place, out var busy)) return busy;
-            if (!TryGetLootArray(place, index, out var arr) || !(arr[index] is JObject entry))
-                return PlaceEditResult.Fail(Lang.Get("canevents:hg-loot-invalid-index"));
-
-            if (string.IsNullOrWhiteSpace(tier)) entry.Remove("Tier");
-            else entry["Tier"] = tier.Trim();
-            Persist(place);
-
-            return PlaceEditResult.Success(string.Format("HG loot spot #{0} on '{1}' set to tier '{2}'.",
-                index, place.Name, string.IsNullOrWhiteSpace(tier) ? "(default)" : tier.Trim()));
-        }
-
-        /// <summary>Human-readable loot listing. Read-only, so it works on an occupied place too.</summary>
-        public string DescribeHungerGamesLoot(EventPlace place)
-        {
-            if (!place.TryGetBehaviorData(BehaviorKeys.HungerGames, out var data)
-                || !(data["LootSpots"] is JArray arr) || arr.Count == 0)
-                return string.Format("No loot spots on '{0}'.", place.Name);
-
+            if (raw == null) return null;
             var sb = new StringBuilder();
-            sb.AppendLine(string.Format("'{0}' has {1} loot spot(s):", place.Name, arr.Count));
-            foreach (var t in arr)
-            {
-                if (!(t is JObject e) || e["X"] == null) continue;
-                string tier = e["Tier"]?.Value<string>() ?? "(default)";
-                sb.AppendLine(string.Format("  ({0}, {1}, {2})  tier={3}",
-                    e.Value<int>("X"), e.Value<int>("Y"), e.Value<int>("Z"), tier));
-            }
-            return sb.ToString().TrimEnd();
+            foreach (char c in raw) sb.Append(char.IsControl(c) ? ' ' : c);
+            string s = sb.ToString().Trim();
+            if (s.Length > maxLength) s = s.Substring(0, maxLength).TrimEnd();
+            return s.Length == 0 ? null : s;
         }
 
-        // Capture the Flag
-
-        /// <summary>
-        /// Sets team N's flag post, addressed by team index (post [0] is team 1), the same "index is the
-        /// team" rule the spawns follow. Re-running moves that post; skipped slots stay empty and read
-        /// as NOT SET rather than shifting the teams after them.
-        /// </summary>
-        public PlaceEditResult SetCtfPost(EventPlace place, BlockPos floorPos, int team)
+        public PlaceEditResult Rename(EventPlace place, string name)
         {
             if (!TryEdit(place, out var busy)) return busy;
-            if (team < 1 || team > MaxCtfTeams) return PlaceEditResult.Fail(Lang.Get("canevents:ctf-team-min"));
+            string clean = CleanText(name, MaxNameLength);
+            if (clean == null) return PlaceEditResult.Fail(Lang.Get("canevents:place-name-empty"));
 
-            var arr = GetOrCreateArray(place, BehaviorKeys.CaptureTheFlag, "Posts");
-            while (arr.Count < team) arr.Add(new JObject());
-
-            arr[team - 1] = JsonPos.Write(floorPos);
-            Persist(place);
-
-            return PlaceEditResult.Success(string.Format(
-                "CTF post for team {0} set on '{1}' at ({2}, {3}, {4}). Posts: {5}.",
-                team, place.Name, floorPos.X, floorPos.Y, floorPos.Z, arr.Count));
+            string old = place.Name;
+            place.Name = clean;
+            PersistIfSaved(place);
+            return PlaceEditResult.Success(Lang.Get("canevents:place-renamed", old ?? "?", clean));
         }
 
-        public PlaceEditResult ClearCtfPosts(EventPlace place)
+        public PlaceEditResult SetDescription(EventPlace place, string description)
         {
             if (!TryEdit(place, out var busy)) return busy;
-
-            if (place.TryGetBehaviorData(BehaviorKeys.CaptureTheFlag, out var data))
-            {
-                data["Posts"] = new JArray();
-                Persist(place);
-            }
-            return PlaceEditResult.Success(string.Format("CTF posts cleared on '{0}'.", place.Name));
+            place.Description = CleanText(description, MaxDescriptionLength);
+            PersistIfSaved(place);
+            return PlaceEditResult.Success(place.Description == null
+                ? Lang.Get("canevents:place-description-cleared", place.Name)
+                : Lang.Get("canevents:place-description-set", place.Name));
         }
 
-        public string DescribeCtfPosts(EventPlace place)
+        public PlaceEditResult AddTag(EventPlace place, string tag)
         {
-            if (!place.TryGetBehaviorData(BehaviorKeys.CaptureTheFlag, out var data)
-                || !(data["Posts"] is JArray arr) || arr.Count == 0)
-                return string.Format("No CTF posts on '{0}'.", place.Name);
+            if (!TryEdit(place, out var busy)) return busy;
+            tag = PlaceTags.Normalize(tag);
+            if (string.IsNullOrEmpty(tag)) return PlaceEditResult.Fail(Lang.Get("canevents:place-type-invalid"));
 
+            place.AddType(tag);
+            PersistIfSaved(place);
+            return PlaceEditResult.Success(Lang.Get("canevents:place-tags-now", place.Name, TagText(place)));
+        }
+
+        public PlaceEditResult RemoveTag(EventPlace place, string tag)
+        {
+            if (!TryEdit(place, out var busy)) return busy;
+            if (!place.RemoveType(tag))
+                return PlaceEditResult.Fail(Lang.Get("canevents:place-tag-missing", place.Name, PlaceTags.Normalize(tag)));
+
+            PersistIfSaved(place);
+            return PlaceEditResult.Success(Lang.Get("canevents:place-tags-now", place.Name, TagText(place)));
+        }
+
+        public PlaceEditResult SetEnabled(EventPlace place, bool enabled)
+        {
+            if (!TryEdit(place, out var busy)) return busy;
+            place.Enabled = enabled;
+            PersistIfSaved(place);
+            return PlaceEditResult.Success(Lang.Get(enabled
+                ? "canevents:place-toggled-enabled"
+                : "canevents:place-toggled-disabled", place.Name));
+        }
+
+        // Bulk edit from the Arenas tab, saved once.
+        public PlaceEditResult ApplyBulk(EventPlace place, bool? enabled, string addTag, string removeTag,
+            out bool changed)
+        {
+            changed = false;
+            if (!TryEdit(place, out var busy)) return busy;
+
+            addTag = PlaceTags.Normalize(addTag);
+            removeTag = PlaceTags.Normalize(removeTag);
+
+            if (enabled is bool on && place.Enabled != on)
+            {
+                place.Enabled = on;
+                changed = true;
+            }
+            if (!string.IsNullOrEmpty(addTag) && (place.placeTypes == null || !place.placeTypes.Contains(addTag)))
+            {
+                place.AddType(addTag);
+                changed = true;
+            }
+            if (!string.IsNullOrEmpty(removeTag) && place.RemoveType(removeTag)) changed = true;
+
+            if (changed) PersistIfSaved(place);
+            return PlaceEditResult.Success(place.Name);
+        }
+
+        public PlaceEditResult UpdateInfo(EventPlace place, string name, string description, string[] tags)
+        {
+            if (!TryEdit(place, out var busy)) return busy;
+            string cleanName = CleanText(name, MaxNameLength);
+            if (cleanName == null) return PlaceEditResult.Fail(Lang.Get("canevents:place-name-empty"));
+
+            place.Name = cleanName;
+            place.Description = CleanText(description, MaxDescriptionLength);
+            place.placeTypes = (tags ?? new string[0])
+                .Select(PlaceTags.Normalize)
+                .Where(t => !string.IsNullOrEmpty(t))
+                .Distinct()
+                .ToArray();
+            PersistIfSaved(place);
+            return PlaceEditResult.Success(Lang.Get("canevents:place-info-saved", place.Name, TagText(place)));
+        }
+
+        private static string TagText(EventPlace place)
+            => place.placeTypes == null || place.placeTypes.Length == 0 ? "-" : string.Join(", ", place.placeTypes);
+
+        public static string Describe(EventPlace place)
+        {
             var sb = new StringBuilder();
-            sb.AppendLine(string.Format("'{0}' has {1} CTF post(s):", place.Name, arr.Count));
-            for (int i = 0; i < arr.Count; i++)
-            {
-                var e = arr[i] as JObject;
-                if (e == null || e["X"] == null)
-                    sb.AppendLine(string.Format("  team {0}: (not set)", i + 1));
-                else
-                    sb.AppendLine(string.Format("  team {0}: ({1}, {2}, {3})",
-                        i + 1, e.Value<int>("X"), e.Value<int>("Y"), e.Value<int>("Z")));
-            }
-            return sb.ToString().TrimEnd();
+            sb.AppendLine(string.Format("#{0} '{1}' [{2}]{3}{4}", place.Id, place.Name, TagText(place),
+                place.Enabled ? "" : " (disabled)", place.Occupied ? " (in use)" : ""));
+            if (!string.IsNullOrEmpty(place.Description)) sb.AppendLine("  " + place.Description);
+
+            sb.AppendLine(PlaceBounds.Has(place)
+                ? string.Format("  bounds: ({0}, {1}, {2}) - ({3}, {4}, {5})",
+                    place.BoundsMin.X, place.BoundsMin.Y, place.BoundsMin.Z,
+                    place.BoundsMax.X, place.BoundsMax.Y, place.BoundsMax.Z)
+                : "  bounds: none");
+
+            var spawns = place.spawnPositions;
+            sb.AppendLine(string.Format("  spawns: {0}", spawns?.Count ?? 0));
+            // 1-based, same as removesp/movesp.
+            if (spawns != null)
+                for (int i = 0; i < spawns.Count; i++)
+                    sb.AppendLine(string.Format("    [{0}] ({1}, {2}, {3})", i + 1, spawns[i].X, spawns[i].Y, spawns[i].Z));
+
+            if (!string.IsNullOrEmpty(place.SchematicTemplateCode))
+                sb.AppendLine("  template: " + place.SchematicTemplateCode + (place.SchematicOnDemand ? " (on demand)" : ""));
+
+            var gaps = PlaceSetupCheck.Gaps(place);
+            if (gaps.Count == 0) sb.Append("  setup: complete");
+            else sb.Append("  setup MISSING: " + string.Join("; ", gaps));
+            return sb.ToString();
         }
 
-        // Murder Mystery
-
-        /// <summary>
-        /// Marks a spot where the mode's weapon token can appear. Re-marking the same block is a no-op
-        /// rather than a second spot there: two spots on one block would let the same corner hold two
-        /// tokens, which is exactly what the minimum-distance rule exists to prevent.
-        /// </summary>
-        public PlaceEditResult AddMurderMysteryPickup(EventPlace place, BlockPos floorPos)
+        // Without blocks, generated spawns sit at the lower corner's Y instead of the floor.
+        public PlaceEditResult SetBounds(EventPlace place, BlockPos cornerA, BlockPos cornerB, bool replaceSpawns,
+            Vintagestory.API.Common.IBlockAccessor blocks = null)
         {
             if (!TryEdit(place, out var busy)) return busy;
 
-            var arr = GetOrCreateArray(place, BehaviorKeys.MurderMystery, "PickupSpots");
-            for (int i = 0; i < arr.Count; i++)
-                if (arr[i] is JObject e && JsonPos.Matches(e, floorPos))
-                    return PlaceEditResult.Fail(Lang.Get("canevents:mm-pickup-duplicate"));
+            place.SetBounds(cornerA, cornerB);
+            if (replaceSpawns) place.GenerateEdgeSpawns(blocks == null ? null : FloorFinder(place, blocks));
+            PersistIfSaved(place);
 
-            arr.Add(JsonPos.Write(floorPos));
-            Persist(place);
+            var min = place.BoundsMin;
+            var max = place.BoundsMax;
+            return PlaceEditResult.Success(string.Format("Bounds set on '{0}' ({1}x{2}x{3}){4}.",
+                place.Name,
+                max.X - min.X + 1, max.Y - min.Y + 1, max.Z - min.Z + 1,
+                replaceSpawns ? ", 2 spawn points generated" : ""));
+        }
 
+        // Highest solid block in the column within bounds. Unloaded chunks read as air, so null.
+        // Func<> from System: Vintagestory.API.Common has its own and would be ambiguous.
+        private static Func<int, int, int?> FloorFinder(EventPlace place, Vintagestory.API.Common.IBlockAccessor blocks)
+        {
+            int minY = place.BoundsMin.Y, maxY = place.BoundsMax.Y, dim = place.BoundsMin.dimension;
+            return (x, z) =>
+            {
+                var pos = new BlockPos(x, maxY, z, dim);
+                for (int y = maxY; y >= minY; y--)
+                {
+                    pos.Y = y;
+                    var block = blocks.GetBlock(pos);
+                    if (block != null && block.Id != 0 && !block.IsLiquid()
+                        && block.CollisionBoxes != null && block.CollisionBoxes.Length > 0)
+                        return y;
+                }
+                return null;
+            };
+        }
+
+        public PlaceEditResult ClearBounds(EventPlace place)
+        {
+            if (!TryEdit(place, out var busy)) return busy;
+
+            place.HasBounds = false;
+            place.BoundsMin = null;
+            place.BoundsMax = null;
+            PersistIfSaved(place);
             return PlaceEditResult.Success(string.Format(
-                "MM pickup spot added on '{0}' at ({1}, {2}, {3}). Total: {4}.",
-                place.Name, floorPos.X, floorPos.Y, floorPos.Z, arr.Count));
+                "Bounds cleared on '{0}'. /canep commands can no longer target it.", place.Name));
         }
 
-        /// <summary>Removes one spot by its index in the stored array - the index the panel renders.</summary>
-        public PlaceEditResult RemoveMurderMysteryPickup(EventPlace place, int index)
-        {
-            if (!TryEdit(place, out var busy)) return busy;
-            if (!TryGetPickupArray(place, index, out var arr))
-                return PlaceEditResult.Fail(Lang.Get("canevents:mm-pickup-invalid-index"));
-
-            arr.RemoveAt(index);
-            Persist(place);
-            return PlaceEditResult.Success(string.Format("Removed MM pickup spot #{0} on '{1}'. Left: {2}.",
-                index, place.Name, arr.Count));
-        }
-
-        public PlaceEditResult ClearMurderMysteryPickups(EventPlace place)
+        public PlaceEditResult AddSpawn(EventPlace place, BlockPos pos)
         {
             if (!TryEdit(place, out var busy)) return busy;
 
-            if (place.TryGetBehaviorData(BehaviorKeys.MurderMystery, out var data))
+            place.spawnPositions ??= new System.Collections.Generic.List<BlockPos>();
+            place.spawnPositions.Add(pos.Copy());
+            PersistIfSaved(place);
+            return PlaceEditResult.Success(Lang.Get("canevents:spawn-added", place.Name, place.spawnPositions.Count)
+                + OutsideBoundsNote(place, pos));
+        }
+
+        // Spawn edits take a 0-based index and reply with the 1-based number.
+        // Moving keeps the index, so the spawn stays on its team.
+        public PlaceEditResult MoveSpawn(EventPlace place, int index, BlockPos pos)
+        {
+            if (!TryEdit(place, out var busy)) return busy;
+            if (!HasSpawnIndex(place, index)) return InvalidSpawnIndex(place, index);
+
+            place.spawnPositions[index] = pos.Copy();
+            PersistIfSaved(place);
+            return PlaceEditResult.Success(string.Format("Spawn #{0} on '{1}' moved to ({2}, {3}, {4}).",
+                    index + 1, place.Name, pos.X, pos.Y, pos.Z)
+                + OutsideBoundsNote(place, pos));
+        }
+
+        public PlaceEditResult RemoveSpawn(EventPlace place, int index)
+        {
+            if (!TryEdit(place, out var busy)) return busy;
+            if (!HasSpawnIndex(place, index)) return InvalidSpawnIndex(place, index);
+
+            place.spawnPositions.RemoveAt(index);
+            PersistIfSaved(place);
+            return PlaceEditResult.Success(Lang.Get("canevents:spawn-removed", index + 1, place.spawnPositions.Count));
+        }
+
+        private static bool HasSpawnIndex(EventPlace place, int index)
+            => place.spawnPositions != null && index >= 0 && index < place.spawnPositions.Count;
+
+        private static PlaceEditResult InvalidSpawnIndex(EventPlace place, int index)
+            => PlaceEditResult.Fail(Lang.Get("canevents:spawn-invalid-index", index + 1, place.spawnPositions?.Count ?? 0));
+
+        // Only a warning: bounds aren't enforced during a match.
+        public static string OutsideBoundsNote(EventPlace place, BlockPos pos)
+        {
+            if (!PlaceBounds.Has(place)) return "";
+            return PlaceBounds.Contains(place, pos)
+                ? ""
+                : " WARNING: that position is outside the place's bounds.";
+        }
+
+        // Restores the template stamp first. Refused while occupied: RunningEvent teardown still uses the place.
+        public PlaceEditResult DeletePlace(EventPlace place)
+        {
+            if (place == null) return PlaceEditResult.Fail(Lang.Get("canevents:place-delete-failed"));
+            if (place.Occupied) return PlaceEditResult.Fail(Lang.Get("canevents:tpl-arena-in-use"));
+
+            var schematics = placer?.Invoke();
+            long id = place.Id;
+            // After the block journal, or replaying it would put schematic-era blocks on restored terrain.
+            if (schematics != null && schematics.HasSavedData(id))
+                EventManagers.eventBehavior.Shared.ArenaBlockJournal.RunAfterRestore(id, () => schematics.Restore(id));
+            placeManager.DeletePlace(id);
+
+            string message = Lang.Get("canevents:tpl-place-removed-restored", id);
+            var cleanup = PlaceDeleted?.Invoke(id);
+            if (cleanup != null && cleanup.Count > 0) message += "\n" + string.Join("\n", cleanup);
+            return PlaceEditResult.Success(message);
+        }
+
+        // Set at startup; tournament services are created after this one.
+        public Func<long, System.Collections.Generic.List<string>> PlaceDeleted { get; set; }
+
+        public static bool TryFindTeleportPoint(EventPlace place, out double x, out double y, out double z,
+            out int dim, out string what)
+        {
+            x = y = z = 0; dim = 0; what = null;
+            if (place == null) return false;
+
+            if (place.spawnPositions != null && place.spawnPositions.Count > 0)
             {
-                data["PickupSpots"] = new JArray();
-                Persist(place);
+                var sp = place.spawnPositions[0];
+                x = sp.X + 0.5; y = sp.Y; z = sp.Z + 0.5; dim = sp.dimension;
+                what = "spawn #1";
+                return true;
             }
-            return PlaceEditResult.Success(string.Format("MM pickup spots cleared on '{0}'.", place.Name));
-        }
-
-        /// <summary>Human-readable listing. Read-only, so it works on an occupied place too.</summary>
-        public string DescribeMurderMysteryPickups(EventPlace place)
-        {
-            if (!place.TryGetBehaviorData(BehaviorKeys.MurderMystery, out var data)
-                || !(data["PickupSpots"] is JArray arr) || arr.Count == 0)
-                return string.Format("No pickup spots on '{0}'.", place.Name);
-
-            var sb = new StringBuilder();
-            sb.AppendLine(string.Format("'{0}' has {1} pickup spot(s):", place.Name, arr.Count));
-            for (int i = 0; i < arr.Count; i++)
+            if (place.HasBounds && place.BoundsMin != null && place.BoundsMax != null)
             {
-                if (!JsonPos.TryRead(arr[i], out var pos)) continue;
-                sb.AppendLine(string.Format("  #{0}  ({1}, {2}, {3})", i, pos.X, pos.Y, pos.Z));
+                x = (place.BoundsMin.X + place.BoundsMax.X) / 2.0 + 0.5;
+                y = place.BoundsMax.Y + 1;
+                z = (place.BoundsMin.Z + place.BoundsMax.Z) / 2.0 + 0.5;
+                dim = place.BoundsMin.dimension;
+                what = "bounds centre";
+                return true;
             }
-            return sb.ToString().TrimEnd();
+            if (place.TryGetBehaviorData(BehaviorKeys.KingOfTheHill, out var koth) && JsonPos.TryRead(koth, out var hill))
+            {
+                x = hill.X + 0.5; y = hill.Y + 1; z = hill.Z + 0.5; dim = hill.dimension;
+                what = "the hill";
+                return true;
+            }
+            return false;
         }
 
-        // King of the Hill
-
-        /// <summary>Height &lt;= 0 means "unset" and falls back to the documented default of 5: an
-        /// omitted OptionalFloat parser yields 0, not null.</summary>
-        public PlaceEditResult SetKothHill(EventPlace place, BlockPos floorPos, float radius, float height)
+        // For the event wand: removes the spawn within 1.5 blocks of the clicked block's top.
+        public PlaceEditResult RemoveSpawnNear(EventPlace place, BlockPos floorPos)
         {
-            if (!TryEdit(place, out var busy)) return busy;
-            if (radius <= 0f) return PlaceEditResult.Fail(Lang.Get("canevents:koth-radius-min"));
-            if (height <= 0f) height = 5f;
-
-            var data = place.GetOrCreateBehaviorData(BehaviorKeys.KingOfTheHill);
-            data["X"] = floorPos.X;
-            data["Y"] = floorPos.Y;
-            data["Z"] = floorPos.Z;
-            data["Radius"] = radius;
-            data["Height"] = height;
-            Persist(place);
-
-            return PlaceEditResult.Success(string.Format(
-                "KOTH hill set on '{0}' at ({1}, {2}, {3}) r={4} h={5}.",
-                place.Name, floorPos.X, floorPos.Y, floorPos.Z, radius, height));
+            int best = -1;
+            double bestDist = 1.5 * 1.5;
+            var spawns = place?.spawnPositions;
+            if (spawns != null)
+                for (int i = 0; i < spawns.Count; i++)
+                {
+                    double d = spawns[i].DistanceSqTo(floorPos.X + 0.5, floorPos.Y + 1.0, floorPos.Z + 0.5);
+                    if (spawns[i].dimension == floorPos.dimension && d <= bestDist) { best = i; bestDist = d; }
+                }
+            if (best < 0) return PlaceEditResult.Fail(Lang.Get("canevents:wand-nothing-here"));
+            return RemoveSpawn(place, best);
         }
 
-        // shared
-
-        /// <summary>
-        /// Refuses edits to a place hosting a match: the running event holds a reference to it and
-        /// reads this data at teardown.
-        /// </summary>
+        // A running event reads this data at teardown, so occupied places are locked.
         private static bool TryEdit(EventPlace place, out PlaceEditResult error)
         {
             if (place == null)
@@ -311,35 +357,10 @@ namespace canevents.src.EventPlacesManagers.Places
             return true;
         }
 
-        /// <summary>Writes the place to disk only if it is already a saved one: /canep can edit a place
-        /// still being built, which lives in the caller's in-progress slot until "save".</summary>
-        private void Persist(EventPlace place)
+        // Places still being built live in the in-progress slot until "save".
+        public void PersistIfSaved(EventPlace place)
         {
             if (placeManager != null && placeManager.EventPlaces.Contains(place)) placeManager.SavePlace(place);
-        }
-
-        private static JArray GetOrCreateArray(EventPlace place, string behaviorKey, string field)
-        {
-            var data = place.GetOrCreateBehaviorData(behaviorKey);
-            var arr = data[field] as JArray;
-            if (arr == null) { arr = new JArray(); data[field] = arr; }
-            return arr;
-        }
-
-        private static bool TryGetPickupArray(EventPlace place, int index, out JArray arr)
-        {
-            arr = null;
-            if (!place.TryGetBehaviorData(BehaviorKeys.MurderMystery, out var data)) return false;
-            arr = data["PickupSpots"] as JArray;
-            return arr != null && index >= 0 && index < arr.Count;
-        }
-
-        private static bool TryGetLootArray(EventPlace place, int index, out JArray arr)
-        {
-            arr = null;
-            if (!place.TryGetBehaviorData(BehaviorKeys.HungerGames, out var data)) return false;
-            arr = data["LootSpots"] as JArray;
-            return arr != null && index >= 0 && index < arr.Count;
         }
 
     }

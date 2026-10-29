@@ -8,7 +8,7 @@ using Vintagestory.API.Config;
 
 namespace canevents.src.Gui.Native
 {
-    // Ranked / Casual tabs: joinable queues, matches already running, and the last match's result.
+    // Ranked / Casual tabs.
     public partial class EventBrowserGui
     {
         private void ComposeEventsTab(bool rated)
@@ -33,12 +33,9 @@ namespace canevents.src.Gui.Native
             }
             else
             {
-                // An open registration window is on a clock, so it goes to the top of the list where
-                // it is read first. OrderBy, not List.Sort: the rest must keep the order the server
-                // sent, and Sort is not stable.
+                // OrderBy, not List.Sort: Sort is not stable and the server order must hold.
                 var ordered = queued.OrderByDescending(e => networkHandler.HasOpenSignup(e.GameModeCode));
 
-                // No heading above the queues: the tab itself is the heading.
                 foreach (var ev in ordered) AddEventCard(ev);
                 if (running.Count > 0)
                 {
@@ -73,7 +70,7 @@ namespace canevents.src.Gui.Native
             }
             else if (ev.EventId == 0)
             {
-                // More than one loadout set: the pick dialog sends the join itself.
+                // With several loadout sets the pick dialog sends the join itself.
                 bool hasLoadouts = ev.LoadoutSets != null && ev.LoadoutSets.Length > 1;
                 badge = Lang.Get(hasLoadouts ? "canevents:gui-choose-class" : "canevents:gui-join");
                 accent = ev.MinPlayers > 0 && ev.CurrentPlayers >= ev.MinPlayers ? Palette.Go : Palette.Title;
@@ -89,14 +86,12 @@ namespace canevents.src.Gui.Native
             }
             else if (networkHandler.SpectatePrivileged && !networkHandler.IsObserving)
             {
-                // A live match a broadcaster may drop into. The card is the shortest path there:
-                // it already knows the match id, which the chat command otherwise has to be told.
                 badge = Lang.Get("canevents:gui-watch");
                 accent = Palette.Live;
                 onClick = () =>
                 {
                     networkHandler.SendSpectateRequest(ev.EventId);
-                    TryClose();          // the point is to look at the arena, not at this list
+                    TryClose();
                 };
             }
             else if (networkHandler.IsObserving && networkHandler.ObservedEventId == ev.EventId)
@@ -115,12 +110,11 @@ namespace canevents.src.Gui.Native
                 accent = ev.State == EventState.Running ? Palette.Live : Palette.Idle;
             }
 
-            // An event taking sign-ups right now is the one thing on this list with a deadline, so it
-            // carries the live colour whatever its lobby count says.
+            // Open sign-up gets the live colour regardless of lobby count.
             if (ev.EventId == 0 && !ev.IsQueued && networkHandler.HasOpenSignup(ev.GameModeCode))
                 accent = Palette.Live;
 
-            // The fill bar only means something for a lobby; a running match's headcount is alive players.
+            // Lobbies only; a running match's headcount is alive players.
             double? fill = ev.EventId == 0 && ev.MaxPlayers > 0
                 ? (double?)ev.CurrentPlayers / ev.MaxPlayers
                 : null;
@@ -128,7 +122,7 @@ namespace canevents.src.Gui.Native
             AddCard(title, BuildEventDetail(ev), badge, accent, onClick, fill, RewardIcons(ev));
         }
 
-        // What you can win, as icons. The fee stays as text so paid and won items are not confused.
+        // Fee stays as text so it isn't mistaken for a prize.
         private List<ItemStack> RewardIcons(EventListEntryMsg ev)
         {
             if (ev.EventId != 0) return null;
@@ -143,14 +137,12 @@ namespace canevents.src.Gui.Native
             return icons.Count > 0 ? icons : null;
         }
 
-        // All of it inline: the native list has no hover popups to hide details in.
+        // Native list has no hover popups, so everything is inline.
         private string BuildEventDetail(EventListEntryMsg ev)
         {
             var sb = new StringBuilder();
 
-            // That registration is open is said here; the seconds are not. A card is drawn into a
-            // texture, so a countdown baked into it would sit frozen until the next list packet - the
-            // live clock is the dynamic line under the list (see ComposeSignupNotice).
+            // No seconds here: the card is a static texture. Live clock is in ComposeSignupNotice.
             if (ev.EventId == 0 && networkHandler.HasOpenSignup(ev.GameModeCode))
                 sb.Append(Lang.Get("canevents:gui-signup-open")).Append('\n');
 
@@ -178,7 +170,6 @@ namespace canevents.src.Gui.Native
             return sb.ToString();
         }
 
-        // Only what the icon row cannot say: that the icons ARE prizes, and the personal reward cap.
         private string DescribePrizes(EventListEntryMsg ev)
         {
             if (ev.EventId != 0) return null;
@@ -232,12 +223,12 @@ namespace canevents.src.Gui.Native
             AddCard(Lang.Get("canevents:gui-winner", winners), sb.ToString(), accent: Palette.Go);
         }
 
-        // The browser steps aside for the pick: both grab the mouse.
+        // Browser closes for the pick: both grab the mouse.
         private void OpenLoadoutPick(EventListEntryMsg ev)
         {
             if (LoadoutPick == null)
             {
-                networkHandler.SendJoinRequest(ev.GameModeCode);   // no picker: join with the default set
+                networkHandler.SendJoinRequest(ev.GameModeCode);
                 networkHandler.RequestEventList();
                 return;
             }
@@ -245,7 +236,7 @@ namespace canevents.src.Gui.Native
             LoadoutPick.OpenForQueue(ev);
         }
 
-        // Guards against undefined values: the server may be a newer build with unknown states.
+        // Server may be a newer build with unknown states.
         private static string StatusText(EventState state)
         {
             if (!System.Enum.IsDefined(typeof(EventState), state)) return Lang.Get("canevents:gui-state-queue");

@@ -6,18 +6,12 @@ using canevents.src.EventManagers.events;
 
 namespace canevents.src.QueueManagers
 {
-    /// <summary>
-    /// Accepts only whole parties, one registration per team slot, collected across ticks.
-    /// Completes at MaxPartiesCount immediately, or at MinPartiesCount after a QueueFillSeconds
-    /// countdown (cancelled if the count drops back below the minimum).
-    /// </summary>
+    // Whole parties only. Starts at MaxPartiesCount, or at MinPartiesCount after QueueFillSeconds.
     public class FullPartyRequiredQueueManager : QueueManager
     {
         private readonly object _lock = new object();
 
-        // Incomplete assemblies waiting for more parties, keyed by event.
         private readonly Dictionary<CANEvent, List<TeamAssembly>> _partial = new();
-        // Per-assembly timestamp of when the fill-countdown started.
         private readonly Dictionary<TeamAssembly, DateTime> _countdownStart = new();
 
         public override IReadOnlyList<TeamAssembly> TryAssemble(CANEvent canEvent, IReadOnlyList<Registration> pending)
@@ -29,7 +23,6 @@ namespace canevents.src.QueueManagers
 
                 var eb = canEvent.AssemblingEB;
 
-                // Phase 1: assign new registrations to partial assemblies
                 foreach (var reg in pending)
                 {
                     if (reg.MarkedUsed) continue;
@@ -43,15 +36,12 @@ namespace canevents.src.QueueManagers
                     reg.MarkedUsed = true;
                 }
 
-                // Phase 2: check completion conditions
                 var completed = new List<TeamAssembly>();
                 foreach (var ta in partialList.ToList())
                 {
                     if (ta.Completed) continue;
 
-                    // Re-check busy at completion time: a player waiting here may have since entered
-                    // another event's match, and starting now would double-teleport them and clobber
-                    // their inventory backup. Defer until they are free again.
+                    // Recheck: someone may have joined another match meanwhile (would clobber their backup).
                     if (ta.Shards.Any(s => s.Registrations.Any(r => AnyPlayerBusy(r))))
                         continue;
 
@@ -65,20 +55,18 @@ namespace canevents.src.QueueManagers
                     }
                     else if (count >= eb.MinPartiesCount && allValid)
                     {
+                        // Checked in the same pass that starts the wait, so queueFillSeconds 0 means no wait at all
+                        // rather than "until the next queue tick".
                         if (!_countdownStart.TryGetValue(ta, out var startTime))
+                            _countdownStart[ta] = startTime = DateTime.UtcNow;
+                        if ((DateTime.UtcNow - startTime).TotalSeconds >= eb.QueueFillSeconds)
                         {
-                            _countdownStart[ta] = DateTime.UtcNow;
-                        }
-                        else if ((DateTime.UtcNow - startTime).TotalSeconds >= eb.QueueFillSeconds)
-                        {
-                            // Countdown expired, start with what we have.
                             Complete(ta, partialList, completed);
                             _countdownStart.Remove(ta);
                         }
                     }
                     else
                     {
-                        // Below minimum, cancel any running countdown.
                         _countdownStart.Remove(ta);
                     }
                 }
@@ -112,13 +100,11 @@ namespace canevents.src.QueueManagers
                     foreach (var uid in reg.PlayersGuids)
                         ta.PlayersGuids.Remove(uid);
 
-                    // Below minimum, the countdown is no longer valid.
                     if (ta.Shards.Count < minParties)
                         _countdownStart.Remove(ta);
                 }
 
-                // Also drop countdowns of assemblies about to be discarded: _countdownStart is keyed
-                // by TeamAssembly, so entries left after removal are unreachable and leak.
+                // Otherwise these countdown entries leak.
                 foreach (var ta in partialList)
                     if (ta.Shards.Count == 0) _countdownStart.Remove(ta);
 

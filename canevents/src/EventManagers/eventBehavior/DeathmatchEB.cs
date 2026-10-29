@@ -3,73 +3,50 @@ using canevents.src.EventManagers.eventBehavior.Shared;
 using canevents.src.EventManagers.events;
 using canevents.src.HarmonyPatches;
 using Vintagestory.API.Common;
+using Vintagestory.API.Common.Entities;
 using Vintagestory.API.Config;
 using Vintagestory.API.Datastructures;
 using Vintagestory.API.Server;
 
 namespace canevents.src.EventManagers.eventBehavior
 {
-    // Team Deathmatch: players respawn after death, teams score frags.
-    // Win = first team to killLimit, or highest score when timeLimitSeconds elapses.
-    public class DeathmatchEB : TeamScoreEB, IProvidesRespawnPoint
+    // Team deathmatch with respawns. First to killLimit, else highest at time up.
+    public class DeathmatchEB : TeamScoreEB
     {
         private int killLimit = 30;
 
         public DeathmatchEB(string name, JsonObject attributes, RunningEvent runningEvent)
             : base(name, attributes, runningEvent) { }
 
-        public override string Name { get => "Deathmatch"; set { } }
+        public override string Name => BehaviorNames.Deathmatch;
 
-        public override void Initialize()
-        {
-            ParseTimeLimit(300f);
-            killLimit = Config.Int("killLimit", 30);
-            ParseLoadoutSets();
-            Config.WarnUnknown();
-        }
+        protected override float DefaultTimeLimitSeconds => 300f;
+
+        protected override void ReadModeConfig() => killLimit = Config.Int("killLimit", 30);
 
         public override void OnBeforeStart() => BeginMatch();
 
         public override void OnStart() => GiveLoadoutAndHealAll();
 
-        protected override void OnScoredDeath(IServerPlayer victim, KillInfo kill)
+        protected override void OnScoredDeath(string victimUid, Entity victimBody, KillInfo kill)
         {
-            if (kill.HasKiller && !kill.TeamKill && kill.KillerUid != victim.PlayerUID
-                && kill.KillerTeam >= 0 && kill.KillerTeam < teamScores.Length)
-            {
-                teamScores[kill.KillerTeam]++;
-            }
+            CreditKillerTeam(kill);
 
-            // No EliminatePlayer: the player respawns via the vanilla flow and OnParticipantRespawn
-            // re-equips them.
-
-            EventBroadcaster.Broadcast(runningEvent,
-                Lang.Get("canevents:deathmatch-kill-score", victim.PlayerName, kill.KillerName, ScoreLine()));
+            // Bots don't respawn; ArenaBotsEB removes them after this.
+            Announce("canevents:deathmatch-kill-score", runningEvent.NameOf(victimUid), kill.KillerName, ScoreLine());
         }
 
-        protected override void AfterScoredDeath(IServerPlayer victim, KillInfo kill)
+        protected override void AfterScoredDeath(string victimUid, Entity victimBody, KillInfo kill)
         {
-            if (!MatchResolved && kill.KillerTeam >= 0 && kill.KillerTeam < teamScores.Length
-                && teamScores[kill.KillerTeam] >= killLimit)
+            if (!MatchResolved && IsTeamIndex(kill.KillerTeam) && teamScores[kill.KillerTeam] >= killLimit)
             {
                 DeclareTeamWinner(kill.KillerTeam);
             }
         }
 
-        public override void OnParticipantRespawn(IServerPlayer player)
-        {
-            if (!runningEvent.IsActive(player.PlayerUID)) return;
-            // TPThereAndBack handles teleport on its own OnParticipantRespawn; we re-equip + heal.
-            GiveLoadoutAndHeal(player);
-        }
+        protected override string EndedLangKey => "canevents:deathmatch-ended";
 
-        // OnBeforeFinish (time-up winner) comes from TeamScoreEB - it is the same in every team mode.
-
-        public override void OnEnd()
-            => EventBroadcaster.Broadcast(runningEvent,
-                Lang.Get("canevents:deathmatch-ended", ScoreLine()));
-
-        public bool TryGetRespawnPoint(string playerUid, out PlayerSpawnPos pos)
-            => EventSpawns.TryGetRandom(runningEvent, out pos);
+        // No base to defend, respawn anywhere.
+        protected override bool RespawnAtTeamSpawn => false;
     }
 }

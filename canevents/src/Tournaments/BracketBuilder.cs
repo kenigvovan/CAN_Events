@@ -3,17 +3,10 @@ using System.Collections.Generic;
 
 namespace canevents.src.Tournaments
 {
-    /// <summary>
-    /// Builds a single-elimination bracket. Pure logic (no VS types, no store, no side effects) so the
-    /// seeding and bye arithmetic can be tested on its own. Nodes are N-way: arity 2 is the classic
-    /// duel tree, higher arities seat a whole heat per node - the arithmetic is just base-N.
-    /// </summary>
+    // Single-elimination bracket, pure logic with no VS types. Nodes are N-way (arity 2 = duels).
     public static class BracketBuilder
     {
-        /// <summary>
-        /// Classic seeding order for 2^k slots (1,8,4,5,2,7,3,6 for eight): consecutive pairs are the
-        /// first-round matches, so the two best seeds can only meet in the final. Duels only.
-        /// </summary>
+        // Standard seed order for 2^k slots, e.g. 1,8,4,5,2,7,3,6. Duels only.
         public static int[] SeedOrder(int bracketSize)
         {
             var order = new List<int> { 1 };
@@ -38,36 +31,19 @@ namespace canevents.src.Tournaments
             return size;
         }
 
-        /// <summary>Smallest power of <paramref name="arity"/> that seats <paramref name="n"/> sides.</summary>
-        public static int NextPow(int n, int arity)
-        {
-            if (arity < 2) arity = 2;
-            int size = arity;
-            while (size < n) size *= arity;
-            return size;
-        }
-
-        /// <summary>
-        /// Builds every match of the bracket for <paramref name="seeded"/> (index 0 = seed 1) and
-        /// resolves first-round byes immediately. Entrant Seed fields are assigned here.
-        /// </summary>
-        /// <param name="arity">Sides per match. 2 is the ordinary duel bracket.</param>
-        /// <param name="advance">Sides out of each match. 1 is a knockout; more makes every node a heat.</param>
+        // seeded[0] = seed 1. Assigns Seed and resolves first-round byes.
         public static List<BracketMatch> Build(IReadOnlyList<Entrant> seeded, bool thirdPlace,
             int arity = 2, int advance = 1)
         {
             var matches = new List<BracketMatch>();
             if (seeded == null || seeded.Count < 2) return matches;
             if (arity < 2) arity = 2;
-            // Advancing everyone would never narrow the field; the last seat has to be contested.
             advance = Math.Max(1, Math.Min(advance, arity - 1));
 
             for (int i = 0; i < seeded.Count; i++) seeded[i].Seed = i + 1;
 
             int nextId = 1;
-            // Duels round UP to a full power-of-two draw: SeedOrder only speaks powers of two, and a
-            // first round sized to ceil(n/2) would read only the head of that order, dropping the
-            // entrants at its tail out of the bracket entirely. Byes are the correct shape here.
+            // Duels need a full power-of-two draw for SeedOrder, otherwise tail seeds get dropped.
             int firstRoundNodes = arity == 2
                 ? Math.Max(1, NextPow2(seeded.Count) / 2)
                 : Math.Max(1, (int)Math.Ceiling(seeded.Count / (double)arity));
@@ -78,7 +54,6 @@ namespace canevents.src.Tournaments
 
             Distribute(seeded, firstRound, arity, firstRoundNodes * arity);
 
-            // Each later round seats everyone who advanced out of the previous one.
             var previous = firstRound;
             int round = 1;
             while (previous.Count > 1)
@@ -93,8 +68,7 @@ namespace canevents.src.Tournaments
 
                 if (advance == 1)
                 {
-                    // A knockout: neighbours meet. Child i goes to node i/arity, so the tree reads as
-                    // a tree; round-robin here drew a first-round match into a far-away parent.
+                    // Knockout: neighbours meet (child i -> node i/arity).
                     for (int i = 0; i < previous.Count; i++)
                     {
                         var target = current[i / arity];
@@ -104,8 +78,7 @@ namespace canevents.src.Tournaments
                 }
                 else
                 {
-                    // Heats: deal winners across the nodes first, then runners-up, so two sides out of
-                    // the same heat do not meet again immediately unless the field is too small.
+                    // Heats: winners spread first, then runners-up, so heat-mates don't meet right away.
                     int seat = 0;
                     for (int place = 0; place < advance; place++)
                     {
@@ -119,25 +92,23 @@ namespace canevents.src.Tournaments
                     }
                 }
 
-                // The last round can be short of a full node - trim the seats nobody will fill.
                 TrimUnusedSlots(current, advancing);
 
                 previous = current;
                 round++;
-                if (round > 16) break;                 // paranoia: never spin on a bad configuration
+                if (round > 16) break;                 // guard against a bad config
             }
 
             if (previous.Count == 1)
             {
                 previous[0].IsFinal = true;
-                previous[0].AdvanceCount = 1;          // one champion, whatever the heats did
+                previous[0].AdvanceCount = 1;
                 previous[0].Feeds.Clear();
             }
 
             int rounds = round;
 
-            // A third-place match only means anything in a duel bracket: with N-way nodes the losers
-            // of the semifinals are a crowd, already ranked by the final standings.
+            // Third-place match only for duel brackets.
             if (thirdPlace && arity == 2 && rounds >= 2)
             {
                 var third = new BracketMatch
@@ -180,10 +151,7 @@ namespace canevents.src.Tournaments
             return m;
         }
 
-        /// <summary>
-        /// Drops the seats a round will never fill, so a partly-filled node does not look like it is
-        /// still waiting for people who do not exist.
-        /// </summary>
+        // Last round may not fill a whole node; drop the seats nobody will take.
         private static void TrimUnusedSlots(List<BracketMatch> round, int arriving)
         {
             int remaining = arriving;
@@ -198,10 +166,7 @@ namespace canevents.src.Tournaments
             }
         }
 
-        /// <summary>
-        /// Places the field into the first round: canonical seed order for duels (strong seeds kept
-        /// apart, byes land on them), round-robin across groups for N-way nodes.
-        /// </summary>
+        // Duels use seed order (byes go to top seeds), N-way nodes get round-robin.
         private static void Distribute(IReadOnlyList<Entrant> seeded, List<BracketMatch> firstRound,
             int arity, int bracketSize)
         {
@@ -227,10 +192,7 @@ namespace canevents.src.Tournaments
             }
         }
 
-        /// <summary>
-        /// Resolves every match with one side into a bye and pushes its winner forward, repeating
-        /// until nothing changes - an all-bye branch cascades several rounds deep.
-        /// </summary>
+        // Loops until stable, bye chains can cascade several rounds.
         public static void PropagateByes(List<BracketMatch> matches)
         {
             bool changed = true;
@@ -243,17 +205,15 @@ namespace canevents.src.Tournaments
 
                     var filled = m.ActiveSides;
 
-                    // Too many to walk over: this one has to be played.
                     if (filled.Count > Math.Max(1, m.AdvanceCount)) continue;
 
-                    // Only once nothing more can arrive. Without this the third-place match waited
-                    // forever when a semifinal was a walkover and produced no loser.
+                    // Wait for feeders, or a walkover semi leaves the 3rd place match stuck.
                     if (!FeedersResolved(matches, m)) continue;
 
                     if (filled.Count == 0)
                     {
-                        // Nobody is coming: close it as void rather than leave an undecidable node.
-                        if (m.Round == 0 && !m.IsThirdPlace) continue;   // an empty first-round slot is just a bye elsewhere
+                        // Never-seated first-round nodes are skipped; emptied ones close as void.
+                        if (m.Round == 0 && !m.IsThirdPlace && m.FilledCount == 0) continue;
                         m.State = BracketMatchState.Void;
                         m.ResultKind = "void";
                         changed = true;
@@ -269,10 +229,14 @@ namespace canevents.src.Tournaments
             }
         }
 
-        /// <summary>
-        /// True when every match that could still put somebody into this one is decided - counting both
-        /// routes: winner feeds and the loser feed into the third-place match.
-        /// </summary>
+        // Not "all slots filled": a slot fed by a void match stays empty forever.
+        public static bool ReadyToPlay(List<BracketMatch> matches, BracketMatch m)
+            => m.ActiveSides.Count >= 2 && !AwaitingFeeders(matches, m);
+
+        public static bool AwaitingFeeders(List<BracketMatch> matches, BracketMatch m)
+            => m.FilledCount != m.Slots.Count && !FeedersResolved(matches, m);
+
+        // Checks winner feeds and the loser feed into the 3rd place match.
         private static bool FeedersResolved(List<BracketMatch> matches, BracketMatch m)
         {
             foreach (var other in matches)
@@ -285,29 +249,25 @@ namespace canevents.src.Tournaments
             return true;
         }
 
-        /// <summary>
-        /// Writes a decided match's winner into its parent slot (and its loser into the third-place
-        /// match when routed there). Idempotent.
-        /// </summary>
+        // Idempotent.
         public static void Advance(List<BracketMatch> matches, BracketMatch m)
         {
-            // One seat per advancing place: the winner into Feeds[0], the runner-up into Feeds[1].
             for (int place = 0; place < m.WinnerEntrantIds.Count && place < m.Feeds.Count; place++)
             {
                 var feed = m.Feeds[place];
                 if (feed == null || feed.MatchId < 0) continue;
                 var parent = matches.Find(x => x.Id == feed.MatchId);
-                parent?.SetSlot(feed.Slot, m.WinnerEntrantIds[place]);
+                // Never rewrite a closed node.
+                if (parent != null && !parent.IsClosed) parent.SetSlot(feed.Slot, m.WinnerEntrantIds[place]);
             }
 
             if (m.LoserFeedsMatchId >= 0 && !string.IsNullOrEmpty(m.LoserEntrantId))
             {
                 var third = matches.Find(x => x.Id == m.LoserFeedsMatchId);
-                third?.SetSlot(m.LoserFeedsSlot, m.LoserEntrantId);
+                if (third != null && !third.IsClosed) third.SetSlot(m.LoserFeedsSlot, m.LoserEntrantId);
             }
         }
 
-        /// <summary>Human label for a round, used in chat and in both bracket renderers.</summary>
         public static string RoundLabel(BracketMatch m, int totalRounds)
         {
             if (m.IsThirdPlace) return "3rd place";
@@ -328,7 +288,7 @@ namespace canevents.src.Tournaments
             return max + 1;
         }
 
-        /// <summary>Fisher-Yates, with the caller's Random so seeding stays reproducible when it wants to be.</summary>
+        // Fisher-Yates.
         public static void Shuffle<T>(IList<T> list, Random rng)
         {
             for (int i = list.Count - 1; i > 0; i--)

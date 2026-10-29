@@ -1,0 +1,81 @@
+{
+    "code": "battle",
+    "rated": false,
+    "EventType": "Battle",
+    "EventPlaceTypes": [ "BATTLE" ],
+    "behaviors": [
+        { "name": "ArenaProtection", "attributes": {} },
+        { "name": "TeamMarkers", "attributes": {} },
+        {
+            "name": "ByPartsPartyCollected",
+            "attributes": {
+                "maxPartiesCount": 2,
+                "minPartiesCount": 2,
+                "maxPartySize": 5,
+                "minPartySize": 1
+            }
+        },
+        {
+            "name": "WaitingRoom",
+            "attributes": {
+                "lobbySeconds": 60,
+                "maxImbalance": 1,
+                "earlyStartSeconds": 5
+            }
+        },
+        {
+            "name": "SavePlayerAttributes",
+            "attributes": { "spectateOnElimination": true }
+        },
+        {
+            "name": "TPThereAndBack",
+            "attributes": { "randomizeSpawns": false }
+        },
+        {
+            "name": "NoFriendlyFire",
+            "attributes": {}
+        },
+        {
+            "name": "BattleRounds",
+            "attributes": {
+                "winsToWin": 5,
+                "roundTimeLimitSeconds": 180,
+                "intermissionSeconds": 8,
+                "loadoutSets": [
+                    {
+                        "name": "Spearman",
+                        "items": [
+                            { "code": "game:spear-generic-steel", "quantity": 1 },
+                            { "code": "game:bread-spelt-charred", "quantity": 12 },
+                            { "code": "game:armor-head-scale-steel", "quantity": 1 },
+                            { "code": "game:armor-body-chain-steel", "quantity": 1 },
+                            { "code": "game:armor-legs-scale-steel", "quantity": 1 }
+                        ]
+                    },
+                    {
+                        "name": "Archer",
+                        "items": [
+                            { "code": "game:bow-long", "quantity": 1 },
+                            { "code": "game:arrow-steel", "quantity": 64 },
+                            { "code": "game:bread-amaranth-perfect", "quantity": 10 },
+                            { "code": "game:club-scrap-scrap", "quantity": 1 },
+                            { "code": "game:armor-head-lamellar-blackbronze", "quantity": 1 },
+                            { "code": "game:armor-body-lamellar-blackbronze", "quantity": 1 },
+                            { "code": "game:armor-legs-lamellar-blackbronze", "quantity": 1 }
+                        ]
+                    },
+                    {
+                        "name": "Plate",
+                        "items": [
+                            { "code": "game:blade-blackguard-iron", "quantity": 1 },
+                            { "code": "game:shield-crude", "quantity": 1 },
+                            { "code": "game:armor-head-plate-steel", "quantity": 1 },
+                            { "code": "game:armor-body-plate-steel", "quantity": 1 },
+                            { "code": "game:armor-legs-plate-steel", "quantity": 1 }
+                        ]
+                    }
+                ]
+            }
+        }
+    ]
+}

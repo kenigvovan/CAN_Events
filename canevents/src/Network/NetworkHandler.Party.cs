@@ -22,8 +22,7 @@ namespace canevents.src.Network
             pm.OnPartyDisbanded += OnPartyDisbanded;
         }
 
-        /// <summary>Mirror of <see cref="WirePartyManager"/>, called from Dispose: otherwise a
-        /// hot-reload leaves the old handler pushing through a dead network channel.</summary>
+        // From Dispose: otherwise a hot-reload leaves the old handler pushing through a dead channel.
         private void UnwirePartyManager()
         {
             if (_partyManager == null) return;

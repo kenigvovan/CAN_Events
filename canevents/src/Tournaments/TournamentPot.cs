@@ -3,17 +3,10 @@ using System.Collections.Generic;
 
 namespace canevents.src.Tournaments
 {
-    /// <summary>
-    /// Pot arithmetic: rake off the top, then a split by placement percentages rather than the even
-    /// winner-takes-it split of a single match (see EntryFeePot). Pure, so it is checkable alone.
-    /// </summary>
+    // Rake, then split by placement percentages.
     public static class TournamentPot
     {
-        /// <summary>
-        /// Per-place payouts, one code-to-quantity map per paid place. Percents are normalized (need
-        /// not sum to 100) and truncated to the places that exist, so unused shares are redistributed
-        /// rather than burned. Rake is burned; integer leftovers go to first place.
-        /// </summary>
+        // Percents are normalized over existing places. Rake is burned, rounding leftovers go to 1st.
         public static List<Dictionary<string, int>> Split(
             IReadOnlyDictionary<string, int> pot, int rakePercent, IReadOnlyList<int> percents, int places)
         {
@@ -30,18 +23,16 @@ namespace canevents.src.Tournaments
             foreach (int w in weights) totalWeight += w;
             if (totalWeight <= 0)
             {
-                // No usable configuration: everything to first place rather than nowhere.
+                // Bad config: all to first place.
                 weights[0] = 1;
                 totalWeight = 1;
             }
 
             for (int i = 0; i < places; i++) result.Add(new Dictionary<string, int>());
 
-            int rake = rakePercent < 0 ? 0 : (rakePercent > 100 ? 100 : rakePercent);
-
             foreach (var kv in pot)
             {
-                int payout = (int)((long)kv.Value * (100 - rake) / 100);
+                int payout = Scoring.EntryFeePot.AfterRake(kv.Value, rakePercent);
                 if (payout <= 0) continue;
 
                 int handed = 0;
@@ -60,10 +51,7 @@ namespace canevents.src.Tournaments
             return result;
         }
 
-        /// <summary>
-        /// Divides one place's share among a team's members; the remainder goes to the first member,
-        /// as in EntryFeePot.
-        /// </summary>
+        // Remainder goes to the first member, like EntryFeePot.
         public static List<Dictionary<string, int>> SplitAmongMembers(
             IReadOnlyDictionary<string, int> share, int members)
         {

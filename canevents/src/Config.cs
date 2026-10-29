@@ -6,13 +6,12 @@ namespace canevents.src
         public string eventPlaceFolderName = "eventPlaces";
         public int attemptComposeTeamsEveryNSeconds = 5;
         public int attemptFindLocationForRunningEventEveryNSeconds = 5;
-        // Abort an assembled match that found no free arena in this many seconds, refunding stakes. 0 = never.
+        // Give up on a match with no free arena after this many seconds and refund stakes. 0 = never.
         public int maxLocationSearchSeconds = 120;
         public int maxEventDurationSeconds = 300;
         public int countdownSeconds = 5;
 
-        // Default key for the Events Browser (GlKeys name). Only a default: a player's own rebind
-        // in clientsettings.json wins over it.
+        // GlKeys name. A player's rebind in clientsettings.json overrides it.
         public string mainDialogHotkey = "K";
 
         // Auto-schedule
@@ -22,24 +21,26 @@ namespace canevents.src
         public string[] enabledGameModes = new string[] { "1x1", "spleef" };
         public int maxConcurrentEvents = 3;
 
-        // Default length of an /eventadmin open registration window when no minutes are given.
-        // 0 means the window stays open until the admin starts the event themselves.
+        // Default /eventadmin open window length. 0 = open until the admin starts the event.
         public int signupWindowMinutes = 5;
 
-        // Events disabled from the admin GUI: blocks new registrations and auto-scheduling, running
-        // matches continue. Runtime-toggled, persisted.
+        // Open matches (OpenDeathmatch etc.) kept running from boot; restarted if one dies.
+        public string[] openEvents = new string[0];
+
+        // Seconds after being hurt by a creature or player during which a player can't walk into or out
+        // of an arena (/canlive, pads). 0 = off.
+        public int combatTagSeconds = 10;
+
+        // Disabled from the admin GUI: no new signups or auto-scheduling, running matches continue.
         public string[] disabledEventCodes = new string[0];
 
-        // Player UIDs banned from all event queues (/eventadmin blacklist). Runtime-toggled, persisted.
+        // UIDs banned from all queues (/eventadmin blacklist).
         public string[] queueBlacklistedUids = new string[0];
 
-        // Mutators this server does not allow, by key: e.g. ["friendlyfire", "speed"]. A disabled
-        // mutator is dropped from event JSONs at load (with a log line), refused in duel challenges,
-        // and its knob is hidden from the duel tab. See EventMutators.Known for the full list.
+        // Mutator keys this server forbids, e.g. ["friendlyfire", "speed"]. See EventMutators.Known.
         public string[] disabledMutators = new string[0];
 
-        // Ranked matchmaking: Elo spread allowed within a match, starting at Base and widening per
-        // second the oldest waiting side has queued, so nobody waits forever.
+        // Ranked Elo spread per match: Base, widened per second the oldest side has waited.
         public int rankedMmrBaseTolerance = 150;
         public int rankedMmrToleranceWidenPerSecond = 25;
 
@@ -54,59 +55,59 @@ namespace canevents.src
         public string rewardParticipationItemCode = "";
         public int rewardParticipationQuantity = 0;
 
-        // Anti-throw: matches shorter than this pay no reward. 0 = off; overridable per event via
-        // RewardSpec.MinMatchSeconds.
+        // Matches shorter than this pay no reward. 0 = off. Per event: RewardSpec.MinMatchSeconds.
         public int minMatchDurationSecondsForReward = 0;
 
-        // Anti-farm token bucket on the top reward: <burst> rewards, then one slot back per
-        // <refillHours>. 0 burst = disabled. Default ≈ 12 winner rewards/day.
+        // Token bucket on the top reward: burst rewards, then one back per refillHours. 0 = off.
         public int rewardRateCapBurst = 12;
         public double rewardRateCapRefillHours = 2.0;
-        // false = one bucket per player across all events; true = a bucket per (player, event).
-        // Overridable per event via RewardSpec.SeparateRewardCap.
+        // true = separate bucket per (player, event). Per event: RewardSpec.SeparateRewardCap.
         public bool rewardRateCapPerEvent = false;
 
         // Issued gear
-        // What happens when a player throws match-issued kit on the ground. Death never drops it
-        // (the inventory is emptied before the body is), so this is about the drop key alone -
-        // without which a thrown sword lies on the arena for good and the match mints it.
-        //   "cleanup" - dropping works as before, marked items are swept off the arena when the
-        //               match ends. Needs a place with marked bounds.
-        //   "return"  - handed straight back to whoever dropped it
-        //   "remove"  - destroyed on the spot
-        //   "allow"   - left alone
-        // Overridable per event via the SavePlayerAttributes behavior's "issuedGearDrop" attribute.
-        // Only ever touches issued kit and outfits: an item the SERVER dropped for a player (their
-        // inventory was full) is never touched, or a reward landing at their feet would vanish.
+        // Dropped issued kit: "cleanup" (swept at match end, needs bounds), "return", "remove", "allow".
         public string issuedGearDrop = "cleanup";
 
         // Entry fee / wager
-        // On a void fee match (draw or under the contribution-gate), refund a disconnector's stake
-        // (true) or burn it (false). On a real result a disconnect always forfeits it (anti-dodge).
+        // Void fee match (draw or under the gate): refund a leaver's stake (true) or burn it (false).
         public bool entryFeeRefundForfeitOnVoid = true;
 
         // Ready check
-        // Seconds a queue match waits for its players to confirm they are at the keyboard before it
-        // looks for an arena. A queue slot is taken minutes in advance and people wander off; without
-        // this the match started with them, costing their side a player and them a loss they never
-        // played. 0 disables the check entirely.
+        // Seconds to confirm before a queue match looks for an arena. 0 = no check.
         public int queueReadyCheckSeconds = 20;
 
         // Duels
-        // Player-to-player challenges. A duel never affects Elo whatever it is played for: the
-        // players pick their own opponent, so a rated one would just be two people trading wins.
+        // Duels never affect Elo.
         public bool duelsEnabled = true;
 
-        // How long a challenge waits for an answer before it lapses.
         public int duelInviteTimeoutSeconds = 60;
 
         // Spectating
-        // Seat idle admins as observers of every match that goes live. Off by default: it moves a
-        // player without them asking. They can always watch on demand with /canspectate.
+        // Seat idle admins as observers of every match that goes live.
         public bool autoSpectateAdmins = false;
 
-        // How often (ms) an observer's client is sent participant positions and health. Only
-        // observers with the admin privilege receive it, and only while at least one is watching.
+        // Positions/health telemetry rate for admin observers.
         public int spectatorTelemetryIntervalMs = 500;
+
+        // Diagnostics
+        // Verbose "[trace]" log on server and clients (clients must reconnect). Noisy.
+        public bool diagnosticsLogging = false;
+
+        // Keep arena chunks loaded during a match; with no player nearby they unload in ~12s.
+        // Release goes through UnloadChunkColumn, so turn off if players report the ground vanishing.
+        public bool pinArenaChunks = true;
+
+        // One SpawnParticles packet per particle; turn off if clients silently close mid-match.
+        public bool arenaOutlineParticles = true;
+
+        // Inventory audit
+        // Log every inventory take/return ("[inventory]") plus a history file for admins.
+        public bool inventoryAudit = true;
+
+        // About two entries per player per match.
+        public int inventoryAuditMaxEntries = 4000;
+
+        // Above 1.2s the outline blinks (particle lifetime, see ZoneVisualizer.MakeProps).
+        public double arenaOutlineIntervalSeconds = 1.0;
     }
 }

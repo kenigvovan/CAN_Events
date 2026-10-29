@@ -9,12 +9,8 @@ using Vintagestory.API.Server;
 
 namespace canevents.src.EventManagers
 {
-    // Queue/registration management: add/remove from queue, stale-party cleanup,
-    // event enable/disable toggle, team-assembly trigger.
     public partial class CANEventManager
     {
-        // Internal add/remove
-
         bool AddRegistration(Registration registration)
         {
             return _store.Add(registration);
@@ -23,43 +19,30 @@ namespace canevents.src.EventManagers
         bool RemoveRegistration(Registration registration)
         {
             bool removed = _store.Remove(registration);
-            // Notify the QM so partial assemblies that contained this reg are cleaned up.
+            // QM must drop it from partial assemblies.
             if (QueueManagers.TryGetValue(registration.Event.Code, out var qm))
                 qm.OnRegistrationRemoved(registration);
             return removed;
         }
 
-        /// <summary>Per-event snapshot of current registrations. Safe to iterate without locking;
-        /// callers must NOT mutate the returned lists.</summary>
+        // Don't mutate the returned lists.
         public Dictionary<CANEvent, List<Registration>> SnapshotRegistrations()
             => _store.Snapshot();
 
-        /// <summary>How many sides are queued for one event, without copying the whole store.</summary>
         public int CountRegistrations(CANEvent canEvent)
             => _store.CountFor(canEvent);
 
-        /// <summary>The pending registration for this player in this event, or null. Public so
-        /// NetworkHandler need not touch _store directly.</summary>
         public Registration FindRegistration(string uid, CANEvent ev)
             => _store.FindRegistration(uid, ev);
 
-        // Enable / disable
-
-        /// <summary>
-        /// Toggles whether new registrations and auto-scheduling are allowed for an event code.
-        /// Running matches are NOT stopped; pending registrations for a disabled event are dropped.
-        /// </summary>
+        // Running matches keep going; pending registrations are dropped.
         public void SetEventEnabled(string code, bool enabled)
         {
             if (string.IsNullOrEmpty(code)) return;
-            AdminState.SetEventEnabled(code, enabled);   // persists itself when the set changed
+            AdminState.SetEventEnabled(code, enabled);
             if (!enabled) DropQueueRegistrationsFor(code);
         }
 
-        /// <summary>
-        /// Adds/removes a player from the queue blacklist and persists. Blacklisting also drops their
-        /// pending registrations so an in-progress signup can't slip through. True if the set changed.
-        /// </summary>
         public bool SetPlayerBlacklisted(string uid, bool blacklisted)
         {
             if (string.IsNullOrEmpty(uid)) return false;
@@ -68,10 +51,6 @@ namespace canevents.src.EventManagers
             return changed;
         }
 
-        // Stale-party / disconnect / disable drops
-
-        /// <summary>Removes every multi-player registration whose snapshot no longer matches an
-        /// existing party with the same membership, notifying those players.</summary>
         private void DropStalePartyRegistrations()
             => DropRegistrations(reg =>
             {
@@ -83,16 +62,8 @@ namespace canevents.src.EventManagers
             },
             _ => Lang.Get("canevents:queue-party-stale"));
 
-        /// <summary>
-        /// Pulls every matching registration out of the queue along with the three things that must
-        /// always go with it: telling the queue manager (a forgotten OnRegistrationRemoved leaves a
-        /// ghost in a partial assembly), refunding each affected player's escrow, and refreshing the
-        /// browser. <paramref name="messageFor"/> may return null to tell a given player nothing.
-        /// </summary>
-        // Namespaces spelled out: Vintagestory.API.Common declares a Func<> of its own and both
-        // namespaces are in scope.
-        /// <returns>True when at least one registration was actually dropped, for callers that have
-        /// something to say about it (see <see cref="DropQueueRegistrationsToSpectate"/>).</returns>
+        // Also notifies the QM, refunds escrow and refreshes the browser. messageFor may return null.
+        // System.* spelled out: Vintagestory.API.Common has its own Func<>.
         private bool DropRegistrations(System.Predicate<Registration> predicate,
             System.Func<string, string> messageFor)
         {
@@ -117,18 +88,12 @@ namespace canevents.src.EventManagers
             return true;
         }
 
-        /// <summary>Drops every pending registration involving the player (on disconnect, so an offline
-        /// player can't be pulled into a forming match). Party registrations are dropped whole.</summary>
+        // Party registrations are dropped whole.
         private void DropQueueRegistrationsForPlayer(string playerUid)
             => DropRegistrations(reg => reg.PlayersGuids.Contains(playerUid),
-                // The player who left needs no message; the party members left behind do.
                 uid => uid == playerUid ? null : Lang.Get("canevents:queue-member-disconnected"));
 
-        /// <summary>
-        /// The same drop, for a player who chose to go watch a match instead. Separate only for the
-        /// message: their party members are owed the real reason, and "member disconnected" would
-        /// send them looking for a network problem that never happened.
-        /// </summary>
+        // Same drop, different message for the party.
         internal bool DropQueueRegistrationsToSpectate(string playerUid, string playerName)
             => DropRegistrations(reg => reg.PlayersGuids.Contains(playerUid),
                 uid => uid == playerUid ? null : Lang.Get("canevents:queue-member-spectating", playerName));
@@ -136,8 +101,6 @@ namespace canevents.src.EventManagers
         private void DropQueueRegistrationsFor(string code)
             => DropRegistrations(reg => reg.Event.CodeEquals(code),
                 _ => Lang.Get("canevents:queue-disabled-dropped", code));
-
-        // Public queue API
 
         public (bool ok, string message) AddToQueue(CANEvent canEvent, IServerPlayer player, string loadoutSet = null)
         {
@@ -147,8 +110,6 @@ namespace canevents.src.EventManagers
             if (IsPlayerBlacklisted(player.PlayerUID))
                 return (false, Lang.Get("canevents:queue-blacklisted"));
 
-            // A bracket that locks its entrants owns their time until it is over, or they sit in casual
-            // queues between rounds and stall the whole tournament.
             if (Tournaments != null && Tournaments.IsLockedEntrant(player.PlayerUID))
                 return (false, Lang.Get("canevents:queue-tournament-locked"));
 
@@ -163,6 +124,8 @@ namespace canevents.src.EventManagers
                 {
                     if (IsPlayerBlacklisted(member))
                         return (false, Lang.Get("canevents:queue-blacklisted-party"));
+                    if (IsOccupiedByAMatch(member))
+                        return (false, Lang.Get("canevents:queue-in-match-party"));
                     if (Tournaments != null && Tournaments.IsLockedEntrant(member))
                         return (false, Lang.Get("canevents:queue-tournament-locked-party"));
                     if (_store.HasPlayerRegistration(member, canEvent))
@@ -172,6 +135,9 @@ namespace canevents.src.EventManagers
             }
             else
             {
+                // R24b: a queued player in a match would be skipped by assembly and start a second match after.
+                if (IsOccupiedByAMatch(player.PlayerUID))
+                    return (false, Lang.Get("canevents:queue-in-match"));
                 if (_store.HasPlayerRegistration(player.PlayerUID, canEvent))
                     return (false, Lang.Get("canevents:queue-already"));
                 registration = new Registration(canEvent, new List<string> { player.PlayerUID });
@@ -187,8 +153,7 @@ namespace canevents.src.EventManagers
                     return (false, check.message ?? Lang.Get("canevents:queue-unsuitable"));
             }
 
-            // Every member must be online, hold no other pending wager (a single escrow slot) and carry
-            // the full fee. Validated up front so the whole registration is rejected before any charge.
+            // Validate every member before charging anyone; escrow has a single slot.
             var fee = canEvent.EntryFee?.Items;
             var required = ItemSetUtil.Coalesce(fee);
             if (required.Count > 0)
@@ -206,8 +171,7 @@ namespace canevents.src.EventManagers
             if (!AddRegistration(registration))
                 return (false, Lang.Get("canevents:queue-add-failed"));
 
-            // Charge at commit so the fee can't be dropped before the match starts; refunded if they
-            // leave before assembly.
+            // Charged now so the fee can't be dropped before the start.
             if (required.Count > 0)
             {
                 foreach (var uid in registration.PlayersGuids)
@@ -238,37 +202,40 @@ namespace canevents.src.EventManagers
             bool removed = RemoveRegistration(registration);
             if (removed)
                 foreach (var uid in registration.PlayersGuids)
-                    RefundIfNoLongerCommitted(uid);  // give back the entry-fee escrow if they paid one
+                    RefundIfNoLongerCommitted(uid);
             return (removed, null);
         }
 
-        // Team assembly
-
-        /// <summary>Turns a finished team assembly into a live match, with MatchServices attached from
-        /// the first hook. Both the normal path and the admin force-start end here.</summary>
+        // configure runs before the match is listed or announced, so observers see its final flags.
         private RunningEvent StartMatch(CANEvent canEvent, TeamAssembly assembly,
-            MatchStartSource source, bool allowBots = true)
+            MatchStartSource source, bool allowBots = true, System.Action<RunningEvent> configure = null)
         {
-            // Bots join here rather than in the queue managers: they never queue, hold a registration
-            // or pay a fee, and this is the one place both start paths pass through. A tournament opts
-            // out - its line-up is the bracket pair, and a bot can neither pay into nor take from the pot.
-            int bots = allowBots ? Bots.BotFiller.Fill(canEvent, assembly) : 0;
+            // Bots are added here, not in the QMs: they never queue or pay. Tournaments pass allowBots=false.
+            int bots = allowBots ? Bots.BotFiller.Fill(canEvent, assembly, sapi.World.Logger) : 0;
             if (bots > 0)
                 sapi.World.Logger.Notification("[bots] Filled event {0} with {1} bot(s)", canEvent.Code, bots);
 
             var re = new RunningEvent(sapi, canEvent, assembly, MatchServices);
+            configure?.Invoke(re);
             AddRunningEvent(re);
 
-            // Ask the queue's players whether they are actually here, before an arena is tied up for
-            // them. Only the queue: a tournament runs its own ready check, a duel was just agreed to
-            // by both sides, and a debug bot match has nobody to ask.
-            if (source == MatchStartSource.Queue && config.queueReadyCheckSeconds > 0)
-                log.Safely("BeginReadyCheck for " + canEvent.Code, () => BeginReadyCheck(re));
+            if (source == MatchStartSource.Queue)
+            {
+                var regs = assembly.Shards.SelectMany(s => s.Registrations).Distinct().ToList();
+                lock (runningEvents) queueRegistrationsByMatch[re.Id] = regs;
+            }
 
-            // The one place every start path passes through, so the one place observers are told.
-            // Wrapped: a throwing observer must not take the match down with it.
-            log.Safely("OnMatchStarted observer for " + canEvent.Code,
-                () => OnMatchStarted?.Invoke(re, source));
+            // Queue only; tournaments run their own ready check.
+            bool awaitingReady = false;
+            if (source == MatchStartSource.Queue && config.queueReadyCheckSeconds > 0)
+                log.Safely("BeginReadyCheck for " + canEvent.Code, () =>
+                {
+                    BeginReadyCheck(re);
+                    awaitingReady = re.EventState == EventState.AwaitingReady;
+                });
+
+            // Ready-check matches are announced by CloseReadyCheck.
+            if (!awaitingReady) RaiseMatchStarted(re, source);
             return re;
         }
 
@@ -280,24 +247,9 @@ namespace canevents.src.EventManagers
 
             foreach (var (canEvent, registrations) in snapshot)
             {
-                if (registrations.Count == 0) continue;
-                // Something may be holding this event's queue open on purpose (a signup window):
-                // assembling now would start the match on the mode's minimum, which is exactly what
-                // the hold exists to prevent.
+                // Signup window holds the queue open.
                 if (QueueHold != null && QueueHold(canEvent.Code)) continue;
-                if (!QueueManagers.TryGetValue(canEvent.Code, out var qm)) continue;
-
-                var assemblies = qm.TryAssemble(canEvent, registrations);
-                foreach (var assembly in assemblies)
-                {
-                    var consumed = assembly.Shards.SelectMany(s => s.Registrations).Distinct().ToList();
-                    foreach (var reg in consumed)
-                        RemoveRegistration(reg);
-
-                    var re = StartMatch(canEvent, assembly, MatchStartSource.Queue);
-                    sapi.World.Logger.Notification(
-                        "Team assembly completed for event {0}, RunningEvent {1} created", canEvent.Code, re.Id);
-                }
+                AssembleFrom(canEvent, registrations);
             }
 
             int regsAfter = _store.Snapshot().Values.Sum(l => l.Count);
@@ -305,13 +257,52 @@ namespace canevents.src.EventManagers
                 NetworkHandler?.BroadcastEventList();
         }
 
-        /// <summary>
-        /// Starts an event now from whoever is already queued, bypassing the queue manager's
-        /// thresholds (the admin override behind /eventadmin forcestart). Each registration becomes
-        /// its own team. False when no usable registration is waiting.
-        /// </summary>
+        // Ignores QueueHold (signup window deadline) but keeps the mode's minimums, unlike ForceComposeEvent.
+        public int AssembleQueuedNow(CANEvent canEvent)
+        {
+            if (canEvent == null) return 0;
+            if (!_store.Snapshot().TryGetValue(canEvent, out var registrations)) return 0;
+
+            int started = AssembleFrom(canEvent, registrations);
+            if (started > 0) NetworkHandler?.BroadcastEventList();
+            return started;
+        }
+
+        private int AssembleFrom(CANEvent canEvent, List<Registration> registrations)
+        {
+            if (registrations == null || registrations.Count == 0) return 0;
+            if (!QueueManagers.TryGetValue(canEvent.Code, out var qm)) return 0;
+
+            int started = 0;
+            var assemblies = qm.TryAssemble(canEvent, registrations);
+            foreach (var assembly in assemblies)
+            {
+                var consumed = assembly.Shards.SelectMany(s => s.Registrations).Distinct().ToList();
+                foreach (var reg in consumed)
+                    RemoveRegistration(reg);
+
+                var re = StartMatch(canEvent, assembly, MatchStartSource.Queue);
+                started++;
+
+                // One match at a time: a registration elsewhere would hold a slot the player can't take
+                // (assembly skips busy players) and start another match once this one ends (R24a).
+                var inMatch = new HashSet<string>(consumed.SelectMany(r => r.PlayersGuids));
+                DropRegistrations(reg => reg.PlayersGuids.Any(inMatch.Contains),
+                    _ => Lang.Get("canevents:queue-dropped-match-started", canEvent.Code));
+                sapi.World.Logger.Notification(
+                    "Team assembly completed for event {0}, RunningEvent {1} created", canEvent.Code, re.Id);
+            }
+            return started;
+        }
+
+        // /eventadmin forcestart: each registration is its own team, QM thresholds ignored.
         public bool ForceComposeEvent(CANEvent canEvent, out string reason)
         {
+            if (OpenModeOf(canEvent) != null)
+            {
+                reason = "it is an open match - use /eventadmin live start";
+                return false;
+            }
             if (!QueueManagers.ContainsKey(canEvent.Code))
             {
                 reason = "no queue manager wired for this event";
@@ -325,14 +316,20 @@ namespace canevents.src.EventManagers
                 return false;
             }
 
-            // Every registration still in the store is fair game: MarkedUsed only means "sitting in some
-            // (possibly partial) assembly", which is exactly what forcestart exists to override; regs of
-            // started matches are already gone. Players busy in another live match are excluded, though:
-            // double-booking would clobber their inventory backup and corrupt both rosters.
+            // MarkedUsed is ignored on purpose; busy players are not (would clobber their inventory backup).
             var usable = registrations.Where(r => !r.PlayersGuids.Any(IsPlayerBusy)).ToList();
             if (usable.Count == 0)
             {
                 reason = "everyone queued for it is already in another match";
+                return false;
+            }
+
+            var eb = canEvent.AssemblingEB;
+            int minSides = Math.Max(1, eb?.MinPartiesCount ?? 1);
+            int botSides = Bots.BotFiller.SidesItCanFill(canEvent);
+            if (Math.Max(usable.Count, botSides) < minSides)
+            {
+                reason = $"only {usable.Count} of the {minSides} sides it needs are queued";
                 return false;
             }
 
@@ -353,15 +350,8 @@ namespace canevents.src.EventManagers
             return true;
         }
 
-        /// <summary>
-        /// Starts an event now with exactly these teams (one inner list per team), bypassing the queue
-        /// entirely: no queue manager, no bots, nobody else pulled in. The tournament driver's way in -
-        /// unlike <see cref="ForceComposeEvent"/> the line-up is dictated and the live match is RETURNED
-        /// so the caller can follow it to its result. The synthetic registrations deliberately never
-        /// reach the store, so the party-change sweeps and RefundIfNoLongerCommitted cannot see them.
-        /// </summary>
-        /// <param name="loadoutChoices">Optional per-uid loadout set names; unlisted players are asked as usual.</param>
-        /// <param name="allowedPlaceIds">Arena whitelist; null or empty means any suitable arena.</param>
+        // Tournament entry point: exact teams, no QM, no bots. Registrations never hit the store,
+        // so party sweeps and RefundIfNoLongerCommitted don't see them.
         public RunningEvent StartMatchFor(
             CANEvent canEvent,
             IReadOnlyList<IReadOnlyList<string>> teams,
@@ -379,20 +369,15 @@ namespace canevents.src.EventManagers
                 if (team == null || team.Count == 0) { reason = "an empty team was passed"; return null; }
                 foreach (var uid in team)
                 {
-                    // A bot side has no player behind it, so the online/busy checks do not apply.
-                    if (Bots.BotIdentity.IsBot(uid)) continue;
-
-                    if (!(sapi.World.PlayerByUid(uid) is IServerPlayer))
+                    // The caller is the tournament itself.
+                    switch (PlayerState.Check(uid, ignoreTournamentCall: true))
                     {
-                        reason = NameOf(uid) + " is offline";
-                        return null;
-                    }
-                    // Not IsPlayerBusy: that counts "called for a tournament match", which is precisely
-                    // what these players are - the caller is the tournament.
-                    if (IsOccupiedByAMatch(uid))
-                    {
-                        reason = NameOf(uid) + " is already in a match";
-                        return null;
+                        case PlayerAvailability.Offline:
+                            reason = NameOf(uid) + " is offline";
+                            return null;
+                        case PlayerAvailability.Busy:
+                            reason = NameOf(uid) + " is already in a match";
+                            return null;
                     }
                 }
             }

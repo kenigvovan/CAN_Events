@@ -3,23 +3,18 @@ using System.Linq;
 using canevents.src.EventManagers.eventBehavior.Shared;
 using canevents.src.EventManagers.events;
 using Vintagestory.API.Common;
+using Vintagestory.API.Common.Entities;
 using Vintagestory.API.Config;
 using Vintagestory.API.Datastructures;
 using Vintagestory.API.Server;
 
 namespace canevents.src.EventManagers.eventBehavior.abstracts
 {
-    /// <summary>
-    /// Base for events that equip players from loadout sets and tally kills/deaths (ArenaFight,
-    /// Deathmatch, KingOfTheHill, HungerGames, Juggernaut). Owns loadouts, kill attribution +
-    /// leaderboard credit and the scoreboard push; concrete events only add their win rules.
-    /// </summary>
+    // Base for loadout + kill/death scoring modes. Subclasses add win rules.
     public abstract class KillScoringEB : CANEventBehavior, ILoadoutProvider, IMatchScorer, IOutfitWardrobe
     {
         protected List<LoadoutSet> loadoutSets = new List<LoadoutSet>();
 
-        /// <summary>How long a match may run; a mode supplies only its default
-        /// (see <see cref="ParseTimeLimit"/>).</summary>
         protected float timeLimitSeconds;
         protected readonly Dictionary<string, int> killCounts = new Dictionary<string, int>();
         protected readonly Dictionary<string, int> deathCounts = new Dictionary<string, int>();
@@ -27,46 +22,76 @@ namespace canevents.src.EventManagers.eventBehavior.abstracts
         protected KillScoringEB(string name, JsonObject attributes, RunningEvent runningEvent)
             : base(name, attributes, runningEvent) { }
 
-        /// <summary>Plain clothes handed out with the loadout - see <see cref="EventOutfit"/>.
-        /// Set to the effective wardrobe (managed store, else the JSON one) in InitScores.</summary>
+        // Effective wardrobe (outfit store, else JSON), resolved in InitScores.
         protected List<string[]> outfits = new List<string[]>();
 
-        /// <summary>The wardrobe as the event's JSON declares it, the fallback when the outfit
-        /// store has nothing for this event.</summary>
         private List<string[]> jsonOutfits = new List<string[]>();
 
-        /// <summary>Everyone in this match looks different, instead of each player keeping the same
-        /// outfit across matches. Set by the `distinctOutfits` attribute.</summary>
+        // true: unique outfit per player this match; false: stable per-uid pick across matches.
         private bool distinctOutfits;
 
-        /// <summary>uid -> outfit index for this match, dealt in OnBeforeStart.</summary>
+        // uid -> outfit index
         private Dictionary<string, int> outfitPicks;
 
-        /// <summary>Deaths are announced in the kill feed. Set by the `announceDeaths` attribute,
-        /// available to every event built on this base (the bots behavior has its own knob of the
-        /// same name for bot deaths).</summary>
         private bool announceDeaths = true;
 
-        /// <summary>
-        /// Parse the inline loadout sets from Attributes. Call from Initialize().
-        /// The two keys are declared as read (though parsed elsewhere) so the unknown-attribute
-        /// reporter does not flag every combat config's loadouts as a misspelling.
-        /// </summary>
-        protected void ParseLoadoutSets()
+        // Who sees the HUD scoreboard during the match: all, eliminated (out + spectators), spectators, none.
+        private string scoreboardVisibility = "all";
+
+        // Sealed so WarnUnknown always runs after the mode has read its own keys.
+        public sealed override void Initialize()
         {
-            Config.Has("loadoutSets");
-            Config.Has("outfits");
+            if (DefaultTimeLimitSeconds > 0f) ParseTimeLimit(DefaultTimeLimitSeconds);
+            ParseLoadoutSets();
+            ReadModeConfig();
+            Config.WarnUnknown();
+        }
+
+        // 0 = no time limit
+        protected virtual float DefaultTimeLimitSeconds => 0f;
+
+        protected virtual void ReadModeConfig() { }
+
+        private void ParseLoadoutSets()
+        {
+            // Mark as read for WarnUnknown; parsed elsewhere.
+            Config.Has(BehaviorConfigKeys.LoadoutSets);
+            Config.Has(BehaviorConfigKeys.Outfits);
             loadoutSets = LoadoutService.ParseFromAttributes(Attributes);
             jsonOutfits = EventOutfit.Parse(Attributes);
             outfits = jsonOutfits;
             distinctOutfits = Config.Bool("distinctOutfits", false);
-            announceDeaths = Config.Bool("announceDeaths", true);
+            announceDeaths = Config.Bool(BehaviorConfigKeys.AnnounceDeaths, true);
+            ReadScoreboardVisibility();
         }
 
-        /// <summary>Read the match time limit, falling back to this mode's own default.
-        /// Call from Initialize(); apply it with SetDuration in OnBeforeStart().</summary>
-        protected void ParseTimeLimit(float defaultSeconds)
-            => timeLimitSeconds = Config.Float("timeLimitSeconds", defaultSeconds);
+        private void ReadScoreboardVisibility()
+        {
+            var allowed = BehaviorConfigKeys.ScoreboardVisibilities;
+            string value = (Config.String(BehaviorConfigKeys.ScoreboardVisibility, allowed[0]) ?? allowed[0]).Trim().ToLowerInvariant();
+            if (allowed.Contains(value))
+            {
+                scoreboardVisibility = value;
+                return;
+            }
+            log.Warning("scoreboardVisibility '{0}' is not one of {1}, using '{2}'.", value, string.Join("/", allowed), allowed[0]);
+            scoreboardVisibility = allowed[0];
+        }
+
+        public bool ShowsScoreboardTo(string uid)
+        {
+            switch (scoreboardVisibility)
+            {
+                case "none": return false;
+                case "spectators": return !runningEvent.IsParticipant(uid);
+                case "eliminated": return !runningEvent.IsActive(uid);
+                default: return true;
+            }
+        }
+
+        // Applied in BeginMatch.
+        private void ParseTimeLimit(float defaultSeconds)
+            => timeLimitSeconds = Config.Float(BehaviorConfigKeys.TimeLimitSeconds, defaultSeconds);
 
         // ILoadoutProvider
         public string[] GetLoadoutSetNames(string eventCode = null, LoadoutManager lm = null)
@@ -78,8 +103,7 @@ namespace canevents.src.EventManagers.eventBehavior.abstracts
         public string[] GetLoadoutSetDescriptions(string eventCode = null, LoadoutManager lm = null)
             => LoadoutService.GetSetDescriptions(LoadoutService.GetEffectiveSets(eventCode, lm, loadoutSets));
 
-        // Explicit class members rather than leaning on the interface defaults, so a mode can
-        // override them the ordinary way.
+        // Virtual here so modes can override the interface defaults.
         public virtual bool OffersPlayerChoice => true;
         public virtual bool HidesIndividualScores => false;
         public virtual bool HidesKillerIdentity => false;
@@ -92,21 +116,14 @@ namespace canevents.src.EventManagers.eventBehavior.abstracts
             return result;
         }
 
-        /// <summary>
-        /// The opening of a match, in the order every mode needs it: the time limit, then the score
-        /// reset. Call it FIRST from OnBeforeStart and do mode-specific setup after - InitScores
-        /// clears the match-resolution latch, so anything that ran before it would be undone.
-        ///
-        /// A mode without a time limit (ArenaFight) calls <see cref="InitScores"/> directly: passing
-        /// it through here would hand it a deadline it is not supposed to have.
-        /// </summary>
+        // Call first in OnBeforeStart: InitScores resets the resolution latch.
+        // Modes without a time limit call InitScores directly.
         protected virtual void BeginMatch()
         {
             runningEvent.SetDuration(timeLimitSeconds);
             InitScores();
         }
 
-        /// <summary>Zero-init kill/death tallies for every participant. Call from OnBeforeStart().</summary>
         protected void InitScores()
         {
             ResetMatchResolution();
@@ -117,19 +134,13 @@ namespace canevents.src.EventManagers.eventBehavior.abstracts
                 killCounts[uid] = 0;
                 deathCounts[uid] = 0;
             }
-            // Resolved once per match, before the outfits are dealt: a managed wardrobe usually has
-            // a different number of outfits than the JSON one, and the count decides the deal.
+            // Before the deal: the outfit count decides it.
             outfits = EventOutfit.GetEffectiveOutfits(runningEvent.Event?.Code,
                 runningEvent.OutfitManager, jsonOutfits);
-            // Dealt here rather than at dress time: the whole line-up has to be known at once for
-            // "everyone looks different" to mean anything.
+            // Dealt for the whole line-up at once so distinct picks are possible.
             outfitPicks = EventOutfit.Assign(runningEvent.ParticipantsBefore, outfits.Count,
                 stable: !distinctOutfits, rand: runningEvent.sapi?.World?.Rand);
 
-            // Distinct outfits are a promise the wardrobe has to be able to keep: with fewer
-            // outfits than players some of them WILL be dressed alike, and in a hidden-role mode
-            // that is a broken clue, not a cosmetic slip. Said out loud rather than silently
-            // wrapping around, because only the config can fix it.
             if (distinctOutfits && outfits.Count > 0 && outfits.Count < runningEvent.ParticipantsBefore.Count)
                 log.Warning("distinctOutfits is on but the wardrobe has {0} outfit(s) for {1} player(s) - "
                     + "{2} of them will be dressed alike. Add outfits or lower maxPartiesCount.",
@@ -137,25 +148,40 @@ namespace canevents.src.EventManagers.eventBehavior.abstracts
                     runningEvent.ParticipantsBefore.Count - outfits.Count);
         }
 
-        /// <summary>Equip the chosen loadout and full-heal every participant. Call from OnStart().</summary>
-        protected void GiveLoadoutAndHealAll()
+        // Late entry: counts start at zero, stable outfit pick (OutfitIndexOf = -1).
+        public override void OnParticipantAdmitted(IServerPlayer player)
         {
-            foreach (var uid in runningEvent.ParticipantsBefore)
-            {
-                // A pre-start dropout stays on the roster for rewards but never enters the arena;
-                // a kit handed to them would be minted outside the match - nothing takes it back.
-                if (!runningEvent.IsActive(uid)) continue;
-                var player = runningEvent.sapi.World.PlayerByUid(uid) as IServerPlayer;
-                if (player == null) continue;
-                GiveLoadoutAndHeal(player);
-            }
+            SeedCounts(player.PlayerUID);
+            GiveLoadoutAndHeal(player);
+            PushScoreboard();
         }
 
-        /// <summary>Re-equip + full-heal a single (respawned) player.</summary>
+        // Late entrant (player or bot): RecordDeath only counts uids it already knows.
+        public void SeedCounts(string uid)
+        {
+            if (!killCounts.ContainsKey(uid)) killCounts[uid] = 0;
+            if (!deathCounts.ContainsKey(uid)) deathCounts[uid] = 0;
+        }
+
+        public override void OnParticipantWithdrawn(IServerPlayer player) => PushScoreboard();
+
+        protected void GiveLoadoutAndHealAll()
+        {
+            // Pre-start dropouts stay on the roster; a kit given to them would never be taken back.
+            foreach (var player in runningEvent.ActiveOnlineParticipants)
+                GiveLoadoutAndHeal(player);
+        }
+
+        // Round resets: shop purchases still carried come back with the next kit, everything else goes.
+        protected void ClearForNextRound(IServerPlayer player)
+        {
+            MatchShopEB.Of(runningEvent)?.Stash(player);
+            PlayerInventoryBackup.ClearInventory(player);
+        }
+
         protected void GiveLoadoutAndHeal(IServerPlayer player)
         {
-            // Bring-your-own match: inventory is never cleared or restored, so a kit here would be
-            // a straight item mint, and EquipSet would destroy worn armour. Only the heal applies.
+            // KeepOwnGear: inventory isn't backed up, a kit would be duped and EquipSet would wipe armour.
             if (runningEvent.KeepOwnGear)
             {
                 EventBroadcaster.Heal(player);
@@ -163,102 +189,91 @@ namespace canevents.src.EventManagers.eventBehavior.abstracts
                 return;
             }
 
-            LoadoutService.Give(player, runningEvent, loadoutSets);
-            // After the loadout, never before: the outfit only fills clothing slots the loadout
-            // left empty, so issued armour keeps its place.
+            var shop = MatchShopEB.Of(runningEvent);
+            LoadoutService.Give(player, runningEvent, loadoutSets,
+                shop == null ? null : kit => shop.Dress(player.PlayerUID, kit));
+            shop?.ReturnStash(player);
+            // After the loadout: outfit only fills empty clothing slots.
             EventOutfit.Dress(player, runningEvent.sapi, outfits, OutfitIndexOf(player.PlayerUID));
             EventBroadcaster.Heal(player);
-            // Strictly after the heal, which would otherwise undo a reduced start health. The match
-            // start applies these too (see ActuallyStartEvent); this call is what covers a respawn.
+            // After the heal, or a reduced start health gets undone.
             EventBroadcaster.ApplyStatMutators(player, runningEvent.Event);
         }
 
-        /// <summary>Tally a death and credit a clean kill (no self-kill, no team-kill) to the killer
-        /// and the leaderboard; returns the resolved info for the concrete event to react on.</summary>
-        protected KillInfo RecordDeath(IServerPlayer victim, DamageSource source)
+        protected KillInfo RecordDeath(string victimUid, DamageSource source)
         {
-            string victimUid = victim.PlayerUID;
             if (deathCounts.ContainsKey(victimUid)) deathCounts[victimUid]++;
 
-            var kill = KillAttribution.Resolve(runningEvent, victim, source);
-            if (kill.HasKiller && !kill.TeamKill && kill.KillerUid != victimUid)
+            var shop = MatchShopEB.Of(runningEvent);
+            shop?.OnDeath(victimUid);
+
+            var kill = KillAttribution.Resolve(runningEvent, victimUid, source);
+            if (kill.IsClean)
             {
-                if (killCounts.ContainsKey(kill.KillerUid)) killCounts[kill.KillerUid]++;
-                // The persistent leaderboard counts only the rated track, and only actual
-                // participants: without the roster check a bystander farms kills from outside the
-                // arena, and a bot killer leaves an immortal `bot:...` row in the standings.
+                if (killCounts.ContainsKey(kill.KillerUid))
+                {
+                    killCounts[kill.KillerUid]++;
+                    shop?.OnKill(kill.KillerUid);
+                }
+                // Leaderboard: rated only, roster members only, no bots on either side.
                 if (runningEvent.Event.Rated
                     && !runningEvent.SuppressRating
                     && killCounts.ContainsKey(kill.KillerUid)
-                    && !Bots.BotIdentity.IsBot(kill.KillerUid))
+                    && !Bots.BotIdentity.IsBot(kill.KillerUid)
+                    && !Bots.BotIdentity.IsBot(victimUid))
                     runningEvent.Leaderboard?.RecordKill(kill.KillerUid, runningEvent.Event.Code);
             }
             return kill;
         }
 
-        // IOutfitWardrobe: the deal covers every participant, bots included, so ArenaBotsEB can
-        // dress its bodies from it instead of picking on its own and colliding with a player.
-
+        // IOutfitWardrobe: ArenaBotsEB dresses bots from the same deal.
         public List<string[]> Wardrobe => outfits;
 
-        /// <summary>Which outfit this player wears in this match, or -1 for the stable per-uid pick.</summary>
+        // -1 = stable per-uid pick
         public int OutfitIndexOf(string uid)
             => outfitPicks != null && uid != null && outfitPicks.TryGetValue(uid, out var i) ? i : -1;
 
         protected void SendKillFeed(string killerName, string victimName, string verb)
-            => runningEvent.NetworkHandler?.SendKillFeed(runningEvent, killerName, victimName, verb);
+            => EventBroadcaster.KillFeed(runningEvent, killerName, victimName, verb);
 
-        // Death handling: one fixed shape for every kill-scoring mode (active check, tally, feed,
-        // scoreboard); modes fill in only the middle, because per-mode copies drifted.
-
-        /// <summary>Whether a death goes to the kill feed at all. Off by config for an event that
-        /// wants its deaths to pass unremarked - in a hidden-role mode even "somebody died" is a
-        /// clue, because it says the killer is within reach of whoever just vanished.</summary>
         protected virtual bool SendsKillFeed => announceDeaths;
 
-        /// <summary>What the kill feed says this mode does to the victim ("killed", "eliminated").</summary>
         protected virtual string KillFeedVerb => "killed";
 
-        /// <summary>Who the kill feed names as the killer. Anonymous while the mode hides killers,
-        /// so the audience still sees that somebody died without learning who did it.</summary>
         protected virtual string KillFeedKillerName(KillInfo kill)
             => HidesKillerIdentity ? Lang.Get("canevents:killer-someone") : kill.KillerName;
 
-        /// <summary>Mode-specific scoring and announcement, before the kill feed goes out.</summary>
-        protected virtual void OnScoredDeath(IServerPlayer victim, KillInfo kill) { }
+        // Before the kill feed. Victim may be a bot, so use uid/body, not a player lookup.
+        protected virtual void OnScoredDeath(string victimUid, Entity victimBody, KillInfo kill) { }
 
-        /// <summary>Mode-specific follow-up once the death is on record (elimination, win checks).
-        /// Split from <see cref="OnScoredDeath"/> so the feed and scoreboard are already out when a
-        /// mode ends the match from here.</summary>
-        protected virtual void AfterScoredDeath(IServerPlayer victim, KillInfo kill) { }
+        // After feed and scoreboard are out, so it's safe to end the match here.
+        protected virtual void AfterScoredDeath(string victimUid, Entity victimBody, KillInfo kill) { }
 
-        public sealed override void OnParticipantDeath(IServerPlayer victim, DamageSource source)
+        // Kill feed for bots too.
+        public override bool AnnouncesDeaths => true;
+
+        public sealed override void OnParticipantDeath(string victimUid, Entity victimBody, DamageSource source)
         {
-            // A player already eliminated (or never in this match) must not score or be scored on.
-            if (!runningEvent.IsActive(victim.PlayerUID)) return;
+            if (victimUid == null || !runningEvent.IsActive(victimUid)) return;
 
-            var kill = RecordDeath(victim, source);
-            OnScoredDeath(victim, kill);
-            if (SendsKillFeed) SendKillFeed(KillFeedKillerName(kill), victim.PlayerName, KillFeedVerb);
+            var kill = RecordDeath(victimUid, source);
+            OnScoredDeath(victimUid, victimBody, kill);
+            if (SendsKillFeed) SendKillFeed(KillFeedKillerName(kill), runningEvent.NameOf(victimUid), KillFeedVerb);
             PushScoreboard();
-            AfterScoredDeath(victim, kill);
-        }
+            AfterScoredDeath(victimUid, victimBody, kill);
 
-        // Match resolution latch
+            // The push above went out while the victim was still in; an eliminated player is now allowed to see it.
+            if (scoreboardVisibility == "eliminated" && !runningEvent.IsActive(victimUid)
+                && runningEvent.sapi.World.PlayerByUid(victimUid) is IServerPlayer victim)
+                runningEvent.NetworkHandler?.SendScoreboardTo(runningEvent, victim);
+        }
 
         private bool matchResolved;
 
-        /// <summary>Whether a winner has already been declared. Modes that keep scoring on a timer
-        /// check this so a resolved match stops reacting.</summary>
         protected bool MatchResolved => matchResolved;
 
-        /// <summary>
-        /// Declares the winners (null = draw) and asks the manager to finish, once, so a second
-        /// resolution cannot overwrite the first (e.g. time-up declaring a draw over a score win).
-        /// Returns whether this call resolved the match.
-        /// </summary>
-        /// <param name="requestFinish">False when the match is already finishing and only the winners
-        /// are still open - the time-up path, where the manager called OnBeforeFinish itself.</param>
+        // Only the first call wins, so time-up can't overwrite a score win with a draw.
+        // requestFinish=false on the time-up path, where the manager is already finishing.
         protected bool ResolveMatch(IEnumerable<string> winners, string reason, bool requestFinish = true)
         {
             if (matchResolved) return false;
@@ -268,26 +283,24 @@ namespace canevents.src.EventManagers.eventBehavior.abstracts
             return true;
         }
 
-        /// <summary>Latches "resolved" without touching the winners: for a mode whose winner the
-        /// default <c>GetWinners()</c> fallback (last group standing) already answers correctly.</summary>
+        // Leaves winners to the default GetWinners() (last group standing).
         protected void MarkMatchResolved() => matchResolved = true;
 
-        /// <summary>Clears the latch for a fresh match. Call from OnBeforeStart(): behaviors are
-        /// re-parsed per match, but a reused instance would otherwise start already resolved.</summary>
         protected void ResetMatchResolution() => matchResolved = false;
 
-        protected virtual void PushScoreboard()
-            => runningEvent.NetworkHandler?.SendScoreboard(runningEvent, killCounts, deathCounts);
+        protected void PushScoreboard() => EventBroadcaster.Scoreboard(runningEvent, BuildScoreboard());
 
         // IMatchScorer
+        public virtual ScoreboardData BuildScoreboard()
+            => new ScoreboardData { Kills = killCounts, Deaths = deathCounts };
+
         public Dictionary<string, int> GetFinalKillCounts() => killCounts;
         public Dictionary<string, int> GetFinalDeathCounts() => deathCounts;
 
-        /// <summary>
-        /// Kill-based placement: FFA ranks each player by winner, then kills desc / deaths asc; team
-        /// mode (any group &gt; 1) ranks brackets of teams by winner, then total team kills.
-        /// Score-based team modes override this in <see cref="TeamScoreEB"/>.
-        /// </summary>
+        protected int KillsOf(string uid) => ScoringUtil.CountOf(killCounts, uid);
+        protected int DeathsOf(string uid) => ScoringUtil.CountOf(deathCounts, uid);
+
+        // FFA: won, kills desc, deaths asc. Teams: won, team kills. TeamScoreEB overrides.
         public virtual List<HashSet<string>> GetFinalRanking()
         {
             var groups = runningEvent.ParticipantsByGroupsBefore;
@@ -295,13 +308,11 @@ namespace canevents.src.EventManagers.eventBehavior.abstracts
 
             if (groups != null && groups.Any(g => g.Count > 1))
             {
-                // Teams sharing the same (won, kills) key must share ONE bracket: without the merge
-                // the stable sort ordered tied teams strictly, and the first-listed team collected a
-                // full win's Elo and the 1st-place reward on a 0-0 draw.
+                // Tied teams share one bracket, otherwise a 0-0 draw paid 1st place to the first team.
                 return groups
                     .GroupBy(g => (
                         won: g.Any(uid => winners.Contains(uid)),
-                        kills: g.Sum(uid => killCounts.TryGetValue(uid, out var k) ? k : 0)))
+                        kills: g.Sum(KillsOf)))
                     .OrderByDescending(grp => grp.Key.won)
                     .ThenByDescending(grp => grp.Key.kills)
                     .Select(grp =>
@@ -313,12 +324,12 @@ namespace canevents.src.EventManagers.eventBehavior.abstracts
                     .ToList();
             }
 
-            // FFA: players sharing the full key tie into one bracket (same reasoning as the team path).
+            // FFA: ties share a bracket too.
             return runningEvent.ParticipantsBefore
                 .GroupBy(uid => (
                     won: winners.Contains(uid) ? 1 : 0,
-                    kills: killCounts.TryGetValue(uid, out var k) ? k : 0,
-                    deaths: deathCounts.TryGetValue(uid, out var d) ? d : 0))
+                    kills: KillsOf(uid),
+                    deaths: DeathsOf(uid)))
                 .OrderByDescending(grp => grp.Key.won)
                 .ThenByDescending(grp => grp.Key.kills)
                 .ThenBy(grp => grp.Key.deaths)

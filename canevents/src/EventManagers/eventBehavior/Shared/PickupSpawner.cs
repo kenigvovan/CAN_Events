@@ -10,26 +10,34 @@ using Vintagestory.API.Server;
 
 namespace canevents.src.EventManagers.eventBehavior.Shared
 {
-    /// <summary>
-    /// Drops a collectible token on the spots an admin marked on the place, on a timer, and pays
-    /// whoever picks it up with a kit of items.
-    ///
-    /// The token is the whole point of the indirection: a bow lying on the floor would be picked up
-    /// by whoever walked past first and no mode could react to it. A token is inert - it is looked
-    /// for in the finder's bags on the next tick, taken back out, and the real reward is handed over
-    /// there, so the mode gets a "this player just armed themselves" moment it can announce, conceal
-    /// or refuse.
-    ///
-    /// Nothing here is Murder Mystery specific; that mode is only the first customer.
-    /// </summary>
+    // Drops inert tokens on marked spots on a timer; enough tokens in a player's bags get swapped
+    // for the reward kit, so the mode gets a callback instead of a raw item pickup.
     public sealed class PickupSpawner
     {
-        /// <summary>Marks a stack as one of ours, so a player who brought the same item from home is
-        /// not paid for it and the arena sweep can tell them apart.</summary>
+        // Stack attribute that tells our tokens from the same item brought in.
         private const string TokenKey = "canevents_pickup";
 
-        /// <summary>What gets dropped when the event config names nothing.</summary>
         public const string DefaultTokenCode = "game:stick";
+
+        // Key suffixes after the caller's prefix ("bow" + ItemKey = "bowPickupItem"). Admin panel reads these too.
+        public const string ItemKey = "PickupItem";
+        public const string QuantityKey = "PickupQuantity";
+        public const string FirstSecondsKey = "PickupFirstSeconds";
+        public const string IntervalSecondsKey = "PickupIntervalSeconds";
+        public const string MaxActiveKey = "PickupMaxActive";
+        public const string MinDistanceKey = "PickupMinDistance";
+        public const string LifetimeSecondsKey = "PickupLifetimeSeconds";
+        public const string RequiredKey = "PickupRequired";
+        public const string RewardKey = "PickupReward";
+
+        public const int DefaultQuantity = 1;
+        public const float DefaultFirstSeconds = 60f;
+        public const float DefaultIntervalSeconds = 90f;
+        public const int DefaultMaxActive = 1;
+        public const float DefaultMinDistance = 12f;
+        // 0 = never expires
+        public const float DefaultLifetimeSeconds = 0f;
+        public const int DefaultRequired = 10;
 
         private sealed class RewardEntry
         {
@@ -43,42 +51,32 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
         private float intervalSeconds = 90f;
         private int maxActive = 1;
         private float minDistance = 12f;
-        private float lifetimeSeconds;      // 0 = it lies there until someone takes it
+        private float lifetimeSeconds;      // 0 = never expires
 
-        /// <summary>How many tokens buy one reward. The collection IS the mechanic: one pickup is a
-        /// lottery win, ten of them is a player who spent the match looking for them.</summary>
+        // Tokens per reward.
         private int requiredCount = 10;
 
         private readonly List<RewardEntry> reward = new List<RewardEntry>();
 
-        /// <summary>Tokens each player was last seen carrying, so progress is only announced when it
-        /// actually changed (this runs once a second).</summary>
+        // Last seen token count per player, to report progress only on change.
         private readonly Dictionary<string, int> lastCounted = new Dictionary<string, int>();
 
-        /// <summary>Marked spots read off the place at match start.</summary>
         private readonly List<BlockPos> spots = new List<BlockPos>();
 
-        /// <summary>Entity id -> match time it was spawned at, for the lifetime sweep.</summary>
+        // entity id -> match time spawned, for expiry
         private readonly Dictionary<long, float> spawnedAt = new Dictionary<long, float>();
 
         private float nextSpawnAt = float.MaxValue;
 
-        /// <summary>Called with the player and what they were given, once per claimed token. The mode
-        /// decides what that means - a message, a role change, hiding the weapon again.</summary>
         public Action<IServerPlayer, List<ItemStack>> OnClaimed;
 
-        /// <summary>Called with (player, carried, required) when someone's tally goes up without
-        /// reaching the price yet. The mode decides whether and how to tell them.</summary>
+        // (player, carried, required)
         public Action<IServerPlayer, int, int> OnProgress;
 
-        /// <summary>Nothing to spawn or nothing to pay with means the whole feature is off.</summary>
         public bool Enabled => !string.IsNullOrEmpty(tokenCode) && reward.Count > 0;
 
-        /// <summary>Did the place mark any spots? Off-by-configuration and off-by-arena read
-        /// differently to an admin, so the mode can log them apart.</summary>
         public bool HasSpots => spots.Count > 0;
 
-        /// <summary>Why <see cref="Enabled"/> is false, in words an admin can act on.</summary>
         public string DisabledReason
             => string.IsNullOrEmpty(tokenCode)
                 ? "no item to drop is configured (bowPickupItem)"
@@ -86,34 +84,27 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
                     ? "an item is configured but nothing to pay out (bowPickupReward is empty)"
                     : "enabled";
 
-        /// <summary>What this spawner is about to do, for the match log.</summary>
         public string Describe()
             => string.Format("{0} x{1} on {2} spot(s), first at {3}s then every {4}s, "
                 + "up to {5} at once, {6} blocks apart, {7} needed for the reward",
                 tokenCode, tokenQuantity, spots.Count, firstSpawnSeconds, intervalSeconds,
                 maxActive, minDistance, requiredCount);
 
-        /// <summary>
-        /// Reads the token, the timers and the reward off the behavior's attributes.
-        /// <paramref name="prefix"/> namespaces the keys, so one mode can run two of these.
-        /// </summary>
         public void Parse(BehaviorAttributes cfg, string prefix)
         {
-            // A stick by default: common enough that carrying one is not itself an accusation, and
-            // nobody can bring their own into a match that clears the inventory at the start. Blank
-            // it in the config to turn the spawns off.
-            tokenCode = cfg.String(prefix + "PickupItem", DefaultTokenCode);
+            // Blank item code turns spawns off.
+            tokenCode = cfg.String(prefix + ItemKey, DefaultTokenCode);
             if (string.IsNullOrWhiteSpace(tokenCode)) tokenCode = null;
-            tokenQuantity = Math.Max(1, cfg.Int(prefix + "PickupQuantity", 1));
-            firstSpawnSeconds = Math.Max(0f, cfg.Float(prefix + "PickupFirstSeconds", 60f));
-            intervalSeconds = Math.Max(0f, cfg.Float(prefix + "PickupIntervalSeconds", 90f));
-            maxActive = Math.Max(1, cfg.Int(prefix + "PickupMaxActive", 1));
-            minDistance = Math.Max(0f, cfg.Float(prefix + "PickupMinDistance", 12f));
-            lifetimeSeconds = Math.Max(0f, cfg.Float(prefix + "PickupLifetimeSeconds", 0f));
-            requiredCount = Math.Max(1, cfg.Int(prefix + "PickupRequired", 10));
+            tokenQuantity = Math.Max(1, cfg.Int(prefix + QuantityKey, DefaultQuantity));
+            firstSpawnSeconds = Math.Max(0f, cfg.Float(prefix + FirstSecondsKey, DefaultFirstSeconds));
+            intervalSeconds = Math.Max(0f, cfg.Float(prefix + IntervalSecondsKey, DefaultIntervalSeconds));
+            maxActive = Math.Max(1, cfg.Int(prefix + MaxActiveKey, DefaultMaxActive));
+            minDistance = Math.Max(0f, cfg.Float(prefix + MinDistanceKey, DefaultMinDistance));
+            lifetimeSeconds = Math.Max(0f, cfg.Float(prefix + LifetimeSecondsKey, DefaultLifetimeSeconds));
+            requiredCount = Math.Max(1, cfg.Int(prefix + RequiredKey, DefaultRequired));
 
             reward.Clear();
-            var raw = cfg.Raw(prefix + "PickupReward");
+            var raw = cfg.Raw(prefix + RewardKey);
             if (raw?.Token is Newtonsoft.Json.Linq.JArray arr)
             {
                 foreach (var entry in arr)
@@ -129,7 +120,6 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
             }
         }
 
-        /// <summary>Reads this place's marked spots and arms the first timer. Call at match start.</summary>
         public void Begin(RunningEvent runningEvent, string behaviorKey)
         {
             spots.Clear();
@@ -150,10 +140,6 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
             if (spots.Count > 0) nextSpawnAt = firstSpawnSeconds;
         }
 
-        /// <summary>
-        /// One pass: pay anyone carrying a token, expire the ones nobody took, and drop a new one
-        /// when the timer says so. Safe to call every second.
-        /// </summary>
         public void Tick(RunningEvent runningEvent, Log log)
         {
             if (!Enabled || spots.Count == 0 || runningEvent == null) return;
@@ -164,13 +150,11 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
             float elapsed = runningEvent.ElapsedSeconds;
             if (elapsed < nextSpawnAt) return;
 
-            // The clock moves on either way: a skipped spawn (everything already occupied) must not
-            // fire again on the very next tick, or a full arena would retry once a second forever.
+            // Advance even if the spawn gets skipped, or a full arena retries every tick.
             nextSpawnAt = intervalSeconds > 0f ? elapsed + intervalSeconds : float.MaxValue;
             SpawnOne(runningEvent, log);
         }
 
-        /// <summary>Takes every token this spawner put on the arena back out of the world.</summary>
         public void End(RunningEvent runningEvent)
         {
             spawnedAt.Clear();
@@ -184,11 +168,7 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
             spots.Clear();
         }
 
-        /// <summary>
-        /// Drops one token on a free spot. "Free" is the whole rule the admins asked for: never a
-        /// second token within <c>minDistance</c> of one already lying there, so a spot cannot pile
-        /// up into a stash while the rest of the arena stays empty.
-        /// </summary>
+        // Only on spots with no token within minDistance.
         private void SpawnOne(RunningEvent runningEvent, Log log)
         {
             var world = runningEvent.sapi.World;
@@ -228,21 +208,15 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
                 return;
             }
             stack.Attributes.SetBool(TokenKey, true);
-            // Falls out of the body rather than vanishing with the rest of the match inventory: half a
-            // collection lying next to its owner is the reward for the kill, and the reason carrying
-            // one is a risk. Not marked as issued gear, so the drop policy leaves it alone otherwise.
+            // Drops on death so tokens can be looted off a body.
             IssuedGear.MarkDropOnDeath(stack);
 
-            // One block above the marked floor block, and motionless: a token that rolls off its
-            // spot would drift out of the minimum-distance test that keeps them apart.
             world.SpawnItemEntity(stack, new Vec3d(pos.X + 0.5, pos.Y + 1.0, pos.Z + 0.5));
 
             foreach (var entity in FindTokens(runningEvent))
                 if (!spawnedAt.ContainsKey(entity.EntityId))
                     spawnedAt[entity.EntityId] = runningEvent.ElapsedSeconds;
 
-            // The first one of the match goes in the log properly: "did anything spawn at all" is the
-            // question an admin actually asks, and the rest are noise once it is answered.
             if (!announcedFirstSpawn)
             {
                 announcedFirstSpawn = true;
@@ -253,8 +227,6 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
 
         private bool announcedFirstSpawn;
 
-        /// <summary>Removes tokens nobody claimed in time, so the arena does not fill up with them
-        /// while the survivors are busy elsewhere. 0 turns the expiry off.</summary>
         private void ExpireOld(RunningEvent runningEvent)
         {
             if (lifetimeSeconds <= 0f) return;
@@ -275,15 +247,7 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
             }
         }
 
-        /// <summary>
-        /// Pays out once a participant is carrying <see cref="requiredCount"/> tokens, and reports
-        /// their tally while they are still short of it.
-        ///
-        /// Scanning their bags beats hooking the pickup event: a token can also arrive by being handed
-        /// over, thrown or looted off a body, and all four should count the same. It also means the
-        /// tokens are a real, visible, droppable resource in the meantime - a player can be robbed of
-        /// a nearly-finished collection, which is the point of collecting one.
-        /// </summary>
+        // Scans inventories instead of hooking pickup, so traded or looted tokens count too.
         private void CollectClaims(RunningEvent runningEvent, Log log)
         {
             var sapi = runningEvent.sapi;
@@ -296,8 +260,6 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
                 int paid = 0;
                 while (carried >= requiredCount)
                 {
-                    // Take the price out of their bags, then hand the reward over. Leftovers stay:
-                    // 12 tokens with a price of 10 buys one bow and keeps the other two.
                     TakeTokens(player, requiredCount);
                     carried -= requiredCount;
                     PayOut(sapi, player, log);
@@ -308,7 +270,6 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
             }
         }
 
-        /// <summary>Hands over one reward kit.</summary>
         private void PayOut(ICoreServerAPI sapi, IServerPlayer player, Log log)
         {
             var given = new List<ItemStack>();
@@ -320,8 +281,7 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
                     log?.Warning("Pickup reward '{0}' does not resolve; skipped.", entry.Code);
                     continue;
                 }
-                // Issued kit, so the match's own drop/sweep policy applies to it exactly as it does
-                // to the loadout everyone started with.
+                // Marked as issued so the loadout drop/sweep rules apply.
                 IssuedGear.Mark(stack, player.PlayerUID);
                 InventoryUtil.Give(sapi, player, stack, "pickup-reward");
                 given.Add(stack);
@@ -329,21 +289,14 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
             if (given.Count > 0) OnClaimed?.Invoke(player, given);
         }
 
-        /// <summary>
-        /// Tells the player how far along they are, but only when the number actually moved. This runs
-        /// every second: reporting unconditionally would put a line in their chat once a second for
-        /// the whole match.
-        /// </summary>
         private void ReportProgress(IServerPlayer player, int carried, bool justPaid)
         {
             bool known = lastCounted.TryGetValue(player.PlayerUID, out int previous);
             lastCounted[player.PlayerUID] = carried;
             if (justPaid || !known || carried == previous || carried == 0) return;
-            // Only picking up is news; spending or losing tokens explains itself.
             if (carried > previous) OnProgress?.Invoke(player, carried, requiredCount);
         }
 
-        /// <summary>How many tokens this player is carrying, stack sizes included.</summary>
         private static int CountTokens(IServerPlayer player)
         {
             int total = 0;
@@ -359,7 +312,6 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
             return total;
         }
 
-        /// <summary>Takes exactly <paramref name="count"/> tokens back out, partial stacks included.</summary>
         private static void TakeTokens(IServerPlayer player, int count)
         {
             foreach (var inv in player.InventoryManager.Inventories.Values)
@@ -380,14 +332,12 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
             }
         }
 
-        /// <summary>Every token of ours currently lying on the arena.</summary>
         private List<Entity> FindTokens(RunningEvent runningEvent)
         {
             var result = new List<Entity>();
             var sapi = runningEvent.sapi;
 
-            // Bounds when the place has them, else a box around the marked spots: the spots ARE the
-            // only places a token of ours can start from, and minDistance bounds how far it rolls.
+            // Place bounds, else a box around the spots padded by minDistance.
             BlockPos from, to;
             if (!PlaceBounds.TryCuboid(runningEvent.Place, 3, sapi.World.BlockAccessor.MapSizeY,
                     out from, out to))

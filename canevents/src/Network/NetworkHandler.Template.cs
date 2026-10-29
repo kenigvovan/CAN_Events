@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using canevents.src.EventPlacesManagers.Places;
 using Vintagestory.API.Common;
 using Vintagestory.API.Config;
 using Vintagestory.API.Server;
@@ -42,10 +43,12 @@ namespace canevents.src.Network
             var session = eventManager.TemplateEditor.GetSession(player);
             if (session == null)
             {
-                serverChannel.SendPacket(new TplSessionStateMsg { InSession = false }, player);
+                adminChannel.SendPacket(new TplSessionStateMsg { InSession = false }, player);
                 return;
             }
-            serverChannel.SendPacket(new TplSessionStateMsg
+            // From the test place, so spawns set through /canep or the panel show up too.
+            var offsets = eventManager.TemplateEditor.SpawnOffsetsOf(session);
+            adminChannel.SendPacket(new TplSessionStateMsg
             {
                 InSession = true,
                 TemplateCode = session.TemplateCode,
@@ -53,9 +56,9 @@ namespace canevents.src.Network
                 OriginX = session.Origin.X,
                 OriginY = session.Origin.Y,
                 OriginZ = session.Origin.Z,
-                OffsetsX = session.SpawnOffsets.Select(o => o.X).ToArray(),
-                OffsetsY = session.SpawnOffsets.Select(o => o.Y).ToArray(),
-                OffsetsZ = session.SpawnOffsets.Select(o => o.Z).ToArray()
+                OffsetsX = offsets.Select(o => o.X).ToArray(),
+                OffsetsY = offsets.Select(o => o.Y).ToArray(),
+                OffsetsZ = offsets.Select(o => o.Z).ToArray()
             }, player);
         }
 
@@ -77,7 +80,7 @@ namespace canevents.src.Network
                 });
             }
 
-            serverChannel.SendPacket(new TemplateListMsg { Templates = entries.ToArray() }, player);
+            adminChannel.SendPacket(new TemplateListMsg { Templates = entries.ToArray() }, player);
         }
 
         private void OnPlaceTemplate(IServerPlayer player, PlaceTemplateMsg msg)
@@ -93,71 +96,22 @@ namespace canevents.src.Network
                 return;
             }
 
-            var placeManager = eventManager.eventPlacesManager;
-            var placer = eventManager.SchematicPlacer;
-
-            // Create the EventPlace first, to get an id.
-            var types = new List<string>();
-            if (template.PlaceTypes != null)
+            // Persistent arenas get their blocks now; on-demand ones at match start.
+            var place = EventPlacesManagers.TemplateStamper.Stamp(template, player.Entity.Pos.AsBlockPos,
+                placeBlocks: !template.OnDemand, eventManager.eventPlacesManager, eventManager.SchematicPlacer,
+                out var error);
+            if (place == null)
             {
-                foreach (var typeName in template.PlaceTypes)
-                {
-                    var tag = EventPlacesManagers.Places.PlaceTags.Normalize(typeName);
-                    if (!string.IsNullOrEmpty(tag)) types.Add(tag);
-                }
-            }
-
-            var origin = player.Entity.Pos.AsBlockPos;
-            var place = new EventPlacesManagers.Places.EventPlace
-            {
-                Name = template.Code,
-                placeTypes = types.ToArray()
-            };
-
-            if (template.SpawnOffsets != null)
-            {
-                foreach (var offset in template.SpawnOffsets)
-                {
-                    place.spawnPositions.Add(new Vintagestory.API.MathTools.BlockPos(
-                        origin.X + offset.X,
-                        origin.Y + offset.Y,
-                        origin.Z + offset.Z,
-                        origin.dimension
-                    ));
-                }
-            }
-            else
-            {
-                place.spawnPositions.Add(origin.Copy());
-            }
-
-            if (template.OnDemand)
-            {
-                place.SchematicOnDemand = true;
-                place.SchematicTemplateCode = template.Code;
-                place.SchematicOrigin = origin.Copy();
-            }
-
-            if (!placeManager.AddPlace(place))
-            {
-                ReplyFail(player, Lang.Get("canevents:place-create-failed"));
+                ReplyFail(player, error);
                 return;
             }
 
-            // Persistent arenas get their blocks now; on-demand ones at match start.
-            if (!template.OnDemand)
-            {
-                if (!placer.Place(template, origin, place.Id))
-                {
-                    placeManager.DeletePlace(place.Id);
-                    ReplyFail(player, Lang.Get("canevents:tpl-schematic-place-failed", template.SchematicPath));
-                    return;
-                }
-            }
-
-            ReplyOk(player, template.OnDemand
+            // Say straight away what the stamp still lacks, rather than letting it sit as "not set up".
+            var gaps = PlaceSetupCheck.Gaps(place);
+            ReplyOk(player, (template.OnDemand
                 ? Lang.Get("canevents:tpl-ondemand-registered", template.Code, place.Id)
-                : Lang.Get("canevents:tpl-arena-placed", template.Code, place.Id));
+                : Lang.Get("canevents:tpl-arena-placed", template.Code, place.Id))
+                + (gaps.Count > 0 ? " " + Lang.Get("canevents:tpl-stamp-gaps", string.Join("; ", gaps)) : ""));
             SendPlaceListTo(player);
         }
 
@@ -166,32 +120,18 @@ namespace canevents.src.Network
             if (!RequireAdmin(player)) return;
             if (!TryResolvePlace(player, msg.PlaceId, out var place)) return;
 
-            var placeManager = eventManager.eventPlacesManager;
-            var placer = eventManager.SchematicPlacer;
-
-            // Not RequireNotOccupied: this one explains the restore-specific reason.
-            if (place.Occupied)
-            {
-                ReplyFail(player, Lang.Get("canevents:tpl-arena-in-use"));
-                return;
-            }
-
-            if (placer.HasSavedData(msg.PlaceId))
-            {
-                placer.Restore(msg.PlaceId);
-            }
-
-            placeManager.DeletePlace(msg.PlaceId);
-
-            ReplyOk(player, Lang.Get("canevents:tpl-place-removed-restored", msg.PlaceId));
-            SendPlaceListTo(player);
+            // The same delete as the bulk one and /canep delete: refuses a place in use, puts a
+            // template stamp back first.
+            var result = PlaceConfig.DeletePlace(place);
+            Reply(player, result.Ok, result.Message);
+            if (result.Ok) SendPlaceListTo(player);
         }
 
         private void OnRequestSchematicList(IServerPlayer player, RequestSchematicListMsg msg)
         {
             if (!RequireAdmin(player)) return;
 
-            var dir = System.IO.Path.Combine(Vintagestory.API.Config.GamePaths.ModConfig, "canevents", "schematics");
+            var dir = ModPaths.Schematics;
             var entries = new List<SchematicListEntryMsg>();
             if (System.IO.Directory.Exists(dir))
             {
@@ -229,11 +169,11 @@ namespace canevents.src.Network
                 }
             }
 
-            serverChannel.SendPacket(new SchematicListMsg { Schematics = entries.ToArray() }, player);
+            adminChannel.SendPacket(new SchematicListMsg { Schematics = entries.ToArray() }, player);
         }
 
-        /// <summary>A name safe to paste into a path. Deliberately a whitelist - blacklisting "\"
-        /// and ".." misses drive letters, alternate data streams and other separators.</summary>
+        // Whitelist on purpose: blacklisting "\" and ".." misses drive letters, alternate data streams
+        // and other separators.
         private static bool IsSafeFileName(string name)
         {
             if (string.IsNullOrWhiteSpace(name) || name.Length > 64) return false;
@@ -262,8 +202,7 @@ namespace canevents.src.Network
                 return;
             }
 
-            var schematicFile = System.IO.Path.Combine(Vintagestory.API.Config.GamePaths.ModConfig,
-                "canevents", "schematics", msg.SchematicName + ".json");
+            var schematicFile = ModPaths.SchematicFile(msg.SchematicName);
             if (!System.IO.File.Exists(schematicFile))
             {
                 ReplyFail(player, Lang.Get("canevents:schematic-file-not-found", msg.SchematicName));
@@ -286,19 +225,7 @@ namespace canevents.src.Network
                 OnDemand = msg.OnDemand
             };
 
-            var dir = System.IO.Path.Combine(Vintagestory.API.Config.GamePaths.ModConfig, "canevents", "arenas");
-            string writeError = null;
-            try
-            {
-                if (!System.IO.Directory.Exists(dir)) System.IO.Directory.CreateDirectory(dir);
-                var file = System.IO.Path.Combine(dir, template.Code + ".json");
-                Scoring.JsonStore.TryWriteAtomic(file, template, out writeError);
-            }
-            catch (Exception ex)
-            {
-                writeError = ex.Message;
-            }
-            if (writeError != null)
+            if (!EventPlacesManagers.TemplateStore.Write(template, out var writeError))
             {
                 ReplyFail(player, Lang.Get("canevents:tpl-write-failed", writeError));
                 return;

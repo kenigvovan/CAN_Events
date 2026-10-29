@@ -3,16 +3,15 @@ using System.Collections.Generic;
 using canevents.src.Network;
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
+using Vintagestory.API.Common.Entities;
 using Vintagestory.API.MathTools;
 using Vintagestory.GameContent;
 
 namespace canevents.src.Gui
 {
-    /// <summary>
-    /// Draws a team-coloured flag on the back of every CTF carrier. Borrows the flag BLOCK's mesh
-    /// rather than tesselating a raw shape, so textures resolve as they do in the world with no
-    /// texture-source plumbing. Meshes are built and uploaded lazily, once per team.
-    /// </summary>
+    // Flag on CTF carriers' backs, and a smaller one on every fighter in team colours (TeamMarkersEB),
+    // on the back or over the head as the event sets it.
+    // Uses the flag block's mesh so textures come from the block atlas.
     public class CtfFlagRenderer : IRenderer
     {
         private readonly ICoreClientAPI capi;
@@ -29,17 +28,17 @@ namespace canevents.src.Gui
             this.networkHandler = networkHandler;
         }
 
-        // Opaque pass, after entities so the flag is not occluded by the body it sits on.
+        // After entities, so the body doesn't occlude it.
         public double RenderOrder => 1.0;
         public int RenderRange => 99;
 
         public void OnRenderFrame(float deltaTime, EnumRenderStage stage)
         {
             var carriers = networkHandler?.CtfCarriers;
-            if (carriers == null || carriers.Count == 0) return;
+            var markers = networkHandler?.TeamMarkers;
+            if ((carriers == null || carriers.Count == 0) && (markers == null || markers.Count == 0)) return;
 
-            // The local player's entity can be absent for a frame around world load while a
-            // carrier packet is already applied.
+            // Own entity can be null for a frame around world load.
             var selfPlayer = capi.World?.Player;
             if (selfPlayer?.Entity == null) return;
 
@@ -52,8 +51,7 @@ namespace canevents.src.Gui
             prog.FogDensityIn = rpi.FogDensity;
             prog.ExtraGodray = 0;
             prog.AverageColor = new Vec4f(1, 1, 1, 1);
-            // Fully lit, flat: StandardShader multiplies by the light uniform, so inheriting the
-            // previous draw's value renders the flag black.
+            // Must set it, a stale light uniform from the previous draw renders the flag black.
             prog.RgbaLightIn = new Vec4f(1, 1, 1, 1);
             prog.RgbaGlowIn = new Vec4f(0, 0, 0, 0);
             prog.NormalShaded = 0;
@@ -62,43 +60,84 @@ namespace canevents.src.Gui
             prog.ProjectionMatrix = rpi.CurrentProjectionMatrix;
             prog.ViewMatrix = rpi.CameraMatrixOriginf;
 
-            foreach (var kv in carriers)
+            // Local +X is behind the player.
+            if (carriers != null)
+                foreach (var kv in carriers)
+                    Draw(prog, selfPlayer, kv.Key, kv.Value, 0.85f, -0.8f, 0.6f);
+
+            // Own pennant too, seen in third person; Draw hides it in first person like the carrier flag.
+            // On the back by default, smaller than a carried flag; over the head where the event says so (CTF).
+            if (markers != null)
             {
-                var player = capi.World.PlayerByUid(kv.Key);
-                var entity = player?.Entity;
-                if (entity?.SelectionBox == null) continue;
-
-                // Your own flag is invisible from first person anyway, and in that mode the
-                // player renderer's ModelMat holds the hand-render matrix - skip it.
-                if (entity.EntityId == selfPlayer.Entity.EntityId
-                    && selfPlayer.CameraMode == EnumCameraMode.FirstPerson) continue;
-
-                var shapeRenderer = entity.Properties.Client.Renderer as EntityShapeRenderer;
-                if (shapeRenderer == null) continue;
-
-                var mesh = GetMesh(kv.Value);
-                if (mesh == null) continue;
-
-                // Piggyback on the player renderer's ModelMat: same smoothed position and body yaw
-                // as the body, so no lag or jitter (own Pos - CameraPos math ticks at physics rate).
-                // In its local space +X points behind the player, so only an offset is needed.
-                Array.Copy(shapeRenderer.ModelMat, modelMat.Values, 16);
-                modelMat
-                    .Translate(0.85f, entity.SelectionBox.Y2 - 0.8f, 0.5f)
-                    .Scale(0.6f, 0.6f, 0.6f)
-                    .Translate(-0.5f, 0f, -0.5f); // block meshes are modelled from a corner
-
-                prog.ModelMatrix = modelMat.Values;
-                rpi.RenderMesh(mesh);
+                bool onHead = networkHandler.TeamMarkersOnHead;
+                foreach (var kv in markers)
+                {
+                    if (onHead) Draw(prog, selfPlayer, kv.Key, kv.Value, 0.5f, 0.15f, 0.3f);
+                    else Draw(prog, selfPlayer, kv.Key, kv.Value, 0.8f, -0.75f, 0.45f);
+                }
             }
 
             prog.Stop();
         }
 
-        /// <summary>
-        /// Mesh for a team's flag, tesselated from the block on first request. A missing block
-        /// caches null, so a broken asset costs one lookup rather than one per frame.
-        /// </summary>
+        // offsetY is from the top of the selection box.
+        private void Draw(IStandardShaderProgram prog, IClientPlayer selfPlayer, string uid, int team,
+            float offsetX, float offsetY, float scale)
+        {
+            var entity = ResolveCarrier(uid);
+            if (entity?.SelectionBox == null) return;
+
+            // In first person ModelMat holds the hand-render matrix.
+            if (entity.EntityId == selfPlayer.Entity.EntityId
+                && selfPlayer.CameraMode == EnumCameraMode.FirstPerson) return;
+
+            var shapeRenderer = entity.Properties.Client.Renderer as EntityShapeRenderer;
+            if (shapeRenderer == null) return;
+
+            var mesh = GetMesh(team);
+            if (mesh == null) return;
+
+            // Reuse the body's ModelMat (smoothed, no physics-tick jitter).
+            Array.Copy(shapeRenderer.ModelMat, modelMat.Values, 16);
+            modelMat
+                .Translate(offsetX, entity.SelectionBox.Y2 + offsetY, 0.5f)
+                .Scale(scale, scale, scale)
+                .Translate(-0.5f, 0f, -0.5f); // block meshes are modelled from a corner
+
+            prog.ModelMatrix = modelMat.Values;
+            capi.Render.RenderMesh(mesh);
+        }
+
+        // Bots are found by the uid in WatchedAttributes.
+        private readonly Dictionary<string, Entity> botBodies = new Dictionary<string, Entity>();
+
+        private Entity ResolveCarrier(string uid)
+        {
+            if (!Bots.BotIdentity.IsBot(uid)) return capi.World.PlayerByUid(uid)?.Entity;
+
+            if (botBodies.TryGetValue(uid, out var cached)
+                && cached.Alive && capi.World.LoadedEntities.ContainsKey(cached.EntityId))
+                return cached;
+
+            botBodies.Remove(uid);
+
+            // Full scan at most once a second per missing bot.
+            long now = capi.World.ElapsedMilliseconds;
+            if (lastBotScanMs.TryGetValue(uid, out var last) && now - last < 1000) return null;
+            lastBotScanMs[uid] = now;
+
+            foreach (var e in capi.World.LoadedEntities.Values)
+            {
+                if (e?.WatchedAttributes?.GetString(Bots.BotMatchLink.UidAttribute) != uid) continue;
+                botBodies[uid] = e;
+                return e;
+            }
+            return null;
+        }
+
+        private readonly Dictionary<string, long> lastBotScanMs = new Dictionary<string, long>();
+
+        // Missing block caches null too.
         private MeshRef GetMesh(int team)
         {
             if (meshByTeam.TryGetValue(team, out var cached)) return cached;
@@ -111,8 +150,11 @@ namespace canevents.src.Gui
             }
             else
             {
-                capi.Tesselator.TesselateBlock(block, out MeshData mesh);
-                if (mesh != null) uploaded = capi.Render.UploadMesh(mesh);
+                ClientTrace.Step("CTF flag mesh upload, team " + (team + 1), () =>
+                {
+                    capi.Tesselator.TesselateBlock(block, out MeshData mesh);
+                    if (mesh != null) uploaded = capi.Render.UploadMesh(mesh);
+                });
             }
 
             meshByTeam[team] = uploaded;

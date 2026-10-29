@@ -21,8 +21,7 @@ namespace canevents.src.Scoring
         public bool Won { get; set; }
     }
 
-    // Append-only log of completed matches, newest first, capped at MaxEntries. Persisted across worlds
-    // (ModConfig/canevents/matchhistory.json), not in the save game.
+    // Newest first. Lives in ModConfig, not the save, so it's shared across worlds.
     public class MatchHistory : JsonFileStore<List<MatchHistoryEntry>>
     {
         private const int MaxEntries = 50;

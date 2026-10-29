@@ -5,44 +5,40 @@ using Vintagestory.API.Server;
 
 namespace canevents.src.EventManagers.eventBehavior.Shared
 {
-    // Draws zone boundaries with particles. Server-side SpawnParticles only reaches
-    // clients in range, so an arena far from spawn costs nothing to bystanders.
+    // Particle zone borders. Server-side SpawnParticles only reaches clients in range.
     public static class ZoneVisualizer
     {
         private static readonly int NeutralColor = ColorUtil.ToRgba(255, 180, 180, 180);
         private static readonly int ContestedColor = ColorUtil.ToRgba(255, 60, 60, 255);
 
-        // Frosty light-blue: the HG storm deals Frost damage, so the dome reads as cold rather than as
-        // a team's claim. Alpha keeps the world visible through the border.
+        // Light blue (the storm deals Frost damage), semi-transparent.
         public static readonly int StormColor = ColorUtil.ToRgba(170, 255, 210, 160);
+
+        public static readonly int PhaseRingColor = ColorUtil.ToRgba(200, 200, 200, 200);
+
+        // Same green the admin panel uses for spawns.
+        public static readonly int SpawnMarkerColor = ColorUtil.ToRgba(255, 80, 230, 80);
+        public static readonly int SponsorMarkerColor = ColorUtil.ToRgba(255, 255, 90, 60);
 
         // ownerTeam: >=0 owning team, KingOfTheHillEB.OwnerNeutral, or OwnerContested.
         public static int OwnerColor(int ownerTeam)
         {
             if (ownerTeam == KingOfTheHillEB.OwnerContested) return ContestedColor;
             if (ownerTeam < 0) return NeutralColor;
-            // Same palette the HUD scoreboard uses.
             return TeamPalette.Packed(ownerTeam);
         }
 
-        /// <summary>
-        /// Vertical particle wall: DrawRing repeated at 1-block steps upward. baseY is the floor
-        /// SURFACE (blockY + 1), else the bottom ring sits inside the floor block and is hidden.
-        /// </summary>
-        public static void DrawWall(ICoreServerAPI sapi, double cx, double baseY, double cz,
-                                    float radius, int segments, int color, int height)
-        {
-            for (int k = 0; k < height; k++)
-                DrawRing(sapi, cx, baseY + k, cz, radius, segments, color);
-        }
+        // Team palette minus green, so a loot spot never reads as a spawn marker.
+        private static readonly int[] LootTierTeams = { 0, 1, 3, 4, 5 };
 
-        /// <summary>
-        /// Hemispherical dome over the zone: latitude rings up to a single cap particle, so the border
-        /// reads as a closed sphere instead of a wall with open sky above it. baseY is the floor
-        /// SURFACE, like DrawWall; segment count follows each ring's radius to keep density even.
-        /// </summary>
+        // tier < 0 (unknown tier) is the neutral grey.
+        public static int LootTierColor(int tier)
+            => tier < 0 ? NeutralColor : TeamPalette.Packed(LootTierTeams[tier % LootTierTeams.Length]);
+
+        // baseY is the floor surface (blockY + 1), otherwise the bottom ring is hidden in the block.
+        // groundY (surface at x,z, NaN if unknown) drops the bottom ring onto lower terrain, so the wall doesn't float.
         public static void DrawDome(ICoreServerAPI sapi, double cx, double baseY, double cz,
-                                    float radius, int color)
+                                    float radius, int color, System.Func<double, double, double> groundY = null)
         {
             if (sapi == null || radius <= 0f) return;
 
@@ -54,15 +50,26 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
                 double lat = b * (Math.PI / 2.0) / bands;
                 float ringR = radius * (float)Math.Cos(lat);
                 double y = baseY + radius * Math.Sin(lat);
-                // Hard cap per ring: every particle is its own SpawnParticles packet, and a dense dome
-                // redrawn each second exhausts the client particle pool and crashes ParticlePoolQuads.
+                // Capped: one packet per particle; too many crash the client's ParticlePoolQuads.
                 int segments = Math.Min(24, Math.Max(6, (int)(ringR * 0.6f)));
                 if (ringR <= 0f) continue;
                 for (int i = 0; i < segments; i++)
                 {
                     double angle = i * 2.0 * Math.PI / segments;
-                    props.MinPos = new Vec3d(cx + Math.Cos(angle) * ringR, y, cz + Math.Sin(angle) * ringR);
+                    double x = cx + Math.Cos(angle) * ringR, z = cz + Math.Sin(angle) * ringR;
+                    props.MinPos = new Vec3d(x, y, z);
                     sapi.World.SpawnParticles(props);
+
+                    if (b != 0 || groundY == null) continue;
+                    double ground = groundY(x, z);
+                    if (double.IsNaN(ground) || ground >= y - 1) continue;
+                    // A few particles down to the ground, not a full column: same particle budget.
+                    double step = Math.Max(2.0, (y - ground) / 3);
+                    for (double wy = y - step; wy > ground - 0.5; wy -= step)
+                    {
+                        props.MinPos = new Vec3d(x, Math.Max(ground, wy), z);
+                        sapi.World.SpawnParticles(props);
+                    }
                 }
             }
 
@@ -70,8 +77,7 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
             sapi.World.SpawnParticles(props);
         }
 
-        // Storm-border look: big soft quads drifting upward, so the dome reads as weather rather than
-        // debug markers. Fresh instance per call, because DrawDome mutates MinPos per particle.
+        // Fresh instance per call: DrawDome mutates MinPos.
         private static SimpleParticleProperties MakeStormProps(int color)
         {
             var props = MakeProps(color);
@@ -79,39 +85,29 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
             props.MaxSize = 0.9f;
             props.MinVelocity = new Vec3f(-0.05f, 0.05f, -0.05f);
             props.AddVelocity = new Vec3f(0.1f, 0.25f, 0.1f);
-            props.LifeLength = 1.6f; // drifts need a bit longer than the static rings to read as flow
-            props.VertexFlags = 120; // mild glow: visible at night without lighting the arena
+            props.LifeLength = 1.6f;
+            props.VertexFlags = 120; // mild glow, visible at night
             return props;
         }
 
+        // Mod colours are packed like block highlights (ColorFromRgba); particles want ToRgba order, so swap R/B.
         private static SimpleParticleProperties MakeProps(int color)
         {
             return new SimpleParticleProperties(
                 1, 1,
-                color,
+                ColorUtil.ReverseColorBytes(color),
                 new Vec3d(), new Vec3d(),
                 new Vec3f(), new Vec3f(),
-                // Outlive the caller's 1s cadence so the ring never blinks between ticks.
+                // > 1s redraw interval, so rings don't blink.
                 1.2f,
                 0f,
                 0.3f, 0.3f,
                 EnumParticleModel.Quad);
         }
 
-        /// <summary>Arena footprint: warm off-white, so it never reads as a team's claim or as the
-        /// cold storm border.</summary>
         public static readonly int ArenaBorderColor = ColorUtil.ToRgba(120, 190, 215, 240);
 
-        /// <summary>
-        /// Outlines an arena's footprint - the edge of the playable area for every mode that has no
-        /// shrinking border of its own. Most matches drew nothing at all before this, so "how far can
-        /// I go" was something players learned by walking out of the fight.
-        ///
-        /// Particle budget matters more than density here: an arena can be hundreds of blocks across,
-        /// and one SpawnParticles call per particle redrawn every second will exhaust the client pool
-        /// (the same trap documented on <see cref="DrawDome"/>). The step is therefore derived from
-        /// the perimeter, never the other way round.
-        /// </summary>
+        // Step comes from the perimeter so big arenas stay within the particle budget (see DrawDome).
         public static void DrawBox(ICoreServerAPI sapi, BlockPos min, BlockPos max, int color,
                                    int maxParticles = 48)
         {
@@ -119,14 +115,11 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
 
             double x1 = Math.Min(min.X, max.X), x2 = Math.Max(min.X, max.X) + 1;
             double z1 = Math.Min(min.Z, max.Z), z2 = Math.Max(min.Z, max.Z) + 1;
-            // Top of the footprint plus a little: at floor level the markers sink into the ground.
             double y = Math.Max(min.Y, max.Y) + 1.2;
 
             double width = x2 - x1, depth = z2 - z1;
             if (width <= 0 || depth <= 0) return;
 
-            // Points are dealt to the two axes in proportion to their length, so a long thin arena
-            // does not end up with the same number on a 10-block side as on a 200-block one.
             double perimeter = 2 * (width + depth);
             double step = Math.Max(1.0, perimeter / maxParticles);
 
@@ -143,11 +136,17 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
                 Spawn(sapi, props, x2, y, z);
             }
 
-            // The four corners always, whatever the step landed on: they are what tells you the shape.
+            // Corners always.
             Spawn(sapi, props, x1, y, z1);
             Spawn(sapi, props, x2, y, z1);
             Spawn(sapi, props, x1, y, z2);
             Spawn(sapi, props, x2, y, z2);
+        }
+
+        public static void DrawPoint(ICoreServerAPI sapi, double x, double y, double z, int color)
+        {
+            if (sapi == null) return;
+            Spawn(sapi, MakeProps(color), x, y, z);
         }
 
         private static void Spawn(ICoreServerAPI sapi, SimpleParticleProperties props,

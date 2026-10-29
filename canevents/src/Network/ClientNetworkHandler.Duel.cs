@@ -6,13 +6,13 @@ namespace canevents.src.Network
     // Client half of duels: the outstanding prompt, and the list of who can be challenged.
     public partial class ClientNetworkHandler
     {
-        /// <summary>The challenge waiting for an answer, or null. The prompt dialog reads this.</summary>
+        // The challenge waiting for an answer, or null. The prompt dialog reads this.
         public DuelPromptMsg PendingDuel { get; private set; }
 
-        /// <summary>Fires when a prompt arrives or is withdrawn.</summary>
+        // Fires when a prompt arrives or is withdrawn.
         public event Action OnDuelPromptChanged;
 
-        /// <summary>Who this player can challenge right now; refreshed on request.</summary>
+        // Who this player can challenge right now; refreshed on request.
         public readonly ServerState<DuelTargetListMsg> DuelTargets = new ServerState<DuelTargetListMsg>();
 
         private void RegisterDuelHandlers()
@@ -40,7 +40,7 @@ namespace canevents.src.Network
 
         public void SendDuelChallenge(string targetName, DuelKind kind, string wagerItems = null,
             string eventCode = null, string[] mutators = null)
-            => clientChannel.SendPacket(new DuelChallengeMsg
+            => Send(new DuelChallengeMsg
             {
                 TargetName = targetName,
                 Kind = kind,
@@ -52,13 +52,13 @@ namespace canevents.src.Network
         public void SendDuelAnswer(bool accept)
         {
             if (PendingDuel == null) return;
-            clientChannel.SendPacket(new DuelResponseMsg
+            Send(new DuelResponseMsg
             {
                 ChallengeId = PendingDuel.ChallengeId,
                 Accept = accept
             });
         }
 
-        public void RequestDuelTargets() => clientChannel.SendPacket(new RequestDuelTargetsMsg());
+        public void RequestDuelTargets() => Send(new RequestDuelTargetsMsg());
     }
 }

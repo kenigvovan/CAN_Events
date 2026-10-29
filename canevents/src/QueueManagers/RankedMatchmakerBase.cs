@@ -6,12 +6,7 @@ using canevents.src.EventManagers.events;
 
 namespace canevents.src.QueueManagers
 {
-    /// <summary>
-    /// Shared by both ranked matchmakers: rating and sorting waiting sides, and the tolerance
-    /// formula. The formula is the matchmaking policy - kept in one place so ranked FFA and ranked
-    /// ByParts cannot pair players by different standards while feeding the same Elo table.
-    /// Per-manager: which registrations are eligible and how an accepted run becomes teams.
-    /// </summary>
+    // Shared rating/tolerance logic so both ranked queues match by the same rules.
     public abstract class RankedMatchmakerBase : QueueManager
     {
         private readonly int baseTolerance;
@@ -23,7 +18,6 @@ namespace canevents.src.QueueManagers
             this.widenPerSecond = Math.Max(0, widenPerSecond);
         }
 
-        /// <summary>One waiting side (a solo or a whole party) with the two numbers matchmaking needs.</summary>
         protected sealed class RatedSide
         {
             public Registration Reg;
@@ -31,10 +25,7 @@ namespace canevents.src.QueueManagers
             public long WaitSeconds;
         }
 
-        /// <summary>
-        /// Eligible sides this tick, rated and sorted ascending, so the spread of any contiguous run
-        /// is simply last minus first.
-        /// </summary>
+        // Sorted ascending, so a run's spread is last minus first.
         protected List<RatedSide> RateAndSort(CANEvent canEvent, IReadOnlyList<Registration> pending,
             Func<Registration, bool> eligible)
         {
@@ -52,13 +43,9 @@ namespace canevents.src.QueueManagers
                 .ToList();
         }
 
-        /// <summary>
-        /// Acceptable rating spread for a side: base + widenPerSecond * waited, so close matches form
-        /// fast and the window eventually admits anyone.
-        /// </summary>
         protected long ToleranceFor(long waitedSeconds) => baseTolerance + widenPerSecond * waitedSeconds;
 
-        /// <summary>The longest wait inside a run: the most patient member sets its tolerance.</summary>
+        // The longest waiter in a run sets its tolerance.
         protected static long LongestWait(List<RatedSide> sides, int start, int count)
         {
             long waited = 0;

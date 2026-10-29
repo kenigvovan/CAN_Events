@@ -9,43 +9,27 @@ using Vintagestory.API.MathTools;
 
 namespace canevents.src.Gui.Native
 {
-    /// <summary>
-    /// "Registration is open" as a corner toast rather than a dialog in the middle of the screen.
-    /// A modal prompt was the wrong shape for this: it takes the mouse off the player mid-game, and
-    /// closing it took the countdown with it - after which nothing on screen said when the event
-    /// started. A HUD panel keeps the clock visible for the whole window, costs no clicks, and is
-    /// answered with one key.
-    ///
-    /// There is no close button: it exists precisely to still be there in five minutes. What there is
-    /// instead is a setting - /canhud invite full|mini|off - so a player who finds it in the way turns
-    /// it down once rather than dismissing it every time. The events browser carries the same
-    /// countdown either way.
-    /// </summary>
+    // Sign-up toast in the corner. No close button; /canhud invite full|mini|off controls it.
     public class EventInviteHud : HudElement
     {
         private readonly ClientNetworkHandler networkHandler;
         private readonly HudLayout layout;
 
         private EventInviteMsg invite;
-        /// <summary>The composed panel, or null while nothing is drawn.</summary>
         private GuiComposer panel;
 
-        /// <summary>Last string written into each dynamic text; see <see cref="SetIfChanged"/>.</summary>
         private readonly Dictionary<string, string> lastText = new Dictionary<string, string>();
 
-        /// <summary>Whole second the panel was last written for; the texts only change with it.</summary>
         private int lastWrittenSecond = int.MinValue;
 
-        // Printed key names, worked out at compose time rather than per frame.
         private string hotkeyLabel = "?";
         private string dismissLabel = "?";
 
-        // The countdown is not kept here: ClientNetworkHandler works it out from the last packet and
-        // the client clock, so the panel, the browser and anything else read the same number.
+        // Countdown lives in ClientNetworkHandler so the HUD and the browser show the same number.
         private float SecondsLeft => networkHandler.SecondsLeftFor(invite?.EventCode);
         private float WindowSeconds => Math.Max(1f, networkHandler.WindowSecondsFor(invite?.EventCode));
 
-        // What the current composition was built for; a change of any of these is a recompose.
+        // Any change here triggers a recompose.
         private bool composedUrgent;
         private bool composedJoined;
         private bool composedTimed;
@@ -56,17 +40,13 @@ namespace canevents.src.Gui.Native
         private const double MiniHeight = 30;
         private const float UrgentSeconds = 15f;
 
-        // Both are ordinary Vintage Story hotkeys: they show up in Settings -> Controls and can be
-        // rebound there, and the panel prints whatever binding is in force rather than a fixed letter.
-        /// <summary>Joins the offered event, or leaves it again if already queued.</summary>
+        // Regular VS hotkeys, rebindable in Settings -> Controls.
         public const string JoinHotkeyCode = "caneventsjoin";
-        /// <summary>Hides the panel for the window currently shown.</summary>
         public const string DismissHotkeyCode = "caneventsdismiss";
 
-        /// <summary>Windows this player waved away; cleared when the window itself closes.</summary>
+        // Cleared when that sign-up window closes.
         private readonly HashSet<string> dismissed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        /// <summary>The class picker, when the mode offers more than one set.</summary>
         public LoadoutPickGui LoadoutPick { get; set; }
 
         private readonly Action<EventInviteMsg> onInvited;
@@ -78,16 +58,11 @@ namespace canevents.src.Gui.Native
             this.networkHandler = networkHandler;
             this.layout = layout;
 
-            // A closed HUD element gets no render calls, so opening is decided here, on the packet.
-            // Which window is shown is never decided by which packet arrived last: with two events
-            // taking sign-ups, that made the panel jump between them on every update. The panel always
-            // shows the one closing soonest.
+            // A closed HUD gets no render calls, so open on the packet. Always show the soonest window.
             onInvited = _ => Refresh(playSoundIfNew: true);
 
             onClosed = msg =>
             {
-                // The window is gone, so waving it away means nothing any more; forgetting it here is
-                // what makes the next event on the same code show up again.
                 if (msg?.EventCode != null) dismissed.Remove(msg.EventCode);
                 Refresh(playSoundIfNew: false);
             };
@@ -108,10 +83,6 @@ namespace canevents.src.Gui.Native
 
         private HudLayout.InviteDisplay Mode => layout?.InviteMode ?? HudLayout.InviteDisplay.Full;
 
-        /// <summary>
-        /// Re-reads which window to show and rebuilds the panel. The bell rings for an event this
-        /// panel was not already showing - a fresh call, not a count going up on the same one.
-        /// </summary>
         private void Refresh(bool playSoundIfNew)
         {
             var next = networkHandler.SoonestInvite(IsDismissed);
@@ -120,35 +91,25 @@ namespace canevents.src.Gui.Native
 
             if (invite == null) { TryClose(); return; }
 
-            // Off means off, including the sound: someone who turned the panel away is not asking to
-            // be pinged either. The invite is still tracked - the hotkey and the browser use it.
+            // Off also mutes the bell; the invite is still tracked for the hotkey and browser.
             if (Mode == HudLayout.InviteDisplay.Off)
             {
                 if (IsOpened()) TryClose();
                 return;
             }
 
-            // A desk bell, not the menu click the browser uses for its own buttons: this is the one
-            // sound the player did not cause, and it should read as "you are being called".
             if (playSoundIfNew && isNewEvent) capi.Gui.PlaySound("effect/receptionbell");
 
             Compose();
             if (!IsOpened()) TryOpen();
         }
 
-        /// <summary>Rebuild after the layout editor moved the panel, or /canhud invite changed it.</summary>
         public void OnLayoutChanged() => Refresh(playSoundIfNew: false);
 
-        /// <summary>
-        /// The hotkey answer: join the offered event, or leave it again if already queued. One key
-        /// both ways, because the panel is the only thing on screen at that moment - changing your
-        /// mind should not mean finding the browser. Returns false when there is nothing to answer,
-        /// which lets the key fall through to whatever else is bound to it.
-        /// </summary>
+        // Join or leave. False lets the key fall through to other bindings.
         public bool TryToggleQueue()
         {
-            // Read live rather than from the panel's copy: with the panel switched off or dismissed
-            // nothing recomposes, and the key must still answer whatever window is actually open.
+            // Read live: with the panel off or dismissed, invite is not kept up to date.
             var target = networkHandler.SoonestInvite();
             if (target == null) return false;
             string code = target.EventCode;
@@ -160,8 +121,7 @@ namespace canevents.src.Gui.Native
                 return true;
             }
 
-            // Same route the browser takes: a mode with several classes asks which one first. That
-            // dialog does take the mouse, but by then the player has asked for it.
+            // Same as the browser: several classes means pick one first.
             var entry = networkHandler.EventList.Value?.Events?
                 .FirstOrDefault(e => e != null && e.GameModeCode == code);
             if (LoadoutPick != null && entry?.LoadoutSets != null && entry.LoadoutSets.Length > 1)
@@ -172,17 +132,11 @@ namespace canevents.src.Gui.Native
 
             networkHandler.SendJoinRequest(code);
             networkHandler.RequestEventList();
-            // Not marked joined here: the server answers with a refreshed invite, and only it knows
-            // whether the sign-up was accepted (fee, blacklist, party rules).
+            // Joined state comes from the server's refreshed invite (fee, blacklist, party rules).
             return true;
         }
 
-        /// <summary>
-        /// Hides the panel for the window being shown, until that window closes. Distinct from
-        /// /canhud invite off, which is a standing preference: this is "not this one, thanks", and
-        /// the next event opens a panel again. Queue state is untouched - a player who dismisses
-        /// after joining stays in the queue.
-        /// </summary>
+        // Hides this window only; does not touch the queue.
         public bool TryDismissCurrent()
         {
             var target = networkHandler.SoonestInvite(IsDismissed);
@@ -204,13 +158,9 @@ namespace canevents.src.Gui.Native
                 return;
             }
 
-            // The clock is read, not ticked: it comes from the last packet plus elapsed client time,
-            // and stops at zero on its own while the close packet is on its way.
             if (ShapeChanged()) Compose();
 
-            // Every line on this panel is derived from a whole second of the countdown, so building
-            // them 60 times a second would allocate strings nobody reads. Compose() writes them once
-            // itself, hence no update on the frame it ran.
+            // Texts only change once a second; avoid rebuilding strings every frame.
             int second = (int)SecondsLeft;
             if (second != lastWrittenSecond)
             {
@@ -241,8 +191,6 @@ namespace canevents.src.Gui.Native
             composedMode = Mode;
             composedFrameW = capi.Render.FrameWidth;
             composedFrameH = capi.Render.FrameHeight;
-            // Looked up here, not per frame: the binding only changes in the controls settings, and
-            // every recompose (and every packet) passes through this method.
             hotkeyLabel = ReadHotkeyLabel(JoinHotkeyCode);
             dismissLabel = ReadHotkeyLabel(DismissHotkeyCode);
 
@@ -270,8 +218,7 @@ namespace canevents.src.Gui.Native
                         headFont, ElementBounds.Fixed(10, 6, Width - 20, 18))
                     .AddDynamicText(ClockText(), clockFont, ElementBounds.Fixed(10, 26, Width - 20, 20), "clock");
 
-            // No bar for a window with no deadline: an empty gauge under "starts when the admin says
-            // so" would read as a stalled countdown.
+            // No bar for a manual-start window.
             if (composedTimed)
                 composer.AddStatbar(ElementBounds.Fixed(10, 48, Width - 20, 6),
                     composedUrgent ? Palette.Stop : Palette.Go, "timebar");
@@ -284,10 +231,6 @@ namespace canevents.src.Gui.Native
             SetPanel(composer.Compose());
         }
 
-        /// <summary>
-        /// The one-line form: the same clock, none of the room. For players who want to know an event
-        /// is open without a panel on their screen; the details are a keypress away in the browser.
-        /// </summary>
         private void ComposeMini()
         {
             var pos = PanelPosition(Width, MiniHeight);
@@ -306,11 +249,7 @@ namespace canevents.src.Gui.Native
                 .Compose());
         }
 
-        /// <summary>
-        /// Installs the freshly built panel as the element's only composer. The composer is also kept
-        /// in a field: the per-frame text update reads it every frame, and looking it up by key there
-        /// depends on how the manager answers for a key it no longer has.
-        /// </summary>
+        // Kept in a field too; looking up a removed key in Composers is not safe per frame.
         private void SetPanel(GuiComposer composer)
         {
             Composers.ClearComposers();
@@ -327,7 +266,6 @@ namespace canevents.src.Gui.Native
             panel = null;
         }
 
-        /// <summary>Where the panel goes: the player's stored spot, or the default top-right corner.</summary>
         private (double X, double Y) PanelPosition(double width, double height)
         {
             double screenW = capi.Render.FrameWidth / RuntimeEnv.GUIScale;
@@ -345,7 +283,7 @@ namespace canevents.src.Gui.Native
         {
             if (panel == null || invite == null) return;
 
-            // Whichever form is composed answers; the other keys are simply not there.
+            // Only one form is composed; missing keys are skipped.
             SetIfChanged("mini", MiniText());
             SetIfChanged("clock", ClockText());
             SetIfChanged("signups", SignupsText());
@@ -359,10 +297,7 @@ namespace canevents.src.Gui.Native
             }
         }
 
-        /// <summary>
-        /// Writes a line only when it actually reads differently. This runs every frame; the clock it
-        /// prints changes once a second, and a dynamic text redraws its texture when it is set.
-        /// </summary>
+        // SetNewText redraws the texture, so skip unchanged text.
         private void SetIfChanged(string key, string text)
         {
             if (lastText.TryGetValue(key, out var previous) && previous == text) return;
@@ -372,10 +307,6 @@ namespace canevents.src.Gui.Native
             lastText[key] = text;
         }
 
-        /// <summary>
-        /// The one-line form. A window with no deadline gets its own phrasing rather than a countdown
-        /// with words where the clock goes ("HUNGERGAMES in registration open").
-        /// </summary>
         private string MiniText()
         {
             string code = (invite.EventCode ?? "").ToUpperInvariant();
@@ -400,17 +331,11 @@ namespace canevents.src.Gui.Native
                 ? invite.Registered + "/" + invite.MaxParties
                 : invite.Registered.ToString());
 
-        /// <summary>
-        /// The line that says what the keys do right now: joining and leaving share one key, so the
-        /// verb changes with the state, and hiding the panel is always offered next to it.
-        /// </summary>
         private string ActionText()
             => invite.YouAreIn
                 ? Lang.Get("canevents:hud-invite-action-leave", hotkeyLabel, dismissLabel)
                 : Lang.Get("canevents:hud-invite-action", hotkeyLabel, dismissLabel);
 
-        /// <summary>A key's printed name, read from the live binding so a rebind shows the player's
-        /// own key instead of the default this mod shipped with.</summary>
         private string ReadHotkeyLabel(string hotkeyCode)
         {
             var hotkey = capi.Input.GetHotKeyByCode(hotkeyCode);

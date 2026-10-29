@@ -7,14 +7,7 @@ using Vintagestory.API.MathTools;
 
 namespace canevents.src.Gui.Native
 {
-    /// <summary>
-    /// Drag-to-move editor for the HUD panels, opened from the browser or /canhud. Each panel gets a
-    /// draggable ghost of its real size while the HUD keeps rendering behind it; positions are stored
-    /// normalised (see <see cref="HudLayout"/>) and saved when a drag ends.
-    ///
-    /// Ghosts rather than the HUD panels themselves: a HUD element receives no mouse input, so the
-    /// thing you grab has to be a dialog.
-    /// </summary>
+    // Draggable ghost dialogs over the HUD: HUD elements get no mouse input. Positions stored normalised.
     public class HudLayoutEditorGui : GuiDialog
     {
         private readonly HudLayout layout;
@@ -25,10 +18,9 @@ namespace canevents.src.Gui.Native
         private double grabOffsetX, grabOffsetY;
         private bool dirty;
 
-        // Barely-there fills: the ghosts sit on top of the still-rendering HUD, and the opaque
-        // palette colours turned them into slabs hiding what was being positioned.
-        private static readonly double[] GhostIdle = { 1.00, 0.83, 0.42, 0.16 };   // brass, a hint
-        private static readonly double[] GhostDragged = { 0.47, 0.78, 0.36, 0.30 }; // green while held
+        // Low alpha so the HUD underneath stays visible.
+        private static readonly double[] GhostIdle = { 1.00, 0.83, 0.42, 0.16 };
+        private static readonly double[] GhostDragged = { 0.47, 0.78, 0.36, 0.30 };
 
         private class Ghost
         {
@@ -37,10 +29,9 @@ namespace canevents.src.Gui.Native
             public HudLayout.PanelPos Pos;
             public double Width, Height;
             public double DefaultX, DefaultY;
-            public double X, Y;      // unscaled screen coords of the top-left corner
+            public double X, Y;      // unscaled screen coords, top-left
         }
 
-        /// <summary>The "[hudedit]" tag, spelled once - see <see cref="Log"/>.</summary>
         internal static Log LogFor(ICoreClientAPI capi) => Log.For(capi?.Logger, "hudedit");
 
         private readonly Log log;
@@ -52,7 +43,6 @@ namespace canevents.src.Gui.Native
             log = LogFor(capi);
         }
 
-        // Opened explicitly, never by a key of its own.
         public override string ToggleKeyCombinationCode => null;
         public override bool PrefersUngrabbedMouse => true;
 
@@ -60,8 +50,7 @@ namespace canevents.src.Gui.Native
         {
             base.OnGuiOpened();
 
-            // Wrapped and logged step by step: this editor once took the whole client down leaving
-            // nothing in the log. A broken editor must not be able to end the session.
+            // Logged step by step: this editor once crashed the client with nothing in the log.
             try
             {
                 log.Notification("opening");
@@ -77,7 +66,7 @@ namespace canevents.src.Gui.Native
             }
         }
 
-        // Same sizes and default spots the HUD composes its panels at.
+        // Sizes and defaults must match what the HUD composes.
         private void BuildGhosts()
         {
             double screenW = capi.Render.FrameWidth / RuntimeEnv.GUIScale;
@@ -104,8 +93,12 @@ namespace canevents.src.Gui.Native
                 Key = "feed", Label = Lang.Get("canevents:hud-panel-killfeed"), Pos = layout.KillFeed,
                 Width = 360, Height = 72, DefaultX = 10, DefaultY = screenH - 132
             });
-            // Nothing to place when the panel is switched off - the toolbox button below turns it back
-            // on, and the ghost reappears with it.
+            ghosts.Add(new Ghost
+            {
+                Key = "shop", Label = Lang.Get("canevents:hud-panel-shop"), Pos = layout.ShopPoints,
+                Width = ShopPointsHud.Width, Height = ShopPointsHud.Height,
+                DefaultX = ShopPointsHud.DefaultX(screenW), DefaultY = ShopPointsHud.DefaultY(screenH)
+            });
             if (layout.InviteMode != HudLayout.InviteDisplay.Off)
             {
                 bool mini = layout.InviteMode == HudLayout.InviteDisplay.Mini;
@@ -159,9 +152,7 @@ namespace canevents.src.Gui.Native
         private void ComposeToolbox()
         {
 
-            // Autosized dialog + FitToChildren background, as everywhere else in the mod. A FIXED
-            // dialog around a FitToChildren background is what killed the client here: parent and
-            // children sized themselves from each other and the layout pass never returned.
+            // Fixed dialog around a FitToChildren background hangs the layout pass; keep it autosized.
             var dialogBounds = ElementStdBounds.AutosizedMainDialog
                 .WithAlignment(EnumDialogArea.CenterBottom)
                 .WithFixedAlignmentOffset(0, -60);
@@ -173,16 +164,13 @@ namespace canevents.src.Gui.Native
                 .AddShadedDialogBG(bgBounds)
                 .AddDialogTitleBar(Lang.Get("canevents:hud-edit-title"), OnDone)
                 .BeginChildElements(bgBounds)
-                    // Height fixed: a self-measuring text element inside a FitToChildren parent is
-                    // the other half of the same trap.
+                    // Fixed height: self-measuring text in a FitToChildren parent hangs too.
                     .AddStaticText(Lang.Get("canevents:hud-edit-hint"), CairoFont.WhiteDetailText(),
                         ElementBounds.Fixed(0, 0, 320, 40))
                     .AddSmallButton(Lang.Get("canevents:hud-edit-reset"), OnReset,
                         ElementBounds.Fixed(EnumDialogArea.LeftFixed, 0, 46, 0, 0).WithFixedPadding(9, 4))
                     .AddSmallButton(Lang.Get("canevents:hud-edit-done"), () => { OnDone(); return true; },
                         ElementBounds.Fixed(EnumDialogArea.LeftFixed, 110, 46, 0, 0).WithFixedPadding(9, 4))
-                    // The registration toast is the one panel a player may want gone rather than
-                    // moved, so its full/mini/off choice belongs where the panels are arranged.
                     .AddSmallButton(InviteModeLabel(), OnCycleInviteMode,
                         ElementBounds.Fixed(EnumDialogArea.LeftFixed, 0, 78, 0, 0).WithFixedPadding(9, 4))
                 .EndChildElements()
@@ -193,8 +181,7 @@ namespace canevents.src.Gui.Native
             => Lang.Get("canevents:hud-invite-mode-button",
                 Lang.Get("canevents:hud-invite-mode-" + layout.InviteMode.ToString().ToLowerInvariant()));
 
-        /// <summary>Full -> mini -> off -> full. One button rather than three: it is a preference,
-        /// not a decision that needs a row of its own.</summary>
+        // Full -> mini -> off -> full.
         private bool OnCycleInviteMode()
         {
             layout.InviteMode = layout.InviteMode switch
@@ -205,9 +192,8 @@ namespace canevents.src.Gui.Native
             };
             dirty = true;
             Save();
-            onChanged?.Invoke();   // the toast switches form, or disappears, behind the editor
-            // Its ghost changes size with the mode and is gone entirely when off, so the ghosts are
-            // rebuilt, not just the toolbox label.
+            onChanged?.Invoke();
+            // Ghost size depends on the mode.
             BuildGhosts();
             Compose();
             return true;
@@ -242,14 +228,12 @@ namespace canevents.src.Gui.Native
             Save();
         }
 
-        // Dragging
-
         public override void OnMouseDown(MouseEvent args)
         {
             double mx = capi.Input.MouseX / RuntimeEnv.GUIScale;
             double my = capi.Input.MouseY / RuntimeEnv.GUIScale;
 
-            // Reverse order: the last ghost composed draws on top, so it wins the click too.
+            // Reverse: the last composed ghost draws on top.
             for (int i = ghosts.Count - 1; i >= 0; i--)
             {
                 var g = ghosts[i];
@@ -263,7 +247,7 @@ namespace canevents.src.Gui.Native
                 return;
             }
 
-            base.OnMouseDown(args);   // let the toolbox have it
+            base.OnMouseDown(args);
         }
 
         public override void OnMouseMove(MouseEvent args)
@@ -274,8 +258,7 @@ namespace canevents.src.Gui.Native
             dragging.Y = capi.Input.MouseY / RuntimeEnv.GUIScale - grabOffsetY;
             Clamp(dragging);
 
-            // Move the existing composer instead of calling Compose(), which clears and recreates all
-            // of them - re-uploading GUI textures on every mouse-move event, under the renderer.
+            // Not Compose(): that re-uploads every GUI texture on each mouse move.
             var composer = Composers[dragging.Key];
             if (composer?.Bounds != null)
             {
@@ -298,8 +281,8 @@ namespace canevents.src.Gui.Native
             dirty = true;
             dragging = null;
             Compose();
-            Save();                 // keep the layout the moment it is let go of
-            onChanged?.Invoke();    // the HUD re-composes at the new position
+            Save();
+            onChanged?.Invoke();
             args.Handled = true;
         }
     }

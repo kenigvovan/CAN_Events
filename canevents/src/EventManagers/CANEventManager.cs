@@ -21,18 +21,12 @@ using Vintagestory.API.Util;
 
 namespace canevents.src.EventManagers
 {
-    /// <summary>
-    /// Where a live match came from. Observers of <see cref="CANEventManager.OnMatchStarted"/> that
-    /// care about the queue must be able to tell a queue-driven start from one dictated externally:
-    /// a tournament match of the same event code has nothing to do with whatever the queue was doing.
-    /// </summary>
     public enum MatchStartSource
     {
-        /// <summary>The queue manager assembled it from waiting registrations.</summary>
         Queue,
-        /// <summary>An admin started it from whoever was queued, ignoring the mode's thresholds.</summary>
+        // Admin start from whoever was queued, ignoring thresholds.
         ForceStart,
-        /// <summary>The line-up was dictated by something else - the tournament driver, a debug match.</summary>
+        // Tournament or debug match.
         External
     }
 
@@ -40,8 +34,6 @@ namespace canevents.src.EventManagers
     {
         public HashSet<CANEvent> Events { get; }
 
-        /// <summary>The event with this code, or null. Case-insensitive: codes arrive from chat,
-        /// panel fields and config files in varying case.</summary>
         public CANEvent FindEventByCode(string code)
         {
             if (string.IsNullOrEmpty(code)) return null;
@@ -53,42 +45,39 @@ namespace canevents.src.EventManagers
         private Action<canparty.PlayerParty> _onPartyChanged;
         private Action<canparty.PlayerParty, string> _onPartyDisbanded;
 
-        // Registration store: single-lock, replaces the old ConcurrentDictionary pair.
         internal RegistrationStore _store = new RegistrationStore();
 
         public DefaultEventPlacesManager eventPlacesManager;
-        /// <summary>Every per-behavior place edit; both chat commands and admin panel packets go through it.</summary>
         public PlaceConfigService placeConfig;
-        /// <summary>
-        /// Every match that is currently live. PRIVATE on purpose: the danger is not another thread
-        /// (the server runs this on its tick), it is re-entrancy on this one. Half the code that
-        /// touches a match can end it - a death eliminates the last player, a tick hits the time
-        /// limit - and FinishEvent removes it from this list. A plain foreach over the live list
-        /// therefore mutates the collection it is walking and throws.
-        ///
-        /// That is what the scattered .ToList() calls were defending against, and why the defence has
-        /// to be structural: <see cref="RunningEventsSnapshot"/> is the only way out, so the next
-        /// person to iterate cannot forget. The lock is cheap insurance for the callback that does
-        /// turn out to run off-tick.
-        /// </summary>
+        // uid -> place id from /canep select. Session only.
+        public readonly Dictionary<string, long> SelectedPlaceByPlayer = new Dictionary<string, long>();
+
+        public PlayerState PlayerState { get; private set; }
+
+        public AdminActions AdminActions { get; private set; }
+
+        public eventBehavior.Shared.HungerGamesSetupService HungerGamesSetup { get; private set; }
+        // Private: ending a match removes it from this list, so iterate via RunningEventsSnapshot().
         private readonly List<RunningEvent> runningEvents = new();
 
-        /// <summary>How many matches are live right now.</summary>
         public int RunningEventCount
         {
             get { lock (runningEvents) return runningEvents.Count; }
         }
+
+        // For the scheduler's concurrency cap: open matches run forever and would hold a slot for good.
+        public int ScheduledMatchCount
+        {
+            get { lock (runningEvents) return runningEvents.Count(re => !re.IsOpenMatch); }
+        }
         ICoreServerAPI sapi;
 
-        /// <summary>Everything the match driver writes to the log, under one tag.</summary>
         internal Log log;
 
         Config config;
-        // Matchmaking tick listeners. RegisterGameTickListener rather than Event.Timer (which returns
-        // void → unstoppable), so a mod reload can't leak them firing onto a dead manager.
+        // Tick listeners, not Event.Timer: a timer can't be stopped and would leak across a mod reload.
         private long composeTeamsListenerId = -1;
         private long findLocationListenerId = -1;
-        // Delegated from MatchServices: single source of truth, no dual assignment.
         public ServerNetworkHandler NetworkHandler  => MatchServices?.NetworkHandler;
         public LeaderboardData      Leaderboard     => MatchServices?.Leaderboard;
         public SpectatorManager     SpectatorManager => MatchServices?.Spectator;
@@ -98,106 +87,85 @@ namespace canevents.src.EventManagers
         public List<ArenaTemplate> ArenaTemplates { get; set; } = new List<ArenaTemplate>();
         public SchematicPlacer SchematicPlacer { get; set; }
         public TemplateEditor TemplateEditor { get; set; }
-        /// <summary>Every item-set store by kind - see <see cref="ItemSetKinds"/>.</summary>
         public IReadOnlyDictionary<string, LoadoutManager> ItemSetStores { get; private set; }
             = new Dictionary<string, LoadoutManager>();
 
-        /// <summary>The store for one kind, or null when the kind is unknown. Callers that took a
-        /// kind off the wire must handle the null rather than falling back to loadouts.</summary>
+        // null for an unknown kind; don't fall back to loadouts for kinds from the wire.
         public LoadoutManager Store(string kind)
             => ItemSetStores.TryGetValue(ItemSetKinds.Normalize(kind), out var s) ? s : null;
 
-        /// <summary>The loadout store. Kept as a named property because most of the mod only ever
-        /// wants this one.</summary>
         public LoadoutManager LoadoutManager => Store(ItemSetKinds.Loadout);
 
         public LoadoutPreferences LoadoutPreferences { get; set; }
 
-        /// <summary>Server-wide default for issued gear thrown on the ground; an event may override
-        /// it. Read from config once in <see cref="Start"/>.</summary>
+        // Events may override it.
         public eventBehavior.Shared.IssuedGearDrop IssuedGearDefault { get; private set; }
             = eventBehavior.Shared.IssuedGear.DefaultPolicy;
 
-        /// <summary>Services bundle passed to every RunningEvent at creation. Set by canevents.cs
-        /// before calling Start().</summary>
+        // Set by canevents.cs before Start().
         public MatchServices MatchServices { get; set; }
 
-        /// <summary>Rewards, standings, result screen and history for a finished match.</summary>
         private MatchResultRecorder resultRecorder;
 
-        /// <summary>In-place editor for the event JSON files.</summary>
         private readonly EventConfigStore eventConfigStore = new EventConfigStore();
 
-        /// <summary>Join/leave plus the follow-ups every sign-up needs (party loadout prompts,
-        /// browser refresh). Both chat commands and GUI packets go through it.</summary>
         public QueueService Queueing { get; private set; }
 
-        /// <summary>Admin toggles that outlive a restart: disabled events and the queue blacklist.</summary>
         public AdminStateStore AdminState { get; private set; }
 
-        // Pass-throughs: callers read these sets in many places; the store is the only writer.
         public HashSet<string> DisabledEventCodes => AdminState.DisabledEventCodes;
         public HashSet<string> BlacklistedUids => AdminState.BlacklistedUids;
 
-        /// <summary>
-        /// Wires the busy-player predicate and starts the periodic timers; call from canevents.cs after
-        /// MatchServices is assigned. Not done in the constructor so timers never fire with a null
-        /// MatchServices or an unwired busy-player check.
-        /// </summary>
+        // Called after MatchServices is assigned, so timers never fire before it's wired.
         public void Start()
         {
-            // Parsed once, not per dropped item: a misspelt value would otherwise log a line every
-            // time anyone throws anything.
+            // Parsed once so a typo doesn't log on every dropped item.
             IssuedGearDefault = eventBehavior.Shared.IssuedGear.ParseDefault(config.issuedGearDrop, log);
 
-            foreach (var qm in QueueManagers.Values.Distinct())
+            // All four: a definition reload can move an event to a style nothing used at startup.
+            foreach (var qm in new[] { fullPartyQM, byPartsQM, rankedQM, rankedByPartsQM })
             {
                 qm.SetPlayerBusyCheck(IsPlayerBusy);
                 qm.SetRatingProvider((uid, eventCode) =>
                     Leaderboard?.GetRating(uid, eventCode) ?? Scoring.EloCalculator.DefaultRating);
             }
 
-            composeTeamsListenerId = sapi.Event.RegisterGameTickListener(
-                dt => AttemptToComposeTeams(), config.attemptComposeTeamsEveryNSeconds * 1000);
-            findLocationListenerId = sapi.Event.RegisterGameTickListener(dt =>
-            {
-                // Ready windows first: a match that closes its window this pass can start looking for
-                // an arena in the same one, instead of idling until the next.
-                AttemptReadyChecks();
-                AttemptFindLocationForEvent();
-            }, config.attemptFindLocationForRunningEventEveryNSeconds * 1000);
+            ApplyTickIntervals();
+            StartOpenMatchKeeper();
         }
 
-        /// <summary>
-        /// Raised once a match finished and its result was recorded. Fires from the finishing match's
-        /// own tick inside FinishEvent, before it leaves the live list: observers must be
-        /// read-only and must NOT start another match from here.
-        /// </summary>
-        /// <summary>Raised the moment a match becomes live, whichever path assembled it: the queue,
-        /// the admin force-start or a tournament. Observers that must react to "this event is now
-        /// running" hook here instead of being called by hand from each start path; the source tells
-        /// them which of those it was.</summary>
+        // Re-run after a config change: CountSearchTimeout assumes the configured interval is the real one.
+        public void ApplyTickIntervals()
+        {
+            if (composeTeamsListenerId >= 0) sapi.Event.UnregisterGameTickListener(composeTeamsListenerId);
+            if (findLocationListenerId >= 0) sapi.Event.UnregisterGameTickListener(findLocationListenerId);
+
+            // At least a second: 0 would run the pass on every server tick.
+            composeTeamsListenerId = sapi.Event.RegisterGameTickListener(
+                dt => AttemptToComposeTeams(), Math.Max(1, config.attemptComposeTeamsEveryNSeconds) * 1000);
+            findLocationListenerId = sapi.Event.RegisterGameTickListener(dt =>
+            {
+                // Ready checks first so a confirmed match finds an arena in the same pass.
+                AttemptReadyChecks();
+                AttemptFindLocationForEvent();
+            }, Math.Max(1, config.attemptFindLocationForRunningEventEveryNSeconds) * 1000);
+        }
+
+        // With a ready check, fires only after it passes.
         public event Action<RunningEvent, MatchStartSource> OnMatchStarted;
 
+        // Fires inside FinishEvent before the match leaves the live list; don't start matches from here.
         public event Action<RunningEvent, MatchResult> OnMatchFinished;
 
-        /// <summary>Raised when an assembled match was dropped before it ever ran (no arena in time).</summary>
+        // Assembled but never ran (no arena in time).
         public event Action<RunningEvent, string> OnMatchAborted;
 
-        /// <summary>The tournament driver, when one is wired. Null on servers that never run one.</summary>
         public Tournaments.TournamentManager Tournaments { get; set; }
 
-        /// <summary>
-        /// Asked before assembling a match: true means "leave this event's queue alone for now".
-        /// A delegate rather than a reference to the feature that uses it (signup windows), so the
-        /// match driver keeps knowing nothing about it. Null = nothing holds anything.
-        /// </summary>
-        // Namespace spelled out: Vintagestory.API.Common declares a Func<> of its own and both
-        // namespaces are in scope here (same reason as DropRegistrations in the Queue partial).
+        // true = don't assemble this event's queue now (signup windows).
+        // System.Func: Vintagestory.API.Common has its own Func<>.
         public System.Func<string, bool> QueueHold { get; set; }
 
-        /// <summary>This player's party roster, or null when they are not in one. Lets a tournament
-        /// signup take the same snapshot the queue does, without touching the queue.</summary>
         public List<string> PartyRosterOf(IServerPlayer player, out bool isLeader)
         {
             isLeader = false;
@@ -207,79 +175,95 @@ namespace canevents.src.EventManagers
             return party.playersGuids.ToList();
         }
 
-        /// <summary>Public face of the busy-player check, for drivers outside the queue (tournaments).</summary>
         public bool IsBusy(string uid) => IsPlayerBusy(uid);
 
-        /// <summary>
-        /// Busy for the queue and the scheduler: in a match, spectating, or called for a tournament
-        /// match that is about to start.
-        /// </summary>
         private bool IsPlayerBusy(string uid)
         {
-            // A called tournament match makes the player off-limits for the ready window.
             if (Tournaments != null && Tournaments.IsCalled(uid)) return true;
             return IsOccupiedByAMatch(uid);
         }
 
-        /// <summary>
-        /// Busy in the only sense that blocks STARTING a match: already playing one, or spectating.
-        /// Deliberately does not count "called for a tournament match" - those players are exactly
-        /// the ones the tournament is about to hand over, and counting them made the driver refuse
-        /// to start its own match with "player is already in a match".
-        /// </summary>
-        private bool IsOccupiedByAMatch(string uid)
+        // Ignores tournament calls, otherwise the tournament couldn't start its own match.
+        // Released and pre-start dropouts are free (R24d): the match no longer holds them.
+        internal bool IsOccupiedByAMatch(string uid)
         {
             if (SpectatorManager != null && SpectatorManager.IsSpectating(uid)) return true;
             lock (runningEvents)
             {
                 foreach (var re in runningEvents)
-                    if (re.EventState != EventState.Finished && re.IsParticipant(uid))
+                    if (re.EventState != EventState.Finished && re.HoldsPlayer(uid))
                         return true;
             }
             return false;
         }
 
-        /// <summary>
-        /// A copy of the live match list. The only way to iterate matches: walking the live list
-        /// breaks as soon as anything inside the loop ends a match, which is a normal outcome of
-        /// almost every hook that runs there.
-        /// </summary>
         public List<RunningEvent> RunningEventsSnapshot()
         {
             lock (runningEvents)
                 return new List<RunningEvent>(runningEvents);
         }
 
-        /// <summary>Adds a freshly assembled match to the live list.</summary>
+        // Running matches only. Safe to end a match inside the loop.
+        public IEnumerable<(RunningEvent match, T behavior)> LiveBehaviors<T>() where T : class
+        {
+            foreach (var re in RunningEventsSnapshot())
+            {
+                if (re.EventState != EventState.Running) continue;
+                var behaviors = re.Behaviors;
+                for (int i = 0; i < behaviors.Count; i++)
+                    if (behaviors[i] is T found) yield return (re, found);
+            }
+        }
+
         private void AddRunningEvent(RunningEvent re)
         {
             lock (runningEvents) runningEvents.Add(re);
         }
 
-        /// <summary>Takes a finished match off the live list. Safe to call for one already gone.</summary>
         private void RemoveRunningEvent(RunningEvent re)
         {
-            lock (runningEvents) runningEvents.Remove(re);
+            lock (runningEvents)
+            {
+                runningEvents.Remove(re);
+                queueRegistrationsByMatch.Remove(re.Id);
+            }
         }
 
-        /// <summary>
-        /// Runs one lifecycle hook on every behavior of a match, isolating each: a throwing behavior
-        /// must not skip the ones after it (a failed inventory restore would strand players in the
-        /// arena). <paramref name="hook"/> is used for the log line only.
-        /// </summary>
+        // Match id -> source registrations, queue matches only. Used by the ready check requeue. Guarded by runningEvents lock.
+        private readonly Dictionary<long, List<Registration>> queueRegistrationsByMatch = new();
+
+        private bool IsQueueMatch(RunningEvent re)
+        {
+            lock (runningEvents) return queueRegistrationsByMatch.ContainsKey(re.Id);
+        }
+
+        public bool HasPendingReadyCheck(string eventCode)
+        {
+            lock (runningEvents)
+            {
+                foreach (var re in runningEvents)
+                    if (re.EventState == EventState.AwaitingReady && re.Event.CodeEquals(eventCode))
+                        return true;
+            }
+            return false;
+        }
+
+        private void RaiseMatchStarted(RunningEvent re, MatchStartSource source)
+            => log.Safely("OnMatchStarted observer for " + re.Event?.Code,
+                () => OnMatchStarted?.Invoke(re, source));
+
+        // Each behavior isolated so one throwing doesn't skip the rest (e.g. inventory restore).
         internal void DispatchToBehaviors(RunningEvent re, string hook, Action<CANEventBehavior> call)
         {
             if (re?.Behaviors == null) return;
 
             foreach (var beh in re.Behaviors)
             {
-                var b = beh; // captured by the lambda below
+                var b = beh;
                 log.Safely(b.Name + "." + hook + " for " + re.Event?.Code, () => call(b));
             }
         }
 
-        /// <summary>The live match with this id, or null. Match ids travel to clients and back, so
-        /// this is the lookup on the way in.</summary>
         public RunningEvent FindRunningEvent(long id)
         {
             lock (runningEvents)
@@ -290,42 +274,28 @@ namespace canevents.src.EventManagers
             return null;
         }
 
-        /// <summary>
-        /// The live match this player is on the roster of, or null. Deliberately blind to the match
-        /// state: a match stays theirs until it leaves the live list, so gear dropped during the
-        /// finishing sequence is still judged by that match's own rules.
-        /// </summary>
+        // Ignores state: gear dropped while finishing still follows that match's rules. A released player
+        // has their own gear back and may be in another match by now, so that match's rules are not theirs.
         public RunningEvent FindLiveEventOf(string uid)
         {
             if (uid == null) return null;
             lock (runningEvents)
             {
                 foreach (var re in runningEvents)
-                    if (re.IsParticipant(uid)) return re;
+                    if (re.HoldsPlayer(uid)) return re;
             }
             return null;
         }
 
-        /// <summary>What this match does with issued gear thrown on the ground: its own setting if
-        /// it has one, else the server default. A null match means "no match", i.e. the default.</summary>
+        // An open match never reaches the end-of-match sweep, so its kit can't be left lying around.
         public eventBehavior.Shared.IssuedGearDrop PolicyOf(RunningEvent re)
-            => re?.GetBehavior<eventBehavior.SavePlayerAttributes>()?.IssuedGearDropOverride
-               ?? IssuedGearDefault;
+            => re?.IsOpenMatch == true
+                ? eventBehavior.Shared.IssuedGearDrop.Remove
+                : re?.GetBehavior<eventBehavior.SavePlayerAttributes>()?.IssuedGearDropOverride ?? IssuedGearDefault;
 
-        /// <summary>Is this player on the roster of a match that is still going? Crash-recovery paths
-        /// ask this first: undoing anything is only safe once no live match owns them.</summary>
-        internal bool IsInLiveEvent(string uid)
-        {
-            lock (runningEvents)
-            {
-                foreach (var re in runningEvents)
-                    if (re.IsParticipant(uid)) return true;
-            }
-            return false;
-        }
+        internal bool IsInLiveEvent(string uid) => FindLiveEventOf(uid) != null;
 
-        /// <summary>Is this player still in play (on the roster and not eliminated)? Stricter than
-        /// <see cref="IsInLiveEvent"/>: an eliminated player's arena state is no longer needed.</summary>
+        // On the roster and not eliminated.
         internal bool IsPlayingLiveEvent(string uid)
         {
             lock (runningEvents)
@@ -344,9 +314,7 @@ namespace canevents.src.EventManagers
         {
             Events = events;
             PartyManager = partyManager;
-            // A party registration is a snapshot taken at /canreg time; once the party shape changes
-            // it is stale, so drop it whole - otherwise ex-members get teleported into events and the
-            // rest are stranded in a queue they can't leave.
+            // Party registration is a snapshot from /canreg; drop it whole once the party changes.
             _onPartyChanged   = _ => DropStalePartyRegistrations();
             _onPartyDisbanded = (_, __) => DropStalePartyRegistrations();
             partyManager.OnPartyChanged   += _onPartyChanged;
@@ -356,7 +324,7 @@ namespace canevents.src.EventManagers
             this.config = sapi.ModLoader.GetModSystem<canevents>().config;
             RunningEvent.SeedIdCounter(sapi);
             this.QueueManagers = new Dictionary<string, QueueManager>();
-            string folderPath = Path.Combine(GamePaths.ModConfig, "canevents");
+            string folderPath = ModPaths.Root;
             if (!Path.Exists(folderPath))
             {
                 Directory.CreateDirectory(folderPath);
@@ -366,7 +334,11 @@ namespace canevents.src.EventManagers
             resultRecorder = new MatchResultRecorder(this, sapi, config);
             eventPlacesManager = new DefaultEventPlacesManager(Path.Combine(folderPath, config.eventPlaceFolderName), sapi.Logger);
             eventPlacesManager.LoadEventPlaces();
-            placeConfig = new PlaceConfigService(eventPlacesManager);
+            // Lazy: SchematicPlacer is assigned after the constructor.
+            placeConfig = new PlaceConfigService(eventPlacesManager, () => SchematicPlacer);
+            PlayerState = new PlayerState(sapi, this);
+            AdminActions = new AdminActions(sapi, this);
+            HungerGamesSetup = new eventBehavior.Shared.HungerGamesSetupService(sapi, this);
 
             var eventCodes = events.Select(e => e.Code).ToList();
             var stores = new Dictionary<string, LoadoutManager>();
@@ -379,25 +351,30 @@ namespace canevents.src.EventManagers
             ItemSetStores = stores;
             LoadoutPreferences = new LoadoutPreferences(sapi);
 
-            // The busy-player predicate is wired after services are ready (see Start()).
-            var fullPartyQM     = new FullPartyRequiredQueueManager();
-            var byPartsQM       = new ByPartsPartyCollectedQueueManager();
-            var rankedQM        = new RankedQueueManager(config.rankedMmrBaseTolerance, config.rankedMmrToleranceWidenPerSecond);
-            var rankedByPartsQM = new RankedByPartsQueueManager(config.rankedMmrBaseTolerance, config.rankedMmrToleranceWidenPerSecond);
+            fullPartyQM     = new FullPartyRequiredQueueManager();
+            byPartsQM       = new ByPartsPartyCollectedQueueManager();
+            rankedQM        = new RankedQueueManager(config.rankedMmrBaseTolerance, config.rankedMmrToleranceWidenPerSecond);
+            rankedByPartsQM = new RankedByPartsQueueManager(config.rankedMmrBaseTolerance, config.rankedMmrToleranceWidenPerSecond);
 
-            // Rated is checked first within each assembly style: a rated event must never fall into
-            // a manager that throws teams together at random, because its result feeds Elo.
-            foreach (var ev in events)
-            {
-                if (ev.AssemblingEB is ByPartsPartyCollected)
-                    QueueManagers[ev.Code] = ev.Rated ? (QueueManager)rankedByPartsQM : byPartsQM;
-                else if (ev.Rated)
-                    QueueManagers[ev.Code] = rankedQM;      // skill-based matchmaking on the rated track
-                else
-                    QueueManagers[ev.Code] = fullPartyQM;   // FullPartyRequired + fallback (FIFO)
-            }
+            foreach (var ev in events) AssignQueueManager(ev);
 
             sapi.Event.RegisterEventBusListener(StartEvent, 0.5, "eventLocationFound");
+        }
+
+        // One shared instance per assembly style; fields so a definition reload reuses them.
+        private readonly QueueManager fullPartyQM;
+        private readonly QueueManager byPartsQM;
+        private readonly QueueManager rankedQM;
+        private readonly QueueManager rankedByPartsQM;
+
+        private void AssignQueueManager(CANEvent ev)
+        {
+            if (ev.AssemblingEB is ByPartsPartyCollected)
+                QueueManagers[ev.Code] = ev.Rated ? rankedByPartsQM : byPartsQM;
+            else if (ev.Rated)
+                QueueManagers[ev.Code] = rankedQM;      // skill-based matchmaking on the rated track
+            else
+                QueueManagers[ev.Code] = fullPartyQM;   // FullPartyRequired + fallback (FIFO)
         }
 
         public void Dispose()
@@ -409,22 +386,19 @@ namespace canevents.src.EventManagers
             }
             if (composeTeamsListenerId >= 0) sapi?.Event.UnregisterGameTickListener(composeTeamsListenerId);
             if (findLocationListenerId >= 0) sapi?.Event.UnregisterGameTickListener(findLocationListenerId);
+            if (openMatchKeeperId >= 0) sapi?.Event.UnregisterGameTickListener(openMatchKeeperId);
             sapi?.Event.UnregisterEventBusListener(StartEvent);
+            HungerGamesSetup?.StopAllPreviews();
         }
 
-        // camelCase + drop-nulls so written JSON matches the hand-authored event files (which use
-        // "winnerItems", "rakePercent", ...) and never persists an inherited (null) field.
+        // camelCase, nulls dropped: matches hand-written event files, inherited fields aren't persisted.
         private static readonly JsonSerializer EventConfigSerializer = JsonSerializer.Create(new JsonSerializerSettings
         {
             ContractResolver = new CamelCasePropertyNamesContractResolver(),
             NullValueHandling = NullValueHandling.Ignore
         });
 
-        /// <summary>
-        /// Applies an admin edit of an event's reward + entry-fee: updates the live <see cref="CANEvent"/>
-        /// (effective without a restart) and rewrites the event's JSON in ModConfig (survives one). Only
-        /// the "reward"/"entryFee" keys are touched. Returns (ok, message) for the admin toast.
-        /// </summary>
+        // Updates the live event and its JSON in ModConfig.
         public (bool ok, string message) UpdateEventRewardConfig(string code, RewardSpec reward, EntryFeeSpec fee)
         {
             if (string.IsNullOrEmpty(code)) return (false, Lang.Get("canevents:rewardcfg-no-code"));
@@ -439,11 +413,6 @@ namespace canevents.src.EventManagers
             return (true, Lang.Get("canevents:rewardcfg-saved", ev.Code));
         }
 
-        /// <summary>
-        /// Applies an admin edit of the global reward / anti-farm limits: mutates the shared
-        /// <see cref="config"/> (read per match, so most fields take effect at once), rebuilds the
-        /// rate-cap limiter, and persists the mod config.
-        /// </summary>
         public void ApplyRewardLimitsConfig(int rateCapBurst, double rateCapRefillHours, bool rateCapPerEvent,
             int minMatchSeconds, bool refundForfeitOnVoid, bool participation,
             string winnerItemCode, int winnerQuantity, string participationItemCode, int participationQuantity)
@@ -463,8 +432,7 @@ namespace canevents.src.EventManagers
             AdminState.Save();
         }
 
-        // Rewrites the "reward"/"entryFee" keys of the matching event JSON, leaving every other key
-        // intact. A null spec removes its key (clears the override).
+        // A null spec removes the key.
         private bool PersistEventRewardConfig(string code, RewardSpec reward, EntryFeeSpec fee, out string error)
             => eventConfigStore.Edit(code, obj =>
             {
@@ -473,8 +441,7 @@ namespace canevents.src.EventManagers
                 return null;
             }, out error);
 
-        // Serializes the spec into obj[key], or removes the key when the spec is null or serializes to
-        // an empty object (everything inherited → no override to persist).
+        // Empty object means everything inherited, so the key is removed.
         private static void SetOrRemove(JObject obj, string key, object spec)
         {
             if (spec == null) { obj.Remove(key); return; }
@@ -483,96 +450,27 @@ namespace canevents.src.EventManagers
             obj[key] = token;
         }
 
-        // Applies an admin edit of a Hunger Games event's loot tables and/or zone phases: mutates the
-        // live behavior's Attributes, then persists them into the event JSON. A null part is untouched.
-        public (bool ok, string message) UpdateEventHgConfig(string code, JObject lootTables, JArray zonePhases)
+        // Edits a copy, so a running match keeps its attributes.
+        public (bool ok, string message) EditEventBehaviorAttributes(string code, string behaviorName,
+            Action<JObject> edit, string savedLangKey)
         {
             if (string.IsNullOrEmpty(code)) return (false, Lang.Get("canevents:rewardcfg-no-code"));
             var ev = FindEventByCode(code);
             if (ev == null) return (false, Lang.Get("canevents:event-not-found", code));
 
-            var hg = ev.GetBehavior<eventBehavior.HungerGamesEB>();
-            if (hg?.Attributes?.Token is JObject attrTok)
-            {
-                if (lootTables != null) attrTok["lootTables"] = lootTables;
-                if (zonePhases != null) attrTok["zonePhases"] = zonePhases;
-                // Rewrap so JsonObject re-reads the mutated token rather than any cached child wrappers.
-                hg.Attributes = new Vintagestory.API.Datastructures.JsonObject(attrTok);
-            }
+            var beh = ev.Behaviors.FirstOrDefault(b =>
+                string.Equals(b.Name, behaviorName, StringComparison.OrdinalIgnoreCase));
+            if (beh == null) return (false, Lang.Get("canevents:rewardcfg-save-failed", "no " + behaviorName + " behavior"));
 
-            if (!PersistEventHgConfig(ev.Code, lootTables, zonePhases, out string err))
+            var attrs = beh.Attributes?.Token is JObject tok ? (JObject)tok.DeepClone() : new JObject();
+            edit(attrs);
+            beh.Attributes = new Vintagestory.API.Datastructures.JsonObject(attrs);
+            // As on load: rebuilds the template's known settings, which the new Attributes dropped.
+            beh.Initialize();
+
+            if (!eventConfigStore.EditBehaviorAttributes(ev.Code, behaviorName, edit, out string err))
                 return (true, Lang.Get("canevents:rewardcfg-save-failed", err));
-            return (true, Lang.Get("canevents:hgcfg-saved", ev.Code));
+            return (true, Lang.Get(savedLangKey, ev.Code));
         }
-
-        /// <summary>
-        /// Applies an admin edit of a Murder Mystery event's tunables: mutates the live behavior's
-        /// Attributes (so the next match uses them without a restart) and persists them into the event
-        /// JSON. Only keys in <see cref="eventBehavior.Shared.MmConfigKeys"/> are touched - the
-        /// loadouts and outfits sharing that object are edited elsewhere and must survive this.
-        /// </summary>
-        public (bool ok, string message) UpdateEventMmConfig(string code, JObject settings)
-        {
-            if (string.IsNullOrEmpty(code)) return (false, Lang.Get("canevents:rewardcfg-no-code"));
-            if (settings == null) return (false, Lang.Get("canevents:mmcfg-nothing"));
-            var ev = FindEventByCode(code);
-            if (ev == null) return (false, Lang.Get("canevents:event-not-found", code));
-
-            var mm = ev.GetBehavior<eventBehavior.MurderMysteryEB>();
-            if (mm?.Attributes?.Token is JObject attrTok)
-            {
-                ApplyMmSettings(attrTok, settings);
-                // Rewrap so JsonObject re-reads the mutated token rather than any cached child wrappers.
-                mm.Attributes = new Vintagestory.API.Datastructures.JsonObject(attrTok);
-            }
-
-            if (!PersistEventMmConfig(ev.Code, settings, out string err))
-                return (true, Lang.Get("canevents:rewardcfg-save-failed", err));
-            return (true, Lang.Get("canevents:mmcfg-saved", ev.Code));
-        }
-
-        // Copies the editable keys across, and only those. A key the panel left out is left as it was,
-        // so an older panel editing a newer config cannot erase settings it never showed.
-        private static void ApplyMmSettings(JObject target, JObject settings)
-        {
-            foreach (var prop in settings.Properties())
-                if (eventBehavior.Shared.MmConfigKeys.IsEditable(prop.Name))
-                    target[prop.Name] = prop.Value;
-        }
-
-        // Writes the edited settings into the "MurderMystery" behavior's "attributes" of the matching
-        // event JSON, leaving every other key intact.
-        private bool PersistEventMmConfig(string code, JObject settings, out string error)
-            => eventConfigStore.Edit(code, obj =>
-            {
-                if (!(obj["behaviors"] is JArray behs)) return "no behaviors array";
-
-                JObject mmBeh = null;
-                foreach (var b in behs)
-                    if (b is JObject bo && bo["name"]?.Value<string>() == "MurderMystery") { mmBeh = bo; break; }
-                if (mmBeh == null) return "no MurderMystery behavior";
-
-                if (!(mmBeh["attributes"] is JObject attr)) { attr = new JObject(); mmBeh["attributes"] = attr; }
-                ApplyMmSettings(attr, settings);
-                return null;
-            }, out error);
-
-        // Writes lootTables/zonePhases into the "HungerGames" behavior's "attributes" of the matching
-        // event JSON, leaving every other key intact.
-        private bool PersistEventHgConfig(string code, JObject lootTables, JArray zonePhases, out string error)
-            => eventConfigStore.Edit(code, obj =>
-            {
-                if (!(obj["behaviors"] is JArray behs)) return "no behaviors array";
-
-                JObject hgBeh = null;
-                foreach (var b in behs)
-                    if (b is JObject bo && bo["name"]?.Value<string>() == "HungerGames") { hgBeh = bo; break; }
-                if (hgBeh == null) return "no HungerGames behavior";
-
-                if (!(hgBeh["attributes"] is JObject attr)) { attr = new JObject(); hgBeh["attributes"] = attr; }
-                if (lootTables != null) attr["lootTables"] = lootTables;
-                if (zonePhases != null) attr["zonePhases"] = zonePhases;
-                return null;
-            }, out error);
     }
 }

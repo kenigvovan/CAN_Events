@@ -14,17 +14,9 @@
       <HintPath>..\..\libs\1.22\canparty.dll</HintPath>
       <Private>False</Private>
     </Reference>
-    <Reference Include="ImGui.NET">
-      <HintPath>..\..\libs\1.21\ImGui.NET.dll</HintPath>
-      <Private>False</Private>
-    </Reference>
     <Reference Include="VintagestoryAPI">
       <HintPath>$(VINTAGE_STORY)/VintagestoryAPI.dll</HintPath>
       <Private>false</Private>
-    </Reference>
-    <Reference Include="VSImGui">
-      <HintPath>..\..\libs\1.21\VSImGui.dll</HintPath>
-      <Private>False</Private>
     </Reference>
     <Reference Include="VSSurvivalMod">
       <HintPath>$(VINTAGE_STORY)/Mods/VSSurvivalMod.dll</HintPath>

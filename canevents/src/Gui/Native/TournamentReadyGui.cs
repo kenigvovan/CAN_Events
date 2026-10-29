@@ -1,151 +1,87 @@
-using System;
 using canevents.src.Network;
 using Vintagestory.API.Client;
 using Vintagestory.API.Config;
 
 namespace canevents.src.Gui.Native
 {
-    /// <summary>
-    /// "Your tournament match is up - ready?" Like <see cref="LoadoutPickGui"/>, except ignoring this
-    /// one loses the match: the countdown is the server's, and closing the dialog is NOT an answer -
-    /// the player can still accept from chat (/tournament ready) until the deadline passes.
-    /// </summary>
-    public class TournamentReadyGui : GuiDialog
+    // Closing the dialog is not an answer: the countdown is server-side and /tournament ready still works.
+    public class TournamentReadyGui : CountdownPromptGui<TournamentReadyRequestMsg>
     {
-        private readonly ClientNetworkHandler networkHandler;
-
-        private TournamentReadyRequestMsg request;
-        private double shownAt;
         private bool answered;
 
-        private const double Width = 420;
-
-        public TournamentReadyGui(ICoreClientAPI capi, ClientNetworkHandler networkHandler) : base(capi)
+        public TournamentReadyGui(ICoreClientAPI capi, ClientNetworkHandler networkHandler)
+            : base(capi, networkHandler)
         {
-            this.networkHandler = networkHandler;
         }
 
-        // Opened by a server packet only.
-        public override string ToggleKeyCombinationCode => null;
+        protected override string ComposerKey => "canevents-tournamentready";
+        protected override string TitleText => Lang.Get("canevents:gui-tournament-ready-title", Request.TournamentName);
+        protected override string CountdownLangKey => "canevents:gui-tournament-ready-countdown";
+        protected override float TimeoutOf(TournamentReadyRequestMsg request) => request.TimeoutSeconds;
+        protected override bool DismissIsDecline => false;
 
         public void OpenFor(TournamentReadyRequestMsg msg)
         {
             if (msg == null) return;
 
-            // Rings for a match not already answered. The highest stakes of the three prompts -
-            // ignoring this one forfeits a bracket match - so silence here is the least affordable.
-            // Skipped on a reconnect re-send of a match already confirmed: nothing is being asked.
+            // No sound on a reconnect re-send of an already confirmed match.
             bool isNew = !msg.AlreadyReady
-                && (request == null || request.MatchId != msg.MatchId
-                    || request.TournamentId != msg.TournamentId);
+                && (Request == null || Request.MatchId != msg.MatchId
+                    || Request.TournamentId != msg.TournamentId);
 
-            request = msg;
             answered = msg.AlreadyReady;
-            shownAt = capi.ElapsedMilliseconds / 1000.0;
-            Compose();
-            TryOpen();
-
-            if (isNew) capi.Gui.PlaySound("effect/receptionbell");
+            Show(msg, isNew);
         }
 
-        /// <summary>Server says this prompt is over (answered elsewhere, expired, opponent forfeited).</summary>
         public void CloseFor(long tournamentId, int matchId)
         {
-            if (request == null) return;
-            if (request.TournamentId != tournamentId || request.MatchId != matchId) return;
-            request = null;
-            TryClose();
+            if (Request == null) return;
+            if (Request.TournamentId != tournamentId || Request.MatchId != matchId) return;
+            CloseQuietly();
         }
 
-        private void Compose()
+        protected override double ComposeBody(GuiComposer composer, double y)
         {
-            var bgBounds = ElementBounds.Fill.WithFixedPadding(GuiStyle.ElementToDialogPadding);
-            bgBounds.BothSizing = ElementSizing.FitToChildren;
-            var dialogBounds = ElementStdBounds.AutosizedMainDialog.WithAlignment(EnumDialogArea.CenterMiddle);
-
-            var composer = capi.Gui
-                .CreateCompo("canevents-tournamentready", dialogBounds)
-                .AddShadedDialogBG(bgBounds)
-                .AddDialogTitleBar(Lang.Get("canevents:gui-tournament-ready-title", request.TournamentName), OnDismiss)
-                .BeginChildElements(bgBounds);
-
-            double y = 14;
-
             composer.AddStaticText(
-                Lang.Get("canevents:gui-tournament-ready-body", request.RoundLabel, request.OpponentName,
-                    (request.EventCode ?? "").ToUpperInvariant()),
+                Lang.Get("canevents:gui-tournament-ready-body", Request.RoundLabel, Request.OpponentName,
+                    (Request.EventCode ?? "").ToUpperInvariant()),
                 CairoFont.WhiteSmallishText(), ElementBounds.Fixed(0, y, Width, 50));
-            y += 56;
+            return y + 56;
+        }
 
-            composer.AddDynamicText(CountdownText(), CairoFont.WhiteSmallishText()
-                    .WithColor(GuiStyle.ErrorTextColor),
-                ElementBounds.Fixed(0, y, Width, 25), "countdown");
-            y += 34;
-
+        protected override double ComposeButtons(GuiComposer composer, double y)
+        {
             if (answered)
             {
                 composer.AddStaticText(Lang.Get("canevents:gui-tournament-ready-waiting"),
                     CairoFont.WhiteDetailText(), ElementBounds.Fixed(0, y, Width, 25));
-                y += 30;
-            }
-            else
-            {
-                composer.AddSmallButton(Lang.Get("canevents:gui-tournament-ready-accept"), OnAccept,
-                    ElementBounds.Fixed(EnumDialogArea.LeftFixed, 0, y, 0, 0).WithFixedPadding(12, 4),
-                    EnumButtonStyle.Normal);
-                composer.AddSmallButton(Lang.Get("canevents:gui-tournament-ready-forfeit"), OnForfeit,
-                    ElementBounds.Fixed(EnumDialogArea.LeftFixed, 170, y, 0, 0).WithFixedPadding(12, 4),
-                    EnumButtonStyle.Normal);
-                y += 34;
+                return y + 30;
             }
 
-            SingleComposer = composer.EndChildElements().Compose();
+            composer.AddSmallButton(Lang.Get("canevents:gui-tournament-ready-accept"), OnAccept,
+                ElementBounds.Fixed(EnumDialogArea.LeftFixed, 0, y, 0, 0).WithFixedPadding(12, 4),
+                EnumButtonStyle.Normal);
+            composer.AddSmallButton(Lang.Get("canevents:gui-tournament-ready-forfeit"), OnForfeit,
+                ElementBounds.Fixed(EnumDialogArea.LeftFixed, 170, y, 0, 0).WithFixedPadding(12, 4),
+                EnumButtonStyle.Normal);
+            return y + 34;
         }
 
         private bool OnAccept()
         {
-            if (request == null) return true;
-            networkHandler.SendTournamentReady(request.TournamentId, request.MatchId, true);
+            if (Request == null) return true;
+            networkHandler.SendTournamentReady(Request.TournamentId, Request.MatchId, true);
             answered = true;
-            Compose();          // switches to "waiting for your opponent" in place
+            Compose();
             return true;
         }
 
         private bool OnForfeit()
         {
-            if (request == null) return true;
-            networkHandler.SendTournamentReady(request.TournamentId, request.MatchId, false);
-            request = null;     // cleared before closing, so OnGuiClosed can tell this from a dismissal
-            TryClose();
+            if (Request == null) return true;
+            networkHandler.SendTournamentReady(Request.TournamentId, Request.MatchId, false);
+            CloseQuietly();
             return true;
         }
-
-        private void OnDismiss() => TryClose();
-
-        // Dismissing this is NOT an answer: the server's deadline still runs. Only the client-side
-        // cache is cleared, so a re-send after a reconnect can bring the dialog back.
-        public override void OnGuiClosed()
-        {
-            base.OnGuiClosed();
-            networkHandler.DismissTournamentReady();
-            request = null;
-        }
-
-        public override void OnRenderGUI(float deltaTime)
-        {
-            base.OnRenderGUI(deltaTime);
-            if (request == null) return;
-
-            // Past the deadline the server has already decided; a late click would do nothing.
-            if (Remaining() <= -0.5f) { TryClose(); return; }
-
-            SingleComposer?.GetDynamicText("countdown")?.SetNewText(CountdownText());
-        }
-
-        private float Remaining()
-            => request.TimeoutSeconds - (float)(capi.ElapsedMilliseconds / 1000.0 - shownAt);
-
-        private string CountdownText()
-            => Lang.Get("canevents:gui-tournament-ready-countdown", Math.Max(0, (int)Remaining()));
     }
 }

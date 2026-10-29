@@ -3,25 +3,18 @@ using System.Collections.Generic;
 using System.Linq;
 using canevents.src.EventManagers;
 using canevents.src.EventManagers.events;
+using canevents.src.Scoring;
 using Vintagestory.API.Common;
 using Vintagestory.API.Config;
 using Vintagestory.API.Server;
 
 namespace canevents.src.Tournaments
 {
-    /// <summary>
-    /// The tournament's money. Deliberately independent of EntryFeeEscrow: a player holds only one
-    /// escrow slot (locking them out of other paid events), EntryFeeSettlement would pay the stakes
-    /// out after round one, and RefundIfNoLongerCommitted would refund entrants between rounds. So the
-    /// stake is taken from the inventory at signup into the tournament's own persisted pot; sub-matches
-    /// carry SuppressEntryFeeSettlement and never touch it.
-    /// </summary>
+    // Own pot, not EntryFeeEscrow: escrow is one slot per player and would settle/refund per round.
+    // Sub-matches run with SuppressEntryFeeSettlement.
     public partial class TournamentManager
     {
-        /// <summary>
-        /// Takes the entry fee: one stake per side, paid by the leader (first uid), so one click never
-        /// empties the other members' inventories and the refund goes back to the same person.
-        /// </summary>
+        // One stake per side, paid by the leader (first uid).
         private bool ChargeEntryFee(Tournament t, List<string> uids, out string error)
         {
             error = null;
@@ -41,8 +34,7 @@ namespace canevents.src.Tournaments
                 return false;
             }
 
-            // Charge, then record. The gap is the same accepted risk EntryFeeEscrow carries; the
-            // removal is logged so a crash in between is reconstructible.
+            // Charge then record, logged in case of a crash in between (same as EntryFeeEscrow).
             var taken = new List<RewardItem>();
             foreach (var (code, qty) in fee)
             {
@@ -57,7 +49,6 @@ namespace canevents.src.Tournaments
             return true;
         }
 
-        /// <summary>Hands back (and removes from the pot) everything these players put in.</summary>
         private void RefundContributions(Tournament t, IEnumerable<string> uids)
         {
             var set = new HashSet<string>(uids);
@@ -82,26 +73,20 @@ namespace canevents.src.Tournaments
             t.Pot.Clear();
         }
 
-        /// <summary>
-        /// Pays the finished bracket out: pot by placement percentage plus per-place item prizes. A team
-        /// splits its pot share but every member gets the full item set, as RewardTier does.
-        /// </summary>
-        private void PayOut(Tournament t)
+        // Team splits the pot share, but each member gets the full item prize. No side effects,
+        // the caller writes it in the same store write that closes the tournament.
+        private List<PendingPayout> BuildPayouts(Tournament t)
         {
-            if (t.FinalPlacement.Count == 0) return;
+            var payouts = new List<PendingPayout>();
+            if (t.FinalPlacement.Count == 0) return payouts;
 
-            // Only placements with somebody to pay count: every coin came out of a player's inventory,
-            // so paying a share to a bot would burn real property.
+            // Bots don't get a pot share.
             int payableCount = t.FinalPlacement.Count(id => HumanMembers(t, id).Count > 0);
             var shares = TournamentPot.Split(t.Pot, t.RakePercent, t.PotSplitPercents, payableCount);
 
-            // Worked out in full before anything is handed out, so emptying the pot and owing every
-            // share is one atomic write; a crash after it loses nothing, the rows are persisted.
-            var payouts = new List<PendingPayout>();
             void Owe(string uid, List<RewardItem> items)
             {
                 if (items == null || items.Count == 0) return;
-                // A bot has no inventory, and a parked row for one would never be collected.
                 if (Bots.BotIdentity.IsBot(uid)) return;
                 payouts.Add(new PendingPayout
                 {
@@ -127,8 +112,7 @@ namespace canevents.src.Tournaments
                 }
                 payIndex++;
 
-                // Item prizes follow the REAL placement, not the payout order: second place gets the
-                // second prize even if the winner was a bot nobody could pay.
+                // Item prizes go by real placement, not payout order.
                 if (t.PlacementPrizes != null && place < t.PlacementPrizes.Count)
                 {
                     var prize = t.PlacementPrizes[place]?.Items;
@@ -138,27 +122,20 @@ namespace canevents.src.Tournaments
                 }
             }
 
-            store.Mutate(d =>
-            {
-                t.Pot.Clear();
-                t.Contributions.Clear();
-                foreach (var p in payouts) d.Pending.Add(p);
-            });
+            return payouts;
+        }
 
-            // Books straight: hand over to whoever is online, the rest collect on next login.
+        private void DeliverToOnline(IEnumerable<PendingPayout> payouts)
+        {
             foreach (var uid in payouts.Select(p => p.Uid).Distinct())
                 if (sapi.World.PlayerByUid(uid) is IServerPlayer online)
                     DeliverPendingPayouts(online);
         }
 
-        /// <summary>
-        /// Grants an item set now, or parks it for delivery on reconnect. Bypasses the anti-farm rate
-        /// cap on purpose: stakes are the players' own property and prizes are admin-run.
-        /// </summary>
+        // Gives now or queues for reconnect. Skips the reward rate limiter.
         private void Deliver(Tournament t, string uid, List<RewardItem> items, string reason)
         {
             if (items == null || items.Count == 0) return;
-            // A bot has no inventory, and a parked row for one would never be collected.
             if (Bots.BotIdentity.IsBot(uid)) return;
 
             if (sapi.World.PlayerByUid(uid) is IServerPlayer player)
@@ -181,11 +158,7 @@ namespace canevents.src.Tournaments
             });
         }
 
-        /// <summary>
-        /// Hands over anything owed to a returning player. The rows are taken out of the store first
-        /// (they must be, or a second login would pay twice), so a payout that throws half-way is put
-        /// back rather than lost: the prize outlives the failure and is tried again next login.
-        /// </summary>
+        // Rows are taken out first to avoid double pay; a failed payout re-queues the remainder.
         private void DeliverPendingPayouts(IServerPlayer player)
         {
             var owed = store.TakePayouts(player.PlayerUID);
@@ -193,24 +166,25 @@ namespace canevents.src.Tournaments
 
             foreach (var p in owed)
             {
-                try
+                if (p.Items == null) continue;
+                if (PayoutDelivery.TryGiveAll(sapi, player, p.Items, "tournament " + p.Reason, out int given, out var e))
+                    continue;
+
+                log.Error("payout for {0} ({1}) failed after {2} of {3} item(s), rest re-queued: {4}",
+                    player.PlayerName, p.Reason, given, p.Items.Count, e.Message);
+                store.QueuePayout(new PendingPayout
                 {
-                    foreach (var it in p.Items)
-                        InventoryUtil.GiveByCode(sapi, player, it.Code, it.Quantity, "tournament " + p.Reason);
-                }
-                catch (Exception e)
-                {
-                    log.Error("payout for {0} ({1}) failed, re-queued: {2}", player.PlayerName, p.Reason, e.Message);
-                    store.QueuePayout(p);
-                }
+                    Uid = p.Uid,
+                    Items = PayoutDelivery.Remainder(p.Items, given),
+                    TournamentId = p.TournamentId,
+                    QueuedUnix = p.QueuedUnix,
+                    Reason = p.Reason
+                });
             }
 
             player.SendMessage(0, Lang.Get("canevents:tournament-payout-delivered"), EnumChatType.Notification);
         }
 
-        // small helpers
-
-        /// <summary>The members of a side that can actually receive anything - bots cannot.</summary>
         private static List<string> HumanMembers(Tournament t, string entrantId)
         {
             var e = t.FindEntrant(entrantId);
@@ -219,13 +193,7 @@ namespace canevents.src.Tournaments
         }
 
         private static void AddToPot(Dictionary<string, int> pot, IEnumerable<RewardItem> items)
-        {
-            foreach (var it in items)
-            {
-                if (string.IsNullOrEmpty(it.Code) || it.Quantity <= 0) continue;
-                pot[it.Code] = (pot.TryGetValue(it.Code, out int had) ? had : 0) + it.Quantity;
-            }
-        }
+            => EntryFeePot.AddToPot(pot, items);
 
         private static void RemoveFromPot(Dictionary<string, int> pot, IEnumerable<RewardItem> items)
         {
@@ -241,8 +209,7 @@ namespace canevents.src.Tournaments
         private static List<RewardItem> ToItems(Dictionary<string, int> map)
             => map.Select(kv => new RewardItem { Code = kv.Key, Quantity = kv.Value }).ToList();
 
-        private static List<RewardItem> CloneItems(List<RewardItem> items)
-            => items.Select(i => new RewardItem { Code = i.Code, Quantity = i.Quantity }).ToList();
+        private static List<RewardItem> CloneItems(List<RewardItem> items) => PayoutDelivery.Clone(items);
 
         internal static string DescribeItems(IEnumerable<RewardItem> items)
         {

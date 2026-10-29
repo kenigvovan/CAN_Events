@@ -9,7 +9,7 @@ namespace canevents.src.Network
     {
         private void RegisterReadyHandlers()
         {
-            SetHandler<MatchReadyResponseMsg>(OnMatchReadyResponse);
+            Handle<MatchReadyResponseMsg>(ProtocolChannel.Main, false, OnMatchReadyResponse);
         }
 
         private void OnMatchReadyResponse(IServerPlayer player, MatchReadyResponseMsg msg)
@@ -20,7 +20,6 @@ namespace canevents.src.Network
             player.SendMessage(0, message, EnumChatType.Notification);
         }
 
-        /// <summary>Asks one player to confirm they are at the keyboard.</summary>
         public void SendMatchReadyRequest(IServerPlayer player, RunningEvent re, int timeoutSeconds)
         {
             if (player == null || re == null) return;
@@ -34,7 +33,6 @@ namespace canevents.src.Network
             }, player);
         }
 
-        /// <summary>Takes the prompt off one player's screen.</summary>
         public void SendMatchReadyClosed(IServerPlayer player, long eventId)
         {
             if (player == null) return;

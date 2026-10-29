@@ -7,11 +7,10 @@ namespace canevents.src.QueueManagers
 {
     public abstract class QueueManager
     {
-        // Injected by CANEventManager once services are ready; the delegate reads SpectatorManager
-        // and the live match list at call time, so post-constructor injection is safe.
+        // Set by CANEventManager after construction.
         private Func<string, bool> _isPlayerBusy;
 
-        // (uid, eventCode) -> Elo rating. Only the ranked matchmakers read it.
+        // (uid, eventCode) -> Elo.
         private Func<string, string, int> _getRating;
 
         internal void SetPlayerBusyCheck(Func<string, bool> check) => _isPlayerBusy = check;
@@ -20,7 +19,7 @@ namespace canevents.src.QueueManagers
 
         protected bool IsPlayerBusy(string uid) => _isPlayerBusy?.Invoke(uid) == true;
 
-        /// <summary>Average Elo of a shard's members under <paramref name="eventCode"/> (its side rating).</summary>
+        // Average Elo of the members.
         protected int GetShardRating(Registration reg, string eventCode)
         {
             if (_getRating == null || reg?.PlayersGuids == null || reg.PlayersGuids.Count == 0)
@@ -37,19 +36,28 @@ namespace canevents.src.QueueManagers
             return false;
         }
 
-        /// <summary>
-        /// Every complete TeamAssembly formable right now (possibly several). Used registrations are
-        /// already <see cref="Registration.MarkedUsed"/>; the caller removes them from the store and
-        /// calls <see cref="OnRegistrationRemoved"/> for each.
-        /// </summary>
+        // (teams, size) shapes a solo pool can fill, most teams first.
+        protected static IEnumerable<(int teams, int teamSize, bool largest)> SoloLobbyShapes(
+            EventManagers.eventBehavior.abstracts.PartyAssemblingEB eb, int pool)
+        {
+            int maxTeamSize = Math.Max(1, eb.MaxPartySize);
+            int minTeamSize = Math.Max(1, eb.MinPartySize);
+            int minTeams = Math.Max(1, eb.MinPartiesCount);
+            int maxTeams = Math.Max(minTeams, eb.MaxPartiesCount);
+
+            for (int tc = maxTeams; tc >= minTeams; tc--)
+            {
+                int ts = Math.Min(maxTeamSize, pool / tc);
+                if (ts >= minTeamSize) yield return (tc, ts, tc == maxTeams);
+            }
+        }
+
+        // Used registrations are MarkedUsed; the caller removes them from the store.
         public abstract IReadOnlyList<TeamAssembly> TryAssemble(CANEvent canEvent, IReadOnlyList<Registration> pending);
 
         public abstract (bool ok, string message) CheckRegistrationIsSuitable(Registration registration);
 
-        /// <summary>
-        /// Called after a registration leaves the store for any reason; implementations must evict it
-        /// from incomplete partial assemblies. No-op unless the manager keeps cross-tick state.
-        /// </summary>
+        // Only needed by managers that keep partial assemblies across ticks.
         public virtual void OnRegistrationRemoved(Registration registration) { }
     }
 }

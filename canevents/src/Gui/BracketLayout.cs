@@ -5,10 +5,7 @@ using canevents.src.Network;
 
 namespace canevents.src.Gui
 {
-    /// <summary>
-    /// A bracket as the client sees it, rebuilt from the wire's parallel arrays. Renderer-agnostic:
-    /// both the ImGui admin panel and the Cairo player browser draw from this.
-    /// </summary>
+    // Client-side bracket rebuilt from the message's parallel arrays.
     public class BracketView
     {
         public long TournamentId;
@@ -18,7 +15,7 @@ namespace canevents.src.Gui
         public string EntryFeePacked;
         public List<string> FinalPlacement = new List<string>();
 
-        /// <summary>Classes the organiser allows here; empty means all of the mode's.</summary>
+        // Empty means all of the mode's loadouts.
         public List<string> AllowedLoadouts = new List<string>();
 
         public class Entrant
@@ -41,7 +38,7 @@ namespace canevents.src.Gui
             public int Round;
             public int Slot;
 
-            /// <summary>The sides, one per slot; null means unfilled. Two for a duel, more for a free-for-all.</summary>
+            // null = unfilled slot
             public List<string> Slots = new List<string>();
             public string Winner;
 
@@ -49,12 +46,12 @@ namespace canevents.src.Gui
             public IEnumerable<string> Filled => Slots.Where(s => !string.IsNullOrEmpty(s));
             public int State;               // Tournaments.BracketMatchState
 
-            /// <summary>Where each advancing place goes. One entry for a knockout, more for a heat.</summary>
+            // One entry per advancing place.
             public List<Feed> Feeds = new List<Feed>();
             public int AdvanceCount = 1;
             public bool IsThirdPlace;
 
-            /// <summary>Sides that forfeited: still shown, struck through rather than erased.</summary>
+            // Forfeited sides, drawn struck through.
             public List<string> Absent = new List<string>();
             public bool IsAbsent(string id) => !string.IsNullOrEmpty(id) && Absent.Contains(id);
             public string EventCode;
@@ -65,18 +62,13 @@ namespace canevents.src.Gui
         public readonly Dictionary<string, Entrant> Entrants = new Dictionary<string, Entrant>();
         public readonly List<Match> Matches = new List<Match>();
 
-        /// <summary>
-        /// Tree was built client-side, not sent by the server: pairings are provisional until
-        /// seeding happens at start. Renderers say so on screen.
-        /// </summary>
+        // Built client-side before seeding, pairings are provisional.
         public bool IsPreview;
 
-        /// <summary>The entrant's name, or null when the slot is empty or not yet decided.</summary>
         public string NameOf(string entrantId)
             => string.IsNullOrEmpty(entrantId) ? null
              : Entrants.TryGetValue(entrantId, out var e) ? e.Name : null;
 
-        /// <summary>The side's roster, when it is a team of more than one.</summary>
         public string MembersOf(string entrantId)
             => !string.IsNullOrEmpty(entrantId) && Entrants.TryGetValue(entrantId, out var e) ? e.Members : null;
 
@@ -132,8 +124,7 @@ namespace canevents.src.Gui
                 });
             }
 
-            // Before the bracket exists, show its shape. Built from the same BracketBuilder the
-            // server runs, so the preview cannot disagree structurally with the real thing.
+            // Same BracketBuilder as the server, so the preview has the real shape.
             if (view.Matches.Count == 0)
                 BuildPreview(view, msg.ThirdPlaceMatch, msg.MaxEntrants, msg.PartiesPerMatch,
                     msg.AdvancePerMatch);
@@ -141,29 +132,19 @@ namespace canevents.src.Gui
             return view;
         }
 
-        /// <summary>
-        /// Empty skeleton of the bracket this turnout will produce. Deliberately nameless: seeding
-        /// happens at start, so showing pairings now would invite path-picking and signup timing off
-        /// fiction.
-        /// </summary>
+        // No names in the preview: seeding happens at start.
         private static void BuildPreview(BracketView view, bool thirdPlace, int maxEntrants, int arity,
             int advance)
         {
             if (arity < 2) arity = 2;
 
-            // Sized by who actually signed up, falling back to the tournament's capacity while it is
-            // still empty. Sizing by capacity throughout drew a twelve-slot bracket for seven
-            // entrants - a shape that will never be played, and one that reads as "five more are
-            // expected". The skeleton grows with each signup instead, which is the honest answer to
-            // "what happens if we start now".
+            // Sized by signups, capacity only while nobody has joined yet.
             int signedUp = view.Entrants.Count;
             int planned = signedUp >= arity
                 ? signedUp
                 : Math.Max(arity, maxEntrants > 0 ? maxEntrants : arity);
 
-            // One placeholder per entrant, not per slot. The builder rounds the field up to a power of
-            // the arity, so an odd turnout leaves the surplus slots empty - and that is worth showing:
-            // seven entrants really do mean somebody walks the first round.
+            // Builder rounds up to a power of arity, surplus slots stay empty (byes).
             var field = new List<Tournaments.Entrant>();
             for (int i = 0; i < planned; i++)
                 field.Add(new Tournaments.Entrant { Id = "slot" + i, DisplayName = "" });
@@ -205,10 +186,7 @@ namespace canevents.src.Gui
             return feeds;
         }
 
-        /// <summary>
-        /// Slots keep their positions: an empty piece is an unfilled seat, not padding. An empty
-        /// match is treated as a duel (what an old bracket looks like).
-        /// </summary>
+        // Empty piece = unfilled seat. No pieces = old-format duel.
         private static List<string> UnpackSlots(string packed)
         {
             var pieces = PackedList.Unpack(packed);
@@ -217,10 +195,6 @@ namespace canevents.src.Gui
         }
     }
 
-    /// <summary>
-    /// One table of match-state colour and label for both renderers and the detail panel; they used
-    /// to each have their own and had drifted. Colours come from the shared palette by role.
-    /// </summary>
     public static class BracketPalette
     {
         public static double[] ColorOf(int state, bool absentSide = false)
@@ -238,7 +212,6 @@ namespace canevents.src.Gui
             }
         }
 
-        /// <summary>Lang key for the one-word status shown next to a match.</summary>
         public static string StatusKey(int state)
         {
             switch ((Tournaments.BracketMatchState)state)
@@ -254,11 +227,7 @@ namespace canevents.src.Gui
         }
     }
 
-    /// <summary>
-    /// Positions bracket nodes and the elbows between them, in a local space starting at (0,0) that
-    /// each renderer offsets by its own origin. Elbows, not curves: both ImGui's AddLine and Cairo's
-    /// LineTo express them directly.
-    /// </summary>
+    // Local space from (0,0), each renderer adds its own origin.
     public static class BracketLayout
     {
         public struct Node
@@ -268,7 +237,7 @@ namespace canevents.src.Gui
             public float X, Y, W, H;
         }
 
-        /// <summary>Three segments: (X0,Y0)-(XMid,Y0), (XMid,Y0)-(XMid,Y1), (XMid,Y1)-(X1,Y1).</summary>
+        // Elbow: (X0,Y0)-(XMid,Y0)-(XMid,Y1)-(X1,Y1)
         public struct Edge
         {
             public float X0, Y0, X1, Y1, XMid;
@@ -295,7 +264,7 @@ namespace canevents.src.Gui
             var layout = new Layout();
             if (view == null || view.Matches.Count == 0) return layout;
 
-            // Node height follows the widest match's side count, so duel boxes have no dead space.
+            // Height follows the max side count.
             int maxArity = view.Matches.Max(m => m.Arity);
             float rowH = boxH / 2.4f;
             boxH = rowH * maxArity + rowH * 0.25f;
@@ -307,7 +276,7 @@ namespace canevents.src.Gui
 
             var y = new Dictionary<int, float>();
 
-            // Round 0 is evenly spaced; later rounds sit centred between the matches feeding them.
+            // Later rounds are centred on the matches feeding them.
             foreach (var m in ordered)
             {
                 if (m.Round == 0)
@@ -337,7 +306,7 @@ namespace canevents.src.Gui
                 });
             }
 
-            // The third-place match hangs under the final rather than in the flow of the tree.
+            // Third-place match goes under the final.
             var third = view.Matches.FirstOrDefault(m => m.IsThirdPlace);
             if (third != null)
             {
@@ -353,7 +322,7 @@ namespace canevents.src.Gui
                 });
             }
 
-            // One line per advancing place, so a heat that sends two on visibly forks.
+            // One edge per advancing place.
             foreach (var m in ordered)
             {
                 if (!layout.TryGetNode(m.Id, out var from)) continue;
@@ -381,11 +350,7 @@ namespace canevents.src.Gui
             return layout;
         }
 
-        /// <summary>
-        /// The largest layout that still fits the available box, down to <paramref name="minScale"/>.
-        /// A bracket is meant to be taken in at once; past the floor it stops shrinking (unreadable
-        /// is worse than partial) and the caller falls back to scrolling.
-        /// </summary>
+        // Shrinks to fit, but not below minScale; past that the caller scrolls.
         public static Layout ComputeFitted(BracketView view, double availWidth, double availHeight,
             double minScale, out double scale)
         {
@@ -401,7 +366,7 @@ namespace canevents.src.Gui
                 (float)(46 * scale), (float)(14 * scale));
         }
 
-        /// <summary>Same wording as the server's, so chat and both renderers agree.</summary>
+        // Keep in sync with the server's wording.
         public static string RoundLabel(BracketView view, BracketView.Match m)
         {
             if (m.IsThirdPlace) return "3rd place";

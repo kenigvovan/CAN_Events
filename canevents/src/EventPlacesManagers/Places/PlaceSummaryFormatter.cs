@@ -5,11 +5,7 @@ using Vintagestory.API.MathTools;
 
 namespace canevents.src.EventPlacesManagers.Places
 {
-    /// <summary>
-    /// Turns a place's per-behavior data into short display lines for the admin panel - a readout,
-    /// not a transfer format. Lives here, not in the network layer, because it encodes what each
-    /// game mode's BehaviorData means; adding a mode should not touch a networking file.
-    /// </summary>
+    // Admin panel readout of each mode's BehaviorData. Kept out of the network layer.
     public static class PlaceSummaryFormatter
     {
         public static string[] Summarize(EventPlace place)
@@ -47,8 +43,7 @@ namespace canevents.src.EventPlacesManagers.Places
             if (place.TryGetBehaviorData(BehaviorKeys.CaptureTheFlag, out var ctf)
                 && ctf["Posts"] is JArray postArr)
             {
-                // One line per post with coordinates: the panel has no other view of this data.
-                // Gaps are listed too - an empty slot is a team with no post, not a smaller match.
+                // Empty slots listed too: that team has no post.
                 for (int i = 0; i < postArr.Count; i++)
                 {
                     lines.Add(JsonPos.TryRead(postArr[i], out var post)
@@ -60,8 +55,6 @@ namespace canevents.src.EventPlacesManagers.Places
             if (place.TryGetBehaviorData(BehaviorKeys.MurderMystery, out var mm)
                 && mm["PickupSpots"] is JArray pickupArr)
             {
-                // One line per spot with coordinates, like the CTF posts: the panel has no other view
-                // of them, and "4 spots" is not something an admin can check against the arena.
                 for (int i = 0; i < pickupArr.Count; i++)
                 {
                     lines.Add(JsonPos.TryRead(pickupArr[i], out var spot)
@@ -86,11 +79,7 @@ namespace canevents.src.EventPlacesManagers.Places
             return lines.ToArray();
         }
 
-        /// <summary>
-        /// The Murder Mystery pickup spots as plain positions for the panel (overlay and per-spot
-        /// buttons). Order is the stored order, gaps included as nulls would break the index the
-        /// panel removes by - a malformed entry keeps its slot as (0,0,0) and can still be removed.
-        /// </summary>
+        // Malformed entries keep their slot as (0,0,0); the panel removes by index.
         public static List<BlockPos> PackMurderMysteryPickups(EventPlace place)
         {
             var spots = new List<BlockPos>();
@@ -102,7 +91,60 @@ namespace canevents.src.EventPlacesManagers.Places
             return spots;
         }
 
-        /// <summary>"x,y,z,r,h" for the admin panel's hill overlay, or null when no hill is set.</summary>
+        // "x,y,z,dim,index,finish". Malformed entries skipped; the panel addresses by position.
+        public static string[] PackParkourCheckpoints(EventPlace place)
+        {
+            var packed = new List<string>();
+            if (!place.TryGetBehaviorData(BehaviorKeys.Parkour, out var data)
+                || !(data["Checkpoints"] is JArray arr)) return packed.ToArray();
+
+            foreach (var token in arr)
+            {
+                if (!JsonPos.TryRead(token, out var pos)) continue;
+                var entry = (JObject)token;
+                packed.Add(string.Format(CultureInfo.InvariantCulture, "{0},{1},{2},{3},{4},{5}",
+                    pos.X, pos.Y, pos.Z, pos.dimension,
+                    entry.Value<int>("Index"), entry.Value<bool>("IsFinish") ? 1 : 0));
+            }
+            return packed.ToArray();
+        }
+
+        public static int ParkourLives(EventPlace place)
+            => place.TryGetBehaviorData(BehaviorKeys.Parkour, out var data) && data["Lives"] != null
+                ? data.Value<int>("Lives")
+                : 0;
+
+        // Without a stored zone the bounds centre is used.
+        public static bool HasHgZone(EventPlace place)
+            => place.TryGetBehaviorData(BehaviorKeys.HungerGames, out var data) && JsonPos.TryRead(data, out _);
+
+        public static int SpleefPlatformBlocks(EventPlace place)
+            => place.TryGetBehaviorData(BehaviorKeys.Spleef, out var data)
+                ? (data["PlatformX"] as JArray)?.Count ?? 0
+                : 0;
+
+        // Team order, "" for a team without a post. Strings since an all-default int array can arrive short.
+        public static string[] PackCtfPosts(EventPlace place)
+        {
+            var packed = new List<string>();
+            if (!place.TryGetBehaviorData(BehaviorKeys.CaptureTheFlag, out var data)
+                || !(data["Posts"] is JArray arr)) return packed.ToArray();
+
+            foreach (var token in arr)
+                packed.Add(JsonPos.TryRead(token, out var pos)
+                    ? string.Format(CultureInfo.InvariantCulture, "{0},{1},{2}", pos.X, pos.Y, pos.Z)
+                    : "");
+            return packed.ToArray();
+        }
+
+        public static int Dimension(EventPlace place)
+        {
+            if (place.BoundsMin != null) return place.BoundsMin.dimension;
+            var spawns = place.spawnPositions;
+            return spawns != null && spawns.Count > 0 && spawns[0] != null ? spawns[0].dimension : 0;
+        }
+
+        // "x,y,z,r,h" for the hill overlay.
         public static string PackKothHill(EventPlace place)
         {
             if (!place.TryGetBehaviorData(BehaviorKeys.KingOfTheHill, out var data)) return null;

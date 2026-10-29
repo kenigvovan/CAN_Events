@@ -18,57 +18,23 @@ namespace canevents.src.Network
 
         private void OnSetCagePos(IServerPlayer player, SetCagePosMsg msg)
         {
-            if (!RequireAdmin(player)) return;
-            if (!TryResolvePlace(player, msg.PlaceId, out var place)) return;
-
-            if (msg.Width < MinCageDim || msg.Depth < MinCageDim || msg.Height < MinCageDim
-                || msg.Width > MaxCageDim || msg.Depth > MaxCageDim || msg.Height > MaxCageDim)
-            {
-                ReplyFail(player, Lang.Get("canevents:cage-dim-range", MinCageDim, MaxCageDim));
-                return;
-            }
-
-            RestoreCagePreview(msg.PlaceId);
-
-            // Centre the cage on the player, who stands in the middle of the footprint.
-            var playerPos = player.Entity.Pos.AsBlockPos;
-            var origin = new Vintagestory.API.MathTools.BlockPos(
-                playerPos.X - msg.Width / 2,
-                playerPos.Y,
-                playerPos.Z - msg.Depth / 2,
-                playerPos.dimension);
-            var data = GetOrCreateSpleefData(place);
-            data["CageOriginX"] = origin.X;
-            data["CageOriginY"] = origin.Y;
-            data["CageOriginZ"] = origin.Z;
-            data["CageWidth"]   = msg.Width;
-            data["CageDepth"]   = msg.Depth;
-            data["CageHeight"]  = msg.Height;
-            data["CageBlock"]   = msg.Block ?? "game:glass-plain";
-            eventManager.eventPlacesManager.SavePlace(place);
-
-            BuildCagePreview(msg.PlaceId, origin, msg.Width, msg.Depth, msg.Height, msg.Block ?? "game:glass-plain");
-
-            ReplyOk(player, Lang.Get("canevents:cage-centered", playerPos, msg.Width, msg.Depth, msg.Height));
+            // The stored cage is PlaceConfigService's; only the glass preview is this layer's.
+            // Centred on the player, who stands in the middle of the footprint.
+            Vintagestory.API.MathTools.BlockPos origin = null;
+            PlaceEdit(player, msg.PlaceId,
+                p => PlaceConfig.SetSpleefCage(p, player.Entity.Pos.AsBlockPos,
+                    msg.Width, msg.Depth, msg.Height, msg.Block, out origin),
+                afterEdit: _ =>
+                {
+                    RestoreCagePreview(msg.PlaceId);
+                    BuildCagePreview(msg.PlaceId, origin, msg.Width, msg.Depth, msg.Height,
+                        string.IsNullOrEmpty(msg.Block) ? PlaceConfigService.DefaultCageBlock : msg.Block);
+                });
         }
 
         private void OnClearCagePos(IServerPlayer player, ClearCagePosMsg msg)
-        {
-            if (!RequireAdmin(player)) return;
-            if (!TryResolvePlace(player, msg.PlaceId, out var place)) return;
-
-            RestoreCagePreview(msg.PlaceId);
-            if (place.TryGetBehaviorData(BehaviorKeys.Spleef, out var spleefData))
-            {
-                spleefData.Remove("CageOriginX"); spleefData.Remove("CageOriginY"); spleefData.Remove("CageOriginZ");
-                spleefData.Remove("CageWidth"); spleefData.Remove("CageDepth"); spleefData.Remove("CageHeight");
-                spleefData.Remove("CageBlock");
-                if (spleefData.Count == 0) place.BehaviorData.Remove(BehaviorKeys.Spleef);
-            }
-            eventManager.eventPlacesManager.SavePlace(place);
-
-            ReplyOk(player, Lang.Get("canevents:cage-cleared"));
-        }
+            => PlaceEdit(player, msg.PlaceId, PlaceConfig.ClearSpleefCage,
+                afterEdit: _ => RestoreCagePreview(msg.PlaceId));
 
         private void BuildCagePreview(long placeId, Vintagestory.API.MathTools.BlockPos origin, int w, int d, int h, string blockCode)
         {
@@ -106,8 +72,7 @@ namespace canevents.src.Network
             }
         }
 
-        /// <summary>Rolls back every active cage preview. Called from Dispose: nothing after a
-        /// reload remembers the replaced blocks, so the glass shell would stay forever.</summary>
+        // From Dispose: nothing after a reload remembers the replaced blocks, so the glass shell would stay.
         public void RestoreAllCagePreviews()
         {
             foreach (var placeId in _cagePreview.Keys.ToList())

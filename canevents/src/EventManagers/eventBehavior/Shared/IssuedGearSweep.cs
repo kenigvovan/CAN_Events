@@ -6,27 +6,15 @@ using Vintagestory.API.Server;
 
 namespace canevents.src.EventManagers.eventBehavior.Shared
 {
-    /// <summary>
-    /// Takes issued kit left lying on an arena away when the match ends. Without it a thrown sword
-    /// simply stays there: the match is over, the player's inventory has been restored, and the
-    /// item belongs to nobody - free for whoever walks past next, including the player who dropped
-    /// it on purpose.
-    /// </summary>
+    // Removes issued kit left lying on the arena after a match.
     public static class IssuedGearSweep
     {
-        /// <summary>
-        /// A thrown item bounces, and arena bounds are marked by walking the corners rather than
-        /// measured, so the edge is approximate. Only marked items are ever taken, which is what
-        /// makes a margin safe here.
-        /// </summary>
+        // Bounds are approximate; only marked items are taken, so a margin is safe.
         private const int HorizontalMargin = 3;
 
-        /// <summary>Removes every issued item lying on this place; returns how many went.</summary>
         public static int Sweep(ICoreServerAPI sapi, EventPlace place, Log log)
         {
-            // No bounds, no sweep. The alternative - guessing a radius around the spawn points -
-            // would reach into whatever happens to stand next to an unmarked arena, and taking
-            // items out of someone's base is a far worse bug than a sword left on the sand.
+            // No bounds, no sweep: a guessed radius could reach into a neighbour's base.
             if (sapi == null
                 || !PlaceBounds.TryCuboid(place, HorizontalMargin,
                        sapi.World.BlockAccessor.MapSizeY, out var from, out var to))
@@ -42,8 +30,7 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
 
             foreach (var entity in found)
             {
-                // DespawnEntity, not Die(): a dying item entity still leaves its stack behind for
-                // the world to keep - the same reason the bot sweep uses it.
+                // DespawnEntity, not Die(): a dying item entity leaves its stack behind.
                 sapi.World.DespawnEntity(entity,
                     new EntityDespawnData { Reason = EnumDespawnReason.Removed });
             }

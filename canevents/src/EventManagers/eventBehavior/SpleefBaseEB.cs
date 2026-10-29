@@ -5,6 +5,7 @@ using canevents.src.EventManagers.eventBehavior.Shared;
 using canevents.src.EventManagers.events;
 using canevents.src.EventPlacesManagers.Places;
 using Vintagestory.API.Common;
+using Vintagestory.API.Common.Entities;
 using Vintagestory.API.Config;
 using Vintagestory.API.Datastructures;
 using Vintagestory.API.MathTools;
@@ -16,8 +17,8 @@ namespace canevents.src.EventManagers.eventBehavior
     {
         public string StartCryLangKey => "canevents:spleef-start-cry";
 
-        /// <summary>Undone first thing in OnEnd - see Unsubscribers for why that order matters.</summary>
-        private readonly Shared.Unsubscribers subscriptions = new Shared.Unsubscribers();
+        // Released first in OnEnd, see Unsubscribers.
+        private readonly ArenaBlockGuard blockGuard = new ArenaBlockGuard();
 
 
         protected int platformWidth = 20;
@@ -31,9 +32,7 @@ namespace canevents.src.EventManagers.eventBehavior
 
         protected Dictionary<BlockPos, int> savedBlocks = new Dictionary<BlockPos, int>();
         protected Dictionary<BlockPos, int> savedCageBlocks = new Dictionary<BlockPos, int>();
-        // Who is out is the roster's business (runningEvent.IsActive); this only keeps the ORDER,
-        // which the roster does not. Drives placement: last out = highest place. Shared with
-        // Hunger Games - see SurvivalRanking.
+        // Elimination order for placement; the roster doesn't keep order.
         protected readonly Shared.SurvivalRanking survival = new Shared.SurvivalRanking();
 
         protected BlockPos cageOrigin;
@@ -46,12 +45,18 @@ namespace canevents.src.EventManagers.eventBehavior
         protected SpleefBaseEB(string name, JsonObject attributes, RunningEvent runningEvent)
             : base(name, attributes, runningEvent) { }
 
-        public override void Initialize()
+        // Sealed so WarnUnknown runs after the subclass reads its keys.
+        public sealed override void Initialize()
         {
             platformWidth = Config.Int("platformWidth", 20);
             platformDepth = Config.Int("platformDepth", 20);
             blockCode = Config.String("blockCode", "game:stickslayer-wooden-ew-free");
+            prefightSeconds = PrefightTimer.ReadSeconds(Config);
+            ReadModeConfig();
+            Config.WarnUnknown();
         }
+
+        protected virtual void ReadModeConfig() { }
 
         protected void LoadCageFromPlace()
         {
@@ -59,7 +64,9 @@ namespace canevents.src.EventManagers.eventBehavior
             if (place == null || !place.TryGetBehaviorData(BehaviorKeys.Spleef, out var data)) return;
             if (data["CageOriginX"] == null) return;
 
-            cageOrigin    = new BlockPos(data.Value<int>("CageOriginX"), data.Value<int>("CageOriginY"), data.Value<int>("CageOriginZ"), 0);
+            // Older saves have no CageOriginDim (dim 0).
+            cageOrigin    = new BlockPos(data.Value<int>("CageOriginX"), data.Value<int>("CageOriginY"), data.Value<int>("CageOriginZ"),
+                                         data["CageOriginDim"] != null ? data.Value<int>("CageOriginDim") : 0);
             cageWidth     = data["CageWidth"]  != null ? data.Value<int>("CageWidth")    : 5;
             cageDepth     = data["CageDepth"]  != null ? data.Value<int>("CageDepth")    : 5;
             cageHeight    = data["CageHeight"] != null ? data.Value<int>("CageHeight")   : 4;
@@ -87,15 +94,25 @@ namespace canevents.src.EventManagers.eventBehavior
             var blockAccessor = runningEvent.sapi.World.BlockAccessor;
             savedCageBlocks.Clear();
 
+            var shell = new Dictionary<BlockPos, bool>();
             for (int x = 0; x < cageWidth; x++)
             for (int y = 0; y < cageHeight; y++)
             for (int z = 0; z < cageDepth; z++)
             {
-                bool isShell = x == 0 || x == cageWidth - 1 || y == 0 || y == cageHeight - 1 || z == 0 || z == cageDepth - 1;
                 var pos = new BlockPos(cageOrigin.X + x, cageOrigin.Y + y, cageOrigin.Z + z, cageOrigin.dimension);
-                savedCageBlocks[pos.Copy()] = blockAccessor.GetBlock(pos).BlockId;
-                blockAccessor.SetBlock(isShell ? block.BlockId : airBlockId, pos);
+                savedCageBlocks[pos] = blockAccessor.GetBlock(pos).BlockId;
+                shell[pos] = x == 0 || x == cageWidth - 1 || y == 0 || y == cageHeight - 1 || z == 0 || z == cageDepth - 1;
             }
+
+            if (!ArenaBlockJournal.Record(runningEvent.Place?.Id, ArenaBlockJournal.TagSpleefCage, savedCageBlocks))
+            {
+                log.Error("Cage not built: its original blocks could not be recorded.");
+                savedCageBlocks.Clear();
+                return;
+            }
+
+            foreach (var kvp in shell)
+                blockAccessor.SetBlock(kvp.Value ? block.BlockId : airBlockId, kvp.Key);
 
             blockAccessor.Commit();
 
@@ -126,11 +143,8 @@ namespace canevents.src.EventManagers.eventBehavior
 
             if (savedCageBlocks.Count == 0) return;
 
-            var blockAccessor = runningEvent.sapi.World.BlockAccessor;
-            foreach (var kvp in savedCageBlocks)
-                blockAccessor.SetBlock(kvp.Value, kvp.Key);
-
-            blockAccessor.Commit();
+            ArenaBlockJournal.RestoreOr(runningEvent.Place?.Id, ArenaBlockJournal.TagSpleefCage,
+                runningEvent.sapi.World.BlockAccessor, savedCageBlocks);
             savedCageBlocks.Clear();
             cageOrigin = null;
         }
@@ -159,131 +173,126 @@ namespace canevents.src.EventManagers.eventBehavior
             return list;
         }
 
-        protected void GeneratePlatform()
+        // false if the originals couldn't be journaled; nothing is placed then.
+        protected bool GeneratePlatform()
         {
             savedBlocks.Clear();
             var blockAccessor = runningEvent.sapi.World.BlockAccessor;
 
-            var customPositions = LoadPlatformPositions();
-            if (customPositions != null)
+            var positions = LoadPlatformPositions();
+            bool custom = positions != null;
+            if (custom)
             {
                 platformY = int.MaxValue;
-                foreach (var pos in customPositions)
-                {
+                foreach (var pos in positions)
                     if (pos.Y < platformY) platformY = pos.Y;
-                    savedBlocks[pos.Copy()] = blockAccessor.GetBlock(pos).BlockId;
-                    blockAccessor.SetBlock(spleefBlockId, pos);
-                }
-                blockAccessor.Commit();
-                AfterPlatformPlaced(customPositions);
-                log.Notification("Placed {0} custom platform blocks, lowest Y={1}", customPositions.Count, platformY);
-                return;
             }
-
-            var rectPositions = new List<BlockPos>();
-            for (int x = 0; x < platformWidth; x++)
-            for (int z = 0; z < platformDepth; z++)
+            else
             {
-                var pos = new BlockPos(platformOrigin.X + x, platformY, platformOrigin.Z + z, platformOrigin.dimension);
-                savedBlocks[pos.Copy()] = blockAccessor.GetBlock(pos).BlockId;
-                blockAccessor.SetBlock(spleefBlockId, pos);
-                rectPositions.Add(pos.Copy());
+                positions = new List<BlockPos>();
+                for (int x = 0; x < platformWidth; x++)
+                for (int z = 0; z < platformDepth; z++)
+                    positions.Add(new BlockPos(platformOrigin.X + x, platformY, platformOrigin.Z + z, platformOrigin.dimension));
             }
 
+            foreach (var pos in positions)
+                savedBlocks[pos.Copy()] = blockAccessor.GetBlock(pos).BlockId;
+
+            if (!ArenaBlockJournal.Record(runningEvent.Place?.Id, ArenaBlockJournal.TagSpleefPlatform, savedBlocks))
+            {
+                savedBlocks.Clear();
+                return false;
+            }
+
+            foreach (var pos in positions)
+                blockAccessor.SetBlock(spleefBlockId, pos);
             blockAccessor.Commit();
-            AfterPlatformPlaced(rectPositions);
-            log.Notification("Generated {0}x{1} platform at Y={2}", platformWidth, platformDepth, platformY);
+            AfterPlatformPlaced(positions);
+
+            if (custom) log.Notification("Placed {0} custom platform blocks, lowest Y={1}", positions.Count, platformY);
+            else log.Notification("Generated {0}x{1} platform at Y={2}", platformWidth, platformDepth, platformY);
+            return true;
         }
 
         protected virtual void AfterPlatformPlaced(List<BlockPos> positions) { }
 
-        // The platform has no LandClaim (only the cage does), so anyone in reach could mine it for
-        // free blocks. The guard is therefore unconditional on every spleef mode: it used to sit in
-        // SpleefEB behind "meltDelay > 0", which left melt-less configs handing out free stacks.
-
+        // Platform has no LandClaim, so the break guard is always on or it can be mined for free blocks.
         public override void OnStart()
         {
-            runningEvent.sapi.Event.BreakBlock += OnBreakPlatformBlock;
-            subscriptions.Add(() => runningEvent.sapi.Event.BreakBlock -= OnBreakPlatformBlock);
+            blockGuard.GuardBreaks(runningEvent, JudgePlatformBreak);
+            StartPrefight();
         }
 
-        private void OnBreakPlatformBlock(IServerPlayer player, BlockSelection sel,
-            ref float dropMult, ref EnumHandling handling)
+        private BlockBreakVerdict JudgePlatformBreak(IServerPlayer player, BlockPos pos)
         {
-            if (runningEvent.sapi.World.BlockAccessor.GetBlock(sel.Position).BlockId != spleefBlockId) return;
+            if (!OwnsPlatformAt(pos)) return BlockBreakVerdict.NotGuarded;
+            var ba = runningEvent.sapi.World.BlockAccessor;
+            if (ba.GetBlock(pos).BlockId != spleefBlockId) return BlockBreakVerdict.NotGuarded;
 
-            // No drops and no removal, for everyone. What a hit MEANS is the mode's business.
-            handling = EnumHandling.PreventDefault;
-            dropMult = 0f;
-
-            if (!runningEvent.IsActive(player.PlayerUID)) return;
-            OnPlatformBlockHit(player, sel.Position);
+            // Never drops. Only active players may break, and only if the mode allows.
+            if (runningEvent.IsActive(player?.PlayerUID) && !OnPlatformBlockHit(player, pos))
+            {
+                // Melt BE isn't declared by the block, so the break won't remove it.
+                if (ba.GetBlockEntity(pos) is BlockEntities.BlockEntitySpleefMelt)
+                    ba.RemoveBlockEntity(pos);
+                return BlockBreakVerdict.BreakWithoutDrop;
+            }
+            return BlockBreakVerdict.Keep;
         }
 
-        /// <summary>What a dig on a platform block does in this mode, for a player still in play.
-        /// The block itself is already protected by the time this runs.</summary>
-        protected virtual void OnPlatformBlockHit(IServerPlayer player, BlockPos pos) { }
+        // Melt BEs ask this to detect leftovers from a crashed match.
+        public bool OwnsPlatformAt(BlockPos pos) => pos != null && savedBlocks.ContainsKey(pos);
+
+        // false lets the dig break the block; true keeps it.
+        protected virtual bool OnPlatformBlockHit(IServerPlayer player, BlockPos pos) => true;
+
+        // startDelay null leaves the timers idle.
+        protected void SpawnMeltEntities(IEnumerable<BlockPos> positions, float? startDelay)
+        {
+            var ba = runningEvent.sapi.World.BlockAccessor;
+            int spawned = 0;
+            foreach (var pos in positions)
+            {
+                ba.SpawnBlockEntity("SpleefMelt", pos);
+                spawned++;
+                if (startDelay is float delay)
+                    (ba.GetBlockEntity(pos) as BlockEntities.BlockEntitySpleefMelt)?.StartMelt(runningEvent.sapi, delay);
+            }
+            log.Notification("Spawned {0} SpleefMelt BEs{1}", spawned, startDelay.HasValue ? " (melting)" : "");
+        }
 
         protected void RestorePlatform()
         {
-            var blockAccessor = runningEvent.sapi.World.BlockAccessor;
-            foreach (var kvp in savedBlocks)
-                blockAccessor.SetBlock(kvp.Value, kvp.Key);
-
-            blockAccessor.Commit();
+            if (savedBlocks.Count == 0) return;
+            ArenaBlockJournal.RestoreOr(runningEvent.Place?.Id, ArenaBlockJournal.TagSpleefPlatform,
+                runningEvent.sapi.World.BlockAccessor, savedBlocks);
             savedBlocks.Clear();
             log.Notification("Platform restored");
         }
 
-        protected void BroadcastMessage(string message)
-            => EventBroadcaster.Broadcast(runningEvent, message);
-
         protected virtual bool UsesCage => true;
-
-        // Pre-fight: players stay caged until the countdown runs out. Shared by both spleef modes,
-        // which differ only in what happens the moment the cage falls (OnCageOpened).
 
         private float prefightSeconds = 3f;
         private readonly PrefightTimer prefight = new PrefightTimer();
 
-        /// <summary>Read the countdown length. Call from Initialize().</summary>
-        protected void ParsePrefightSeconds(float defaultSeconds = 3f)
-            => prefightSeconds = Config.Float("prefightSeconds", defaultSeconds);
-
-        /// <summary>Begin the caged countdown. Call from OnStart(), after TPThereAndBack has put
-        /// everyone inside the cage.</summary>
-        protected void StartPrefight()
+        // Runs after TPThereAndBack has put everyone in the cage.
+        private void StartPrefight()
         {
-            prefight.Start(prefightSeconds);
+            prefight.Start(prefightSeconds, runningEvent);
             EventBroadcaster.HealAll(runningEvent);
 
-            if (!prefight.Active)
-            {
-                OpenCage();   // countdown disabled: straight into the fight
-                return;
-            }
-            BroadcastMessage(Lang.Get("canevents:countdown-get-ready", (int)Math.Ceiling(prefightSeconds)));
+            if (!prefight.Active) OpenCage();   // countdown disabled
         }
 
-        /// <summary>Advance the countdown. Returns true while the cage is still shut, meaning the
-        /// caller should skip its own tick work (fall checks must not fire on caged players).</summary>
-        protected bool TickPrefight(float dt)
-            => prefight.Tick(dt,
-                second => BroadcastMessage(Lang.Get("canevents:countdown-tick", second)),
-                OpenCage);
-
-        /// <summary>Whether the fight is on (used by tick work that must ignore the caged phase).</summary>
         protected bool PrefightActive => prefight.Active;
 
         private void OpenCage()
         {
             DestroyCage();
-            BroadcastMessage(Lang.Get("canevents:spleef-start-cry"));
+            Announce(StartCryLangKey);
             OnCageOpened();
         }
 
-        /// <summary>What this mode does the instant the cage falls: hand out shovels, start a
-        /// melt-detection listener, ...</summary>
         protected virtual void OnCageOpened() { }
 
         public override void OnBeforeStart()
@@ -307,6 +316,8 @@ namespace canevents.src.EventManagers.eventBehavior
             {
                 log.Error("Could not find block '{0}'!", blockCode);
                 DestroyCage();
+                // No platform, nobody can fall: end now instead of waiting for the time limit.
+                runningEvent.RequestFinish("spleef block '" + blockCode + "' not found");
                 return;
             }
             airBlockId = 0;
@@ -338,53 +349,70 @@ namespace canevents.src.EventManagers.eventBehavior
                 );
             }
 
-            GeneratePlatform();
-            // platformY is updated inside GeneratePlatform to reflect actual lowest placed block.
+            if (!GeneratePlatform())
+            {
+                log.Error("Platform not placed: its original blocks could not be recorded.");
+                DestroyCage();
+                runningEvent.RequestFinish("spleef platform could not be journaled");
+                return;
+            }
+            // GeneratePlatform sets platformY to the lowest placed block.
             fallThreshold = platformY - 2f;
             log.Notification("fallThreshold set to Y={0}", fallThreshold);
+            WarnIfNoPit();
         }
 
-        // Reused across ticks; only grows when someone falls on this tick (rare).
-        private readonly List<string> _fallenThisTick = new List<string>();
+        // Solid ground right under the platform catches fallers above fallThreshold, so nobody is ever out.
+        private void WarnIfNoPit()
+        {
+            var ba = runningEvent.sapi.World.BlockAccessor;
+            int caught = 0, total = savedBlocks.Count;
+            var probe = new BlockPos(0, 0, 0, platformOrigin?.dimension ?? 0);
+            foreach (var pos in savedBlocks.Keys)
+            {
+                for (int dy = 1; dy <= 2; dy++)
+                {
+                    probe.Set(pos.X, pos.Y - dy, pos.Z);
+                    if (ba.GetBlock(probe).SideSolid.Any) { caught++; break; }
+                }
+            }
+            if (total > 0 && caught * 4 >= total)
+            {
+                string msg = string.Format(
+                    "Spleef arena '{0}': {1} of {2} platform blocks have solid ground within 2 blocks below. "
+                    + "Players who break through land on it and are never eliminated - dig a pit under the platform.",
+                    runningEvent.Place?.Name, caught, total);
+                log.Warning("{0}", msg);
+            }
+        }
+
+        public override bool WantsTick => true;
 
         public override void OnTick(float dt)
         {
-            // Iterate directly; fallers are collected so EliminatePlayer's mutation of the
-            // collection happens after the loop.
-            foreach (var plGuid in runningEvent.ParticipantsStillInEvent)
+            if (prefight.Tick(dt, OpenCage)) return;
+
+            // Bots included. LiveBodies is a snapshot, so eliminating inside the loop is safe.
+            foreach (var (uid, body) in runningEvent.LiveBodies())
             {
-                var player = runningEvent.sapi.World.PlayerByUid(plGuid);
-                if (player == null) continue;
+                if (!VoidFall.HasFallen(body, fallThreshold)) continue;
 
-                if (player.Entity.Pos.Y < fallThreshold)
-                {
-                    survival.Add(plGuid);
-                    _fallenThisTick.Add(plGuid);
-                }
-            }
-
-            if (_fallenThisTick.Count == 0) return;
-
-            for (int i = 0; i < _fallenThisTick.Count; i++)
-            {
-                var plGuid = _fallenThisTick[i];
-                var player = runningEvent.sapi.World.PlayerByUid(plGuid);
-                runningEvent.EliminatePlayer(plGuid);
-
-                string name = player?.PlayerName ?? plGuid;
-                BroadcastMessage(Lang.Get("canevents:spleef-player-fell", name, runningEvent.ParticipantsStillInEvent.Count));
-
-                if (runningEvent.NetworkHandler != null)
-                    runningEvent.NetworkHandler.SendKillFeed(runningEvent, "the void", name, "swallowed");
-
+                Eliminate(uid);
+                string name = runningEvent.NameOf(uid);
+                Announce("canevents:spleef-player-fell", name, runningEvent.ParticipantsStillInEvent.Count);
+                VoidFall.AnnounceInFeed(runningEvent, name, "swallowed");
                 log.Notification("{0} fell", name);
             }
-            _fallenThisTick.Clear();
         }
 
-        // The block doesn't declare entityClass=SpleefMelt, so SetBlock does NOT auto-clean these BEs;
-        // left behind, their melt tick later punches holes in the restored terrain. Must run before
-        // RestorePlatform, while savedBlocks still lists the positions.
+        private void Eliminate(string uid)
+        {
+            survival.Add(uid);
+            runningEvent.EliminatePlayer(uid);
+        }
+
+        // Block doesn't declare entityClass=SpleefMelt, so SetBlock won't remove these BEs.
+        // Call before RestorePlatform, which clears savedBlocks.
         protected void RemoveMeltEntities()
         {
             var ba = runningEvent.sapi.World.BlockAccessor;
@@ -397,50 +425,29 @@ namespace canevents.src.EventManagers.eventBehavior
 
         public override void OnEnd()
         {
-            subscriptions.UnhookAll();
+            blockGuard.Release();
 
-            // Drop live melt BEs first, or their timers outlive the match and delete restored terrain.
             RemoveMeltEntities();
 
-            // Platform BEFORE the cage: GeneratePlatform saved its "originals" after BuildCage had
-            // aired out the cage interior, so on overlapping positions savedBlocks holds air and only
-            // savedCageBlocks has the real terrain - DestroyCage must therefore run last and win.
+            // Cage last: on overlap savedBlocks holds the cage's air, savedCageBlocks the real terrain.
             RestorePlatform();
             DestroyCage();
 
-            var winners = runningEvent.GetWinners();
-            if (winners.Count > 0)
-            {
-                var names = new List<string>();
-                foreach (var uid in winners)
-                {
-                    var pl = runningEvent.sapi.World.PlayerByUid(uid);
-                    if (pl != null) names.Add(pl.PlayerName);
-                }
-                BroadcastMessage(Lang.Get("canevents:spleef-winner", string.Join(", ", names)));
-            }
+            AnnounceWinners("canevents:spleef-winner", null, runningEvent.NameOf);
         }
 
-        public override void OnParticipantDeath(IServerPlayer player, DamageSource source)
+        public override bool AnnouncesDeaths => true;
+
+        public override void OnParticipantDeath(string uid, Entity body, DamageSource source)
         {
-            if (runningEvent.IsActive(player.PlayerUID))
+            if (runningEvent.IsActive(uid))
             {
-                survival.Add(player.PlayerUID);
-                runningEvent.EliminatePlayer(player.PlayerUID);
-
-                BroadcastMessage(Lang.Get("canevents:spleef-player-died", player.PlayerName, runningEvent.ParticipantsStillInEvent.Count));
+                Eliminate(uid);
+                Announce("canevents:spleef-player-died", runningEvent.NameOf(uid), runningEvent.ParticipantsStillInEvent.Count);
             }
         }
 
-        // IMatchScorer (spleef has no kills/deaths)
-        public Dictionary<string, int> GetFinalKillCounts() => null;
-        public Dictionary<string, int> GetFinalDeathCounts() => null;
-
-        /// <summary>
-        /// Placement: survivor(s) first, then eliminated players in reverse fall order. Spleef has no
-        /// kills, so nothing breaks a survival tie. Parties (unreachable on shipped solo-only configs)
-        /// are ranked like Hunger Games duos: a party lives until its last member falls.
-        /// </summary>
+        // Survivors first, then reverse fall order. No kills, so no tiebreak.
         public List<HashSet<string>> GetFinalRanking() => survival.Rank(runningEvent);
 
         public override void OnParticipantRespawn(IServerPlayer player) { }

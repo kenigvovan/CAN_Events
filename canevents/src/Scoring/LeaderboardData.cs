@@ -9,13 +9,11 @@ namespace canevents.src.Scoring
     {
         public int Wins { get; set; }
         public int Losses { get; set; }
-        // Own tally: lumping ties into Losses (as the old code did) deflated everyone's win-rate.
         public int Draws { get; set; }
         public int Kills { get; set; }
         public int Deaths { get; set; }
         public int EventsPlayed { get; set; }
-        // Elo rating, per (player, eventCode). The initializer doubles as the migration default for
-        // pre-Elo entries. Not a tally - Add() deliberately does NOT sum it.
+        // Elo per (player, eventCode). Default also covers pre-Elo saves. Add() doesn't sum it.
         public int Rating { get; set; } = EloCalculator.DefaultRating;
 
         [JsonIgnore]
@@ -24,7 +22,6 @@ namespace canevents.src.Scoring
         [JsonIgnore]
         public float WinRate => EventsPlayed > 0 ? (float)Wins / EventsPlayed * 100f : 0f;
 
-        /// <summary>Accumulate another record's tallies into this one.</summary>
         public void Add(PlayerStats other)
         {
             Wins += other.Wins;
@@ -56,10 +53,7 @@ namespace canevents.src.Scoring
             sapi.Event.ServerRunPhase(EnumServerRunPhase.Shutdown, FlushSave);
         }
 
-        /// <summary>
-        /// Final flush + detach. The ServerRunPhase(Shutdown) callback cannot be unregistered, so the
-        /// disposed flag no-ops it: a stale instance surviving a hot-reload must not overwrite live data.
-        /// </summary>
+        // ServerRunPhase(Shutdown) can't be unregistered; the disposed flag stops a stale instance from saving.
         public void Dispose()
         {
             if (disposed) return;
@@ -99,7 +93,6 @@ namespace canevents.src.Scoring
             ScheduleSave();
         }
 
-        /// <summary>Records a drawn match: counts as played, but neither a win nor a loss.</summary>
         public void RecordDraw(string playerUid, string eventCode)
         {
             var s = GetStats(playerUid, eventCode);
@@ -120,10 +113,7 @@ namespace canevents.src.Scoring
             ScheduleSave();
         }
 
-        /// <summary>
-        /// Applies an Elo update for an M-side match. sides[i] are side i's starting-roster UIDs
-        /// (disconnected players still counted), ranks[i] its placement (lower = better, equal = tie).
-        /// </summary>
+        // sides[i] = starting roster incl. disconnected; ranks: lower is better, equal = tie.
         public void RecordEloResult(string eventCode, IReadOnlyList<IReadOnlyList<string>> sides, IReadOnlyList<int> ranks)
         {
             if (string.IsNullOrEmpty(eventCode) || sides == null || ranks == null
@@ -138,10 +128,6 @@ namespace canevents.src.Scoring
             ScheduleSave();
         }
 
-        /// <summary>
-        /// Current Elo rating, defaulting to 1000 for an unseen (player, event) pair. Used by ranked
-        /// matchmaking to pair close ratings.
-        /// </summary>
         public int GetRating(string playerUid, string eventCode)
         {
             if (string.IsNullOrEmpty(playerUid) || string.IsNullOrEmpty(eventCode))
@@ -165,7 +151,7 @@ namespace canevents.src.Scoring
             Save();
         }
 
-        /// <summary>Aggregated stats per player; null eventCode = all events combined.</summary>
+        // null eventCode = all events combined.
         public Dictionary<string, PlayerStats> GetAllStats(string eventCode = null)
         {
             var result = new Dictionary<string, PlayerStats>();
@@ -176,13 +162,11 @@ namespace canevents.src.Scoring
 
                 foreach (var evKvp in kvp.Value)
                 {
-                    // Case-insensitive: the filter comes from the client's browser tab, the key from the
-                    // event config - same compare rule as FindEventByCode.
+                    // Case-insensitive, same as FindEventByCode.
                     if (!string.IsNullOrEmpty(eventCode)
                         && !string.Equals(evKvp.Key, eventCode, System.StringComparison.OrdinalIgnoreCase)) continue;
                     aggregated.Add(evKvp.Value);
-                    // Rating isn't a tally: carried through for a single-event view, left at the default
-                    // for the combined view (a summed rating is meaningless).
+                    // Rating only makes sense per event.
                     if (!string.IsNullOrEmpty(eventCode)) aggregated.Rating = evKvp.Value.Rating;
                 }
 
@@ -194,10 +178,7 @@ namespace canevents.src.Scoring
             return result;
         }
 
-        /// <summary>
-        /// One player's per-event-code stats (live records, not aggregated). Used by /canstats to show
-        /// per-event MMR, which is meaningless when combined.
-        /// </summary>
+        // Live records, not copies.
         public IReadOnlyDictionary<string, PlayerStats> GetPlayerStatsByEvent(string playerUid)
         {
             if (playerUid != null && stats.TryGetValue(playerUid, out var perEvent))
@@ -205,7 +186,6 @@ namespace canevents.src.Scoring
             return new Dictionary<string, PlayerStats>();
         }
 
-        /// <summary>All event codes that have any stats recorded.</summary>
         public List<string> GetEventCodes()
         {
             var codes = new HashSet<string>();
@@ -221,9 +201,14 @@ namespace canevents.src.Scoring
 
         private void Load()
         {
+            // Kept for the corrupt-data backup.
+            byte[] raw = null;
+            string rawKey = null;
             try
             {
                 byte[] data = sapi.WorldManager.SaveGame.GetData(SaveKey);
+                raw = data;
+                rawKey = SaveKey;
                 if (data != null)
                 {
                     string json = System.Text.Encoding.UTF8.GetString(data);
@@ -235,6 +220,8 @@ namespace canevents.src.Scoring
 
                 // Migrate old flat Dictionary<playerUid, PlayerStats> under the "legacy" event code.
                 byte[] oldData = sapi.WorldManager.SaveGame.GetData(OldSaveKey);
+                raw = oldData;
+                rawKey = OldSaveKey;
                 if (oldData != null)
                 {
                     string json = System.Text.Encoding.UTF8.GetString(oldData);
@@ -252,10 +239,39 @@ namespace canevents.src.Scoring
             }
             catch (System.Exception e)
             {
-                // A corrupt blob must not crash world load - start empty and overwrite on next save.
-                sapi.World.Logger.Warning("LeaderboardData: failed to load, starting empty. {0}", e.Message);
+                // Back up before starting empty, the next save would overwrite it.
+                string kept = BackUpCorrupt(raw, rawKey);
+                sapi.World.Logger.Error("LeaderboardData: failed to load ({0}), starting EMPTY. {1}",
+                    e.Message, kept ?? "The unreadable data could NOT be backed up.");
                 stats = new();
             }
+        }
+
+        private string BackUpCorrupt(byte[] raw, string key)
+        {
+            if (raw == null || key == null) return null;
+            string stamp = System.DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
+            var kept = new List<string>();
+
+            string blobKey = key + ".corrupt-" + stamp;
+            try
+            {
+                sapi.WorldManager.SaveGame.StoreData(blobKey, raw);
+                kept.Add("save key '" + blobKey + "'");
+            }
+            catch { }
+
+            try
+            {
+                var dir = ModPaths.Root;
+                System.IO.Directory.CreateDirectory(dir);
+                string file = System.IO.Path.Combine(dir, "leaderboard.json.corrupt-" + stamp);
+                System.IO.File.WriteAllBytes(file, raw);
+                kept.Add("file " + file);
+            }
+            catch { }
+
+            return kept.Count == 0 ? null : "The unreadable data was kept as " + string.Join(" and ", kept) + ".";
         }
 
         private void Save()

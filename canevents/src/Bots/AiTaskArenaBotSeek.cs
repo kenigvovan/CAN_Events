@@ -5,10 +5,7 @@ using Vintagestory.GameContent;
 
 namespace canevents.src.Bots
 {
-    /// <summary>
-    /// Vanilla seek task, but restricted to match opponents: vanilla matches on entity code alone,
-    /// so an unfiltered bot would chase passers-by or team-mates.
-    /// </summary>
+    // Vanilla seek limited to match opponents.
     public class AiTaskArenaBotSeek : AiTaskSeekEntity
     {
         public AiTaskArenaBotSeek(EntityAgent entity, JsonObject taskConfig, JsonObject aiConfig)

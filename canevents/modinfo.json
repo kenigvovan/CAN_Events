@@ -7,10 +7,9 @@
   ],
   "side": "universal",
   "description": "Queue-based arena PvP for Vintage Story: duels, team fights, FFA, deathmatch, king of the hill, capture the flag, juggernaut, hunger games, spleef and parkour - with safe inventory, auto-teleport, spectating, leaderboard with Elo, rewards and entry fees, scheduled tournaments and an in-game arena builder.",
-  "version": "1.1.7",
+  "version": "1.2.4",
   "dependencies": {
     "game": "",
-    "vsimgui": "",
     "canparty": ""
   }
 }

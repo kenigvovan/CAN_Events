@@ -6,23 +6,17 @@ namespace canevents.src.Scoring
 {
     public class HeadToHeadRecord
     {
-        /// <summary>Wins of the pair's lexicographically-lesser uid ("A" in the key).</summary>
+        // A = the ordinal-lesser uid in the key.
         public int WinsA { get; set; }
         public int WinsB { get; set; }
         public int Draws { get; set; }
         public long LastPlayedUnix { get; set; }
     }
 
-    /// <summary>
-    /// Lifetime score between two players who met on opposite sides, keyed by uid pair. Kept apart
-    /// from <see cref="MatchHistory"/> on purpose: that log is capped at 50 entries and stores names,
-    /// so "you are 7-3 against this player" would silently forget everything older than a week.
-    /// Persisted across worlds (ModConfig/canevents/headtohead.json), same as the history.
-    /// </summary>
+    // Lifetime score per uid pair. MatchHistory is capped at 50, too short for this.
     public class HeadToHeadStore : JsonFileStore<Dictionary<string, HeadToHeadRecord>>
     {
-        // Pairs, not matches: even a busy server accumulates these slowly, and pruning by last
-        // meeting keeps the file bounded without anyone's active rivalry ever being the one dropped.
+        // Oldest-met pairs are pruned first.
         private const int MaxPairs = 5000;
 
         public HeadToHeadStore(ICoreServerAPI sapi) : base(sapi, "headtohead.json", "HeadToHead") { }
@@ -33,7 +27,6 @@ namespace canevents.src.Scoring
         public void RecordDraw(string uidA, string uidB)
             => Bump(uidA, uidB, draw: true);
 
-        /// <summary>This player's score against another, from their own point of view.</summary>
         public (int wins, int losses, int draws) ScoreFor(string uid, string vsUid)
         {
             lock (lockObj)
@@ -73,7 +66,6 @@ namespace canevents.src.Scoring
             }
         }
 
-        // One key per pair regardless of who is named first.
         private static string Key(string uid, string otherUid, out bool uidIsA)
         {
             uidIsA = string.CompareOrdinal(uid, otherUid) < 0;

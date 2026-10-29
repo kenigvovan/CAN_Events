@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Linq;
 using System.Text;
 using canevents.src.EventManagers;
 using canevents.src.Gui;
@@ -9,33 +10,45 @@ using Vintagestory.API.MathTools;
 
 namespace canevents.src.Gui.Native
 {
-    /// <summary>
-    /// The in-match HUD: match timer, storm readout, scoreboard and kill feed. One composer per
-    /// panel, since a composer is the unit that owns a position and each is draggable (see
-    /// <see cref="HudLayout"/>). Composition happens when the SHAPE changes; the numbers inside are
-    /// dynamic texts refreshed per frame.
-    /// </summary>
+    // One composer per panel so each can be dragged. Recompose on shape change only; numbers are dynamic text.
     public class EventHudGui : HudElement
     {
         private readonly ClientNetworkHandler networkHandler;
         private readonly HudLayout layout;
 
-        // Local countdown, ticked between packets so the numbers move every frame.
+        // Ticked locally between packets.
         private float timeRemaining, maxDuration, countdown;
         private long lastEventId;
 
-        // What the current composition was built for: when any of these change, the shape changed.
+        // In-match hold (pre-fight cage, HG pedestal freeze); start cry shows on release for CryShowSeconds.
+        private float holdRemaining, cryRemaining;
+        private bool HoldActive => holdRemaining > 0f;
+        private EventStateUpdateMsg lastStateSeen;
+        private const float CryShowSeconds = 1.5f;
+
+        private void EndHold()
+        {
+            holdRemaining = 0f;
+            cryRemaining = CryShowSeconds;
+            // The fight starts now; a sound so nobody misses it while looking elsewhere.
+            capi.Gui.PlaySound("effect/receptionbell");
+        }
+
+        // Shape of the current composition.
         private int composedScoreRows = -1;
         private int composedFeedRows = -1;
         private bool composedZone, composedTimer, composedCountdown;
         private int composedFrameW, composedFrameH;
 
-        // Colour states. A colour lives in the composed font/statbar, so a colour change is a shape change.
-        private bool composedUrgent;    // the clock is nearly out
-        private bool composedOutside;   // the player is outside the storm ring
-        private int composedAliveHash = -1;   // who is still alive, and on which team
+        // Colours are baked into the composed font/statbar, so a colour change is a shape change.
+        private bool composedUrgent;
+        private bool composedOutside;   // outside the storm ring
+        private int composedAliveHash = -1;
 
-        /// <summary>Below this fraction of the match the timer turns red.</summary>
+        // -1 = not set since the last compose. See UpdateTexts.
+        private int barSecond = -1;
+
+        // Fraction of the match left when the timer turns red.
         private const float UrgentFraction = 0.15f;
 
         private const int MaxFeedRows = 5;
@@ -47,8 +60,7 @@ namespace canevents.src.Gui.Native
             this.networkHandler = networkHandler;
             this.layout = layout;
 
-            // A closed dialog gets no render calls, so opening cannot be decided in OnRenderGUI; the
-            // state packet is what says a match exists.
+            // A closed dialog gets no render calls, so open from the state packet.
             onStateUpdated = () =>
             {
                 if (networkHandler.CurrentEventState == null)
@@ -56,7 +68,7 @@ namespace canevents.src.Gui.Native
                     if (IsOpened()) TryClose();
                     return;
                 }
-                if (!IsOpened()) { Compose(); TryOpen(); }
+                if (!IsOpened()) ClientTrace.Step("EventHudGui open", () => { Compose(); TryOpen(); });
             };
             networkHandler.OnStateUpdated += onStateUpdated;
         }
@@ -70,7 +82,6 @@ namespace canevents.src.Gui.Native
         public override bool Focusable => false;
         public override bool ShouldReceiveKeyboardEvents() => false;
 
-        /// <summary>Rebuild after the layout editor moved something.</summary>
         public void OnLayoutChanged() => Compose();
 
         public override void OnRenderGUI(float deltaTime)
@@ -92,6 +103,22 @@ namespace canevents.src.Gui.Native
                 lastEventId = state.EventId;
             }
 
+            // A packet without a hold while holding means release.
+            if (!ReferenceEquals(state, lastStateSeen))
+            {
+                // Every fresh packet resyncs the clock: round modes restart it each round.
+                if (lastStateSeen != null && state.EventState == EventState.Running)
+                {
+                    timeRemaining = state.TimeRemainingSeconds;
+                    maxDuration = state.MaxDurationSeconds;
+                }
+                lastStateSeen = state;
+                if (state.EventState == EventState.Running && state.HoldSeconds > 0f)
+                    holdRemaining = state.HoldSeconds;
+                else if (HoldActive)
+                    EndHold();
+            }
+
             if (state.EventState == EventState.LocationFound)
             {
                 countdown = Math.Max(0f, countdown - deltaTime);
@@ -99,6 +126,16 @@ namespace canevents.src.Gui.Native
             else if (state.EventState == EventState.Running)
             {
                 timeRemaining = Math.Max(0f, timeRemaining - deltaTime);
+                if (HoldActive)
+                {
+                    holdRemaining -= deltaTime;
+                    // Predicted release; the server's release packet arrives later.
+                    if (holdRemaining <= 0f) EndHold();
+                }
+                else if (cryRemaining > 0f)
+                {
+                    cryRemaining -= deltaTime;
+                }
             }
 
             if (ShapeChanged()) Compose();
@@ -110,7 +147,7 @@ namespace canevents.src.Gui.Native
         private bool ShapeChanged()
         {
             var state = networkHandler.CurrentEventState;
-            bool wantCountdown = state?.EventState == EventState.LocationFound;
+            bool wantCountdown = WantCountdown(state);
             bool wantTimer = state?.EventState != EventState.LocationFound;
             bool wantZone = networkHandler.HgZone?.Active == true;
             int scoreRows = networkHandler.CurrentScoreboard?.Entries?.Length ?? 0;
@@ -128,12 +165,10 @@ namespace canevents.src.Gui.Native
                 || capi.Render.FrameHeight != composedFrameH;
         }
 
-        // Composition
-
         private void Compose()
         {
             var state = networkHandler.CurrentEventState;
-            composedCountdown = state?.EventState == EventState.LocationFound;
+            composedCountdown = WantCountdown(state);
             composedTimer = state?.EventState != EventState.LocationFound;
             composedZone = networkHandler.HgZone?.Active == true;
             composedScoreRows = networkHandler.CurrentScoreboard?.Entries?.Length ?? 0;
@@ -144,6 +179,9 @@ namespace canevents.src.Gui.Native
             composedFrameW = capi.Render.FrameWidth;
             composedFrameH = capi.Render.FrameHeight;
 
+            // Rebuilt bar is empty; force the once-a-second update next frame.
+            barSecond = -1;
+
             Composers.ClearComposers();
 
             if (composedCountdown) ComposeCountdown();
@@ -153,11 +191,7 @@ namespace canevents.src.Gui.Native
             if (composedFeedRows > 0) ComposeKillFeed();
         }
 
-        /// <summary>
-        /// Screen position for a panel: the player's stored spot, or the default. Positions are
-        /// normalised so a layout survives a resolution change; GUI coords are unscaled, hence the
-        /// divide by GUIScale.
-        /// </summary>
+        // Stored positions are normalised; GUI coords are unscaled, hence the divide by GUIScale.
         private ElementBounds PanelBounds(HudLayout.PanelPos pos, double width, double height,
                                           double defaultX, double defaultY)
         {
@@ -180,19 +214,19 @@ namespace canevents.src.Gui.Native
             var bounds = PanelBounds(layout.Timer, w, h, screenW / 2 - w / 2, 10);
             var bg = ElementBounds.Fixed(0, 0, w, h);
 
-            // The clock carries the colour: brass, red once time is nearly out.
             var titleFont = CairoFont.WhiteSmallText().WithColor(Palette.Header);
             var timeFont = CairoFont.WhiteSmallishText()
                 .WithColor(composedUrgent ? Palette.Stop : Palette.Title)
                 .WithOrientation(EnumTextOrientation.Center);
+            // Team score (rounds won, team kills) on the right of the title line.
+            var teamsFont = CairoFont.WhiteSmallText().WithColor(Palette.Title).WithOrientation(EnumTextOrientation.Right);
 
             Composers["timer"] = capi.Gui
                 .CreateCompo("canevents-hud-timer", bounds)
                 .AddGameOverlay(bg, Palette.HudBg)
                 .BeginChildElements(bg)
-                    // Three stacked rows, not overlapping: the clock and the bar used to share a y
-                    // and the digits were printed over the fill.
                     .AddDynamicText("", titleFont, ElementBounds.Fixed(10, 4, w - 20, 16), "title")
+                    .AddDynamicText("", teamsFont, ElementBounds.Fixed(10, 4, w - 20, 16), "teams")
                     .AddDynamicText("", timeFont, ElementBounds.Fixed(10, 21, w - 20, 20), "time")
                     .AddStatbar(ElementBounds.Fixed(10, 43, w - 20, 7),
                         composedUrgent ? Palette.Stop : Palette.Go, "bar")
@@ -207,7 +241,6 @@ namespace canevents.src.Gui.Native
             var bounds = PanelBounds(layout.Zone, w, h, screenW / 2 - w / 2, 78);
             var bg = ElementBounds.Fixed(0, 0, w, h);
 
-            // Outside the ring the distance turns red - the storm is already hurting.
             var distFont = CairoFont.WhiteSmallishText()
                 .WithColor(composedOutside ? Palette.Stop : Palette.Info)
                 .WithOrientation(EnumTextOrientation.Center);
@@ -241,7 +274,6 @@ namespace canevents.src.Gui.Native
             var entries = networkHandler.CurrentScoreboard?.Entries;
             for (int i = 0; i < composedScoreRows; i++)
             {
-                // Team colour while alive, grey once eliminated - the palette the in-world rings use.
                 var entry = entries != null && i < entries.Length ? entries[i] : null;
                 var font = CairoFont.WhiteSmallText().WithColor(
                     entry == null || !entry.Alive ? Palette.Idle : TeamColor(entry.TeamId));
@@ -268,7 +300,6 @@ namespace canevents.src.Gui.Native
                 .AddGameOverlay(bg, Palette.HudBg)
                 .BeginChildElements(bg);
 
-            // Oldest entries fade out so the newest kill stands out.
             for (int i = 0; i < composedFeedRows; i++)
             {
                 double age = composedFeedRows <= 1 ? 1 : (double)i / (composedFeedRows - 1);
@@ -282,22 +313,31 @@ namespace canevents.src.Gui.Native
             Composers["feed"] = composer.EndChildElements().Compose();
         }
 
-        // The pre-match countdown: big, centred, no background - read while looking at the arena.
+        // Before the teleport, and during a hold or its release cry.
+        private bool WantCountdown(EventStateUpdateMsg state)
+            => state?.EventState == EventState.LocationFound
+               || (state?.EventState == EventState.Running && (HoldActive || cryRemaining > 0f));
+
         private void ComposeCountdown()
         {
             double screenW = capi.Render.FrameWidth / RuntimeEnv.GUIScale;
             double screenH = capi.Render.FrameHeight / RuntimeEnv.GUIScale;
-            var bounds = ElementBounds.Fixed(screenW / 2 - 200, screenH / 3 - 60, 400, 120);
+            var bounds = ElementBounds.Fixed(screenW / 2 - 250, screenH / 3 - 60, 500, 165);
 
             var font = CairoFont.WhiteSmallText()
                 .WithFontSize(90)
                 .WithWeight(Cairo.FontWeight.Bold)
                 .WithColor(Palette.Title)
                 .WithStroke(new double[] { 0, 0, 0, 1 }, 3);
+            var subFont = CairoFont.WhiteSmallText()
+                .WithFontSize(26)
+                .WithWeight(Cairo.FontWeight.Bold)
+                .WithStroke(new double[] { 0, 0, 0, 1 }, 2);
 
             Composers["countdown"] = capi.Gui
                 .CreateCompo("canevents-hud-countdown", bounds)
-                .AddDynamicText("", font, EnumTextOrientation.Center, ElementBounds.Fixed(0, 0, 400, 120), "text")
+                .AddDynamicText("", font, EnumTextOrientation.Center, ElementBounds.Fixed(0, 0, 500, 120), "text")
+                .AddDynamicText("", subFont, EnumTextOrientation.Center, ElementBounds.Fixed(0, 122, 500, 40), "sub")
                 .Compose();
         }
 
@@ -318,14 +358,23 @@ namespace canevents.src.Gui.Native
             return HgZoneInterpolator.DistanceToBorder(zone, radius, entity.Pos.X, entity.Pos.Z) < 0;
         }
 
-        // The same colours the in-world team rings use, converted to Cairo's 0..1 doubles.
+        // "Blue 2 · Red 1"; empty for modes without team scores. SetNewText skips unchanged text.
+        private string TeamScoreLine()
+        {
+            var scores = networkHandler.CurrentScoreboard?.TeamScores;
+            if (scores == null || scores.Length < 2) return "";
+            return string.Join(" · ", scores.Select((s, i) =>
+                EventManagers.eventBehavior.Shared.TeamPalette.NameOf(i) + " " + s));
+        }
+
+        // In-world team ring colours as Cairo 0..1 doubles.
         private static double[] TeamColor(int teamId)
         {
             var rgba = EventManagers.eventBehavior.Shared.TeamPalette.Rgba(teamId);
             return new double[] { rgba.X, rgba.Y, rgba.Z, rgba.W };
         }
 
-        // A player dying changes a row's colour, and colours live in the composition.
+        // Deaths change row colours, which are composed.
         private int AliveHash()
         {
             var entries = networkHandler.CurrentScoreboard?.Entries;
@@ -336,19 +385,32 @@ namespace canevents.src.Gui.Native
             return hash;
         }
 
-        // Per-frame text
-
         private void UpdateTexts()
         {
             var state = networkHandler.CurrentEventState;
 
             if (composedCountdown && Composers.ContainsKey("countdown"))
             {
-                int secs = (int)Math.Ceiling(countdown);
                 string cryKey = string.IsNullOrEmpty(state?.StartCryLangKey)
                     ? "canevents:arena-start-cry" : state.StartCryLangKey;
-                Composers["countdown"].GetDynamicText("text")
-                    .SetNewText(secs > 0 ? secs.ToString() : Lang.Get(cryKey));
+                string big, sub = "";
+                if (state?.EventState == EventState.Running && HoldActive)
+                {
+                    big = Math.Max(1, (int)Math.Ceiling(holdRemaining)).ToString();
+                    if (!string.IsNullOrEmpty(state.HoldLangKey)) sub = Lang.Get(state.HoldLangKey);
+                }
+                else if (state?.EventState == EventState.Running)
+                {
+                    big = Lang.Get(cryKey);
+                }
+                else
+                {
+                    int secs = (int)Math.Ceiling(countdown);
+                    big = secs > 0 ? secs.ToString() : Lang.Get(cryKey);
+                }
+                var compo = Composers["countdown"];
+                compo.GetDynamicText("text").SetNewText(big);
+                compo.GetDynamicText("sub")?.SetNewText(sub);
             }
 
             if (composedTimer && Composers.ContainsKey("timer"))
@@ -356,16 +418,22 @@ namespace canevents.src.Gui.Native
                 var compo = Composers["timer"];
                 compo.GetDynamicText("title").SetNewText(
                     Lang.Get("canevents:hud-event-title", (state?.GameModeCode ?? "").ToUpperInvariant()));
+                compo.GetDynamicText("teams")?.SetNewText(TeamScoreLine());
 
+                // Once per second: Statbar.SetValues has no same-value guard and its threaded recompose crashes GL if overlapped.
+                int second = (int)timeRemaining;
                 var bar = compo.GetStatbar("bar");
-                if (bar != null)
+                if (bar != null && second != barSecond)
                 {
+                    barSecond = second;
                     bar.SetLineInterval(1);
-                    bar.SetValues(timeRemaining, 0, Math.Max(1f, maxDuration));
+                    bar.SetValues(maxDuration <= 0f ? 1f : timeRemaining, 0, Math.Max(1f, maxDuration));
                 }
 
-                compo.GetDynamicText("time").SetNewText(
-                    string.Format("{0}:{1:D2}", (int)(timeRemaining / 60), (int)(timeRemaining % 60)));
+                // Open matches send no limit.
+                compo.GetDynamicText("time").SetNewText(maxDuration <= 0f
+                    ? "∞"
+                    : string.Format("{0}:{1:D2}", (int)(timeRemaining / 60), (int)(timeRemaining % 60)));
             }
 
             if (composedZone && Composers.ContainsKey("zone")) UpdateZoneTexts();
@@ -379,7 +447,7 @@ namespace canevents.src.Gui.Native
             var entity = capi.World?.Player?.Entity;
             if (zone == null || entity == null) return;
 
-            // Shared with the dome renderer so the drawn ring and the printed distance agree.
+            // Same math as the dome renderer.
             float since = (capi.ElapsedMilliseconds - networkHandler.HgZoneReceivedMs) / 1000f;
             float radius = HgZoneInterpolator.RadiusAt(zone, since);
             bool shrinking = HgZoneInterpolator.IsShrinking(zone);

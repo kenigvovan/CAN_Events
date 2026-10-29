@@ -8,60 +8,85 @@ using Vintagestory.API.Server;
 
 namespace canevents.src.EventManagers
 {
-    // Per-player event hooks: death, respawn, disconnect, reconnect.
-    // Also holds the two broadcast helpers used by Lifecycle.
+    // Death, respawn, disconnect, reconnect hooks.
     public partial class CANEventManager
     {
         public void OnDeath(IServerPlayer player, DamageSource source)
         {
+            bool diedInAMatch = false;
+
             foreach (var re in RunningEventsSnapshot())
             {
                 if (re.EventState != EventState.Running) continue;
                 if (re.IsActive(player.PlayerUID))
                 {
-                    DispatchToBehaviors(re, "OnParticipantDeath", beh => beh.OnParticipantDeath(player, source));
+                    // Before elimination drops the return marker. Otherwise a corpse return teleporter leads into the arena.
+                    diedInAMatch = true;
+                    CorpseReturnGuard.MarkMatchDeath(player);
 
-                    // If player was eliminated, make them spectator
+                    DispatchToBehaviors(re, "OnParticipantDeath",
+                        beh => beh.OnParticipantDeath(player.PlayerUID, player.Entity, source));
+
                     if (!re.IsActive(player.PlayerUID))
                     {
-                        if (SpectatesOnElimination(re)) SpectatorManager?.MakeSpectator(player, re);
-                        else ReleaseOnElimination(player, re);
+                        SeatOutOfPlay(player, re);
 
-                        // Rated track only, never for an exhibition match or a bot - same guards as the
-                        // kill side, so standings can't be seeded from unrated play or bot rows.
                         if (re.Event.Rated && !re.SuppressRating && !Bots.BotIdentity.IsBot(player.PlayerUID))
                             Leaderboard?.RecordDeath(player.PlayerUID, re.Event.Code);
                     }
                 }
             }
+
+            // A normal world death supersedes the pending fix.
+            if (!diedInAMatch) CorpseReturnGuard.ForgetPending(player);
+        }
+
+        // Bots only; players come through PlayerDeath.
+        public void OnEntityDeath(Vintagestory.API.Common.Entities.Entity entity, DamageSource source)
+        {
+            if (entity is Vintagestory.API.Common.EntityPlayer) return;
+
+            string uid = Bots.BotMatchLink.UidOf(entity);
+            if (uid == null || !Bots.BotIdentity.IsBot(uid)) return;
+
+            var re = Bots.BotMatchLink.MatchOf(entity);
+            if (re == null || !re.IsParticipant(uid)) return;
+
+            if (re.EventState == EventState.Running && re.IsActive(uid))
+                DispatchToBehaviors(re, "OnParticipantDeath", beh => beh.OnParticipantDeath(uid, entity, source));
+
+            var bots = re.GetBehavior<eventBehavior.ArenaBotsEB>();
+            if (bots != null)
+                log.Safely("ArenaBots.AfterBotDeath for " + re.Event?.Code, () => bots.AfterBotDeath(uid, entity, source));
+            else if (re.IsActive(uid))
+                re.EliminatePlayer(uid);
         }
 
         public void OnRespawn(IServerPlayer player)
         {
+            // Vanilla has recorded the death spot by now.
+            CorpseReturnGuard.ApplyPending(sapi, player);
+
             foreach (var re in RunningEventsSnapshot())
             {
                 if (re.EventState != EventState.Running) continue;
-                if (!re.IsParticipant(player.PlayerUID)) continue;
+                if (!re.HoldsPlayer(player.PlayerUID)) continue;
 
-                // Player was eliminated but respawned naturally (clicked Respawn button)
-                // while the event is still running → redirect to spectator
                 if (!re.IsActive(player.PlayerUID))
                 {
                     if (SpectatesOnElimination(re)) SpectatorManager?.ApplySpectatorState(player, re);
-                    // Not seated by this event: clicking Respawn is their way out, so hand their own
-                    // gear back and put them where they came from rather than at the world spawn.
-                    else TryReleaseEliminated(player);
+                    else
+                    {
+                        // continue: the respawn dispatch would clear the gear just returned.
+                        TryReleaseEliminated(player);
+                        continue;
+                    }
                 }
 
-                // Opt this revive out of vanilla satiety handling: EntityBehaviorHunger halves
-                // saturation and all nutrient levels (which drive max health) on Heal/Revive. That
-                // fires inside the TeleportTo callback, which can land either side of the 200ms
-                // dispatch below, so racing it with our own Feed() is a coin flip. The flag makes the
-                // engine skip the block; it is consumed by that one revive.
+                // Vanilla hunger halves saturation and nutrients on revive, racing our 200ms dispatch. One-shot flag.
                 player.Entity?.Attributes.SetBool("noSatietyRestoreOnRevive", true);
 
-                // The engine runs its own respawn logic (clear inventory, teleport to world spawn)
-                // AFTER PlayerRespawn fires, so a synchronous dispatch gets clobbered next tick.
+                // Engine clears inventory and teleports to spawn after PlayerRespawn fires, so defer.
                 string uid = player.PlayerUID;
                 var capturedRe = re;
                 sapi.Event.RegisterCallback(_ =>
@@ -69,7 +94,7 @@ namespace canevents.src.EventManagers
                     var pl = sapi.World.PlayerByUid(uid) as IServerPlayer;
                     if (pl == null) return;
                     if (capturedRe.EventState != EventState.Running) return;
-                    if (!capturedRe.IsParticipant(uid)) return;
+                    if (!capturedRe.HoldsPlayer(uid)) return;
                     DispatchToBehaviors(capturedRe, "OnParticipantRespawn", beh => beh.OnParticipantRespawn(pl));
                 }, 200);
             }
@@ -77,73 +102,79 @@ namespace canevents.src.EventManagers
 
         public void OnDisconnect(IServerPlayer player)
         {
-            // Stop pushing bracket updates to a client that is gone.
+            // First, before teardown can throw: logs drops right after a teleport.
+            EventTeleport.NoteDisconnect(sapi, player);
+
             NetworkHandler?.DropBracketViewer(player.PlayerUID);
 
             foreach (var re in RunningEventsSnapshot())
             {
+                // Nothing to forfeit or decide; they are simply gone until they walk in again.
+                if (re.IsOpenMatch)
+                {
+                    if (re.IsParticipant(player.PlayerUID)) RemoveFromOpenMatch(re, player, online: false);
+                    continue;
+                }
+
                 if (re.IsActive(player.PlayerUID))
                 {
-                    re.EliminatePlayer(player.PlayerUID);
+                    re.MarkLeftInPlay(player.PlayerUID);
+                    // Parkour is a race, leaving must not hand the win to the rest.
+                    if (re.GetBehavior<eventBehavior.ParkourEB>() != null
+                        || re.GetBehavior<eventBehavior.Shared.IDecidesOnDropout>() != null) re.RemoveFromPlay(player.PlayerUID);
+                    else re.EliminatePlayer(player.PlayerUID);
                     BroadcastToParticipants(re, Lang.Get("canevents:player-disconnected-eliminated",
                         player.PlayerName, re.ParticipantsStillInEvent.Count));
 
                     DispatchToBehaviors(re, "OnParticipantLeftGame", beh => beh.OnParticipantLeftGame());
                 }
-                // Disconnected before the match found an arena: the roster isn't initialized yet, so
-                // EliminatePlayer would no-op. Mark a pre-start dropout so InitializeRoster leaves them
-                // out - otherwise the offline uid can win (or deadlock) the match.
-                else if (re.EventState == EventState.SearchingForLocation
+                // Roster not built yet, EliminatePlayer would no-op.
+                else if ((re.EventState == EventState.SearchingForLocation
+                          || re.EventState == EventState.AwaitingReady)
                     && re.IsParticipant(player.PlayerUID))
                 {
                     re.MarkPreStartDropout(player.PlayerUID);
+                    re.ReadyUids.Remove(player.PlayerUID);
                 }
 
-                // Park the stake NOW, while the escrow ModData is still reachable: once fully offline
-                // PlayerByUid returns null and settlement can't read it, letting a player disconnect to
-                // reclaim the stake instead of feeding the pot. A real crash fires no PlayerDisconnect,
-                // so the escrow survives and genuine crash victims are refunded on reconnect.
-                // Keyed on IsParticipant, not IsActive: an already-eliminated player still owes the pot.
+                // Forfeit now while ModData is reachable; offline PlayerByUid is null. A crash fires no disconnect, so escrow survives.
+                // Not for a dropout before the start: they never played, so their stake waits in escrow
+                // and RefundIfNoLongerCommitted gives it back on their return (R27).
                 if (re.IsParticipant(player.PlayerUID)
+                    && !re.Roster.IsPreStartDropout(player.PlayerUID)
                     && re.Event.EntryFee != null
                     && re.Event.CodeEquals(EntryFeeEscrow.EventCodeOf(player)))
                 {
                     var stake = EntryFeeEscrow.Read(player);
-                    if (stake != null) RewardDistributor?.RecordForfeit(player.PlayerUID, re.Id, stake);
+                    if (stake != null) RewardDistributor?.RecordForfeit(player.PlayerUID, re.Id, stake, re.Event?.Code);
                     EntryFeeEscrow.Clear(player);
                 }
 
-                // No RemoveSpectator here: the player is going offline so BroadcastPlayerData won't
-                // work. ModData is saved; RestoreOnReconnect fixes the gamemode when they rejoin.
+                // No RemoveSpectator: BroadcastPlayerData fails for a leaving player. RestoreOnReconnect handles it.
             }
 
-            // Stop feeding a match's HUD to an observer who is gone. No packet to send: the client is
-            // already disconnecting, and the gamemode is restored from ModData on their next login.
             if (DropObserverFromMatches(player.PlayerUID))
                 NetworkHandler?.ForgetSpectator(player.PlayerUID);
 
-            // Drop the in-memory spectator anchor so a mid-event reconnect goes through the
-            // normal restore path instead of being treated as still-spectating.
             SpectatorManager?.OnSpectatorDisconnect(player.PlayerUID);
 
-            // An abandoned template-edit session would keep its preview arena and session entry
-            // alive until a restart; treat disconnect as Cancel (blocks restored, place removed).
+            // Disconnect counts as Cancel for a template edit session.
             if (TemplateEditor != null && TemplateEditor.Sessions.ContainsKey(player.PlayerUID))
             {
                 log.Safely("TemplateEditor.Cancel on disconnect for " + player.PlayerName,
                     () => TemplateEditor.Cancel(player));
             }
 
-            // Drop pending queue registrations so an offline player can't be matched.
             DropQueueRegistrationsForPlayer(player.PlayerUID);
 
-            // Same for an outstanding duel challenge: a side that just walked out cannot fight, and
-            // the other party deserves to hear why rather than wait out the timeout.
             sapi.ModLoader.GetModSystem<canevents>()?.Duels?.OnDisconnect(player.PlayerUID);
         }
 
         public void OnReconnect(IServerPlayer player)
         {
+            // Logging in dead revives without a PlayerRespawn event.
+            CorpseReturnGuard.ApplyPending(sapi, player);
+
             SpectatorManager?.RestoreOnReconnect(player);
 
             foreach (var re in RunningEventsSnapshot())
@@ -152,95 +183,57 @@ namespace canevents.src.EventManagers
                     DispatchToBehaviors(re, "OnParticipantJoinedGame", beh => beh.OnParticipantJoinedGame());
             }
 
-            // Restore a SavePlayerAttributes backup, but only when they are no longer PLAYING: a
-            // live-match reconnect must keep the backup, or a later in-match death would ClearInventory
-            // with nothing left to restore - permanent loss. An eliminated player, by contrast, would
-            // otherwise walk the world carrying the arena kit and could stash it before the match ends.
-            if (!IsPlayingLiveEvent(player.PlayerUID) && !(SpectatorManager?.IsSpectating(player.PlayerUID) ?? false))
+            // Delay lets the engine's join-time positioning settle.
+            bool released = TryReleaseEliminated(player, homeDelayMs: 300);
+
+            // Keep the backup while still playing, or a later in-match death clears with nothing to restore.
+            if (!released && !IsPlayingLiveEvent(player.PlayerUID)
+                && !(SpectatorManager?.IsSpectating(player.PlayerUID) ?? false))
                 RestoreEventBackup(player);
 
-            // Refund an escrow the player is no longer committed to (crash, or a queue slot dropped
-            // while offline). A live queue slot or running match keeps it for normal settlement.
             RefundIfNoLongerCommitted(player.PlayerUID);
 
-            // Hand back a stake forfeited by a mid-match disconnect if its match is no longer running
-            // (crash before settlement, or a void match). A running match keeps it committed.
             RewardDistributor?.RefundForfeitIfStale(player,
                 mid => FindRunningEvent(mid) != null);
 
-            // Anything a match owed them while they were offline. Rewards are handed out after the
-            // last teleport of a match, so the player who just lost and closed the game is precisely
-            // the one who misses them.
+            // Payouts that landed after they logged off.
             int paid = RewardDistributor?.Payouts?.Deliver(player, "reward") ?? 0;
             if (paid > 0)
                 player.SendMessage(0, Lang.Get("canevents:payout-delivered"), EnumChatType.Notification);
 
-            // Send them back to their pre-event position if a crash stranded them in an arena
-            // (TPThereAndBack.OnEnd never ran).
             RestoreOrphanedReturnPosition(player);
 
-            // Tournament business: prizes/refunds owed while they were offline, and a re-prompt if
-            // their bracket match is still waiting on them.
             Tournaments?.OnReconnect(player);
         }
 
-        // Crash recovery: a TPThereAndBack return-position marker with no running event owning the
-        // player means the event was torn down without OnEnd. Teleport them back, then clear the
-        // marker. A live event owning the player takes precedence.
+        // Crash recovery: return marker left with no live event means OnEnd never ran.
         private void RestoreOrphanedReturnPosition(IServerPlayer player)
         {
-            byte[] data = player.GetModdata(eventBehavior.TPThereAndBack.ReturnPosModDataKey);
-            if (data == null || data.Length == 0) return;
+            if (IsInLiveEvent(player.PlayerUID)) return;
+            if (!ReturnPosMarker.TryRead(player, sapi, out var home)) return;
 
-            string uid = player.PlayerUID;
-            if (IsInLiveEvent(uid))
-                return; // a live event still owns their position, let its normal flow handle it
-
-            double x, y, z;
-            try
-            {
-                var tree = new TreeAttribute();
-                tree.FromBytes(data);
-                x = tree.GetInt("x") + 0.5;
-                y = tree.GetInt("y") + 0.5;
-                z = tree.GetInt("z") + 0.5;
-            }
-            catch (Exception e)
-            {
-                sapi.World.Logger.Warning("RestoreOrphanedReturnPosition for {0}: {1}", player.PlayerName, e.Message);
-                player.RemoveModdata(eventBehavior.TPThereAndBack.ReturnPosModDataKey);
-                return;
-            }
-
-            // Defer so the engine's join-time positioning settles first. The marker is cleared only once
-            // the teleport lands, so a disconnect inside the window retries.
-            sapi.Event.RegisterCallback(_ =>
-            {
-                var pl = sapi.World.PlayerByUid(uid) as IServerPlayer;
-                if (pl?.Entity == null) return;
-                pl.Entity.TeleportToDouble(x, y, z);
-                pl.RemoveModdata(eventBehavior.TPThereAndBack.ReturnPosModDataKey);
-            }, 300);
+            // Marker is cleared only when the teleport lands, so a disconnect in between retries.
+            ReturnPosMarker.SendHome(sapi, player, home, "crash recovery", delayMs: 300);
             sapi.World.Logger.Notification("Returning {0} to pre-event position after orphaned event (crash recovery)", player.PlayerName);
         }
 
-        /// <summary>Does this match sit its eliminated players in the spectator seat? Set per event
-        /// on SavePlayerAttributes; an event without that behavior keeps the historic behavior.</summary>
         private bool SpectatesOnElimination(RunningEvent re)
             => re?.GetBehavior<eventBehavior.SavePlayerAttributes>()?.SpectateOnElimination ?? true;
 
-        /// <summary>
-        /// Sends a just-eliminated player home instead of seating them, for an event that would
-        /// rather not make people watch.
-        /// </summary>
+        // Also used for parkour finishers; they're only sent home once actually eliminated.
+        public void SeatOutOfPlay(IServerPlayer player, RunningEvent re)
+        {
+            if (player == null || re == null) return;
+            if (SpectatesOnElimination(re)) SpectatorManager?.MakeSpectator(player, re);
+            else if (!re.IsActive(player.PlayerUID)) ReleaseOnElimination(player, re);
+        }
+
         private void ReleaseOnElimination(IServerPlayer player, RunningEvent re)
         {
             string uid = player.PlayerUID;
-            // Delayed for the same reason MakeSpectator is: this runs inside TriggerPlayerDeath, and
-            // reviving before the engine has finished announcing the death leaves them half-dead.
+            // Runs inside TriggerPlayerDeath; reviving immediately leaves them half-dead.
             sapi.Event.RegisterCallback(_ =>
             {
-                // The match ending first has already restored and teleported everyone.
                 if (re.EventState == EventState.Finished) return;
 
                 var pl = sapi.World.PlayerByUid(uid) as IServerPlayer;
@@ -251,75 +244,40 @@ namespace canevents.src.EventManagers
             }, 100);
         }
 
-        /// <summary>
-        /// Releases a player who is already out of the match: their own inventory comes back, they
-        /// go home and the spectator seat is freed, without waiting for the match to end. They stay
-        /// on the roster, so rewards and the results table still count them.
-        ///
-        /// Watching the rest of the match is a thing to offer, not to impose - a one-life mode can
-        /// leave someone sitting there for the better part of ten minutes.
-        ///
-        /// False when they are still in play: that is a live match, and walking out of one would be
-        /// a free escape from a fight going badly.
-        /// </summary>
-        public bool TryReleaseEliminated(IServerPlayer player)
+        // Restore and send home an eliminated player early. Stays on the roster for rewards/results.
+        public bool TryReleaseEliminated(IServerPlayer player, int homeDelayMs = 0)
         {
             if (player == null) return false;
             string uid = player.PlayerUID;
 
             var re = FindLiveEventOf(uid);
             if (re == null || re.IsActive(uid)) return false;
+            // Pre-roster nobody is active yet.
+            if (re.EventState == EventState.AwaitingReady || re.EventState == EventState.SearchingForLocation)
+                return false;
 
-            // Their real belongings first: everything else can be redone, this cannot.
+            // Release first so death sweep/respawn clear can't touch the restored items.
+            re.MarkReleased(uid);
+            re.GetBehavior<eventBehavior.SavePlayerAttributes>()?.Release(uid);
+
             RestoreEventBackup(player);
 
-            // Home, and only once - the match's own teleport must not drag them back later.
+            // Forget the match's return pos so the end teleport doesn't pull them back.
             re.GetBehavior<eventBehavior.TPThereAndBack>()?.ForgetReturnPos(uid);
-            if (TryReadReturnPos(player, out double x, out double y, out double z))
-            {
-                player.Entity?.TeleportToDouble(x, y, z);
-                player.RemoveModdata(eventBehavior.TPThereAndBack.ReturnPosModDataKey);
-            }
+            if (ReturnPosMarker.TryRead(player, sapi, out var home))
+                ReturnPosMarker.SendHome(sapi, player, home, "released after elimination", homeDelayMs);
 
             SpectatorManager?.RemoveSpectator(player);
             return true;
         }
 
-        /// <summary>The pre-event position mirrored to ModData at teleport-in, if it is still there.</summary>
-        private bool TryReadReturnPos(IServerPlayer player, out double x, out double y, out double z)
-        {
-            x = y = z = 0;
-            byte[] data = player?.GetModdata(eventBehavior.TPThereAndBack.ReturnPosModDataKey);
-            if (data == null || data.Length == 0) return false;
-
-            try
-            {
-                var tree = new TreeAttribute();
-                tree.FromBytes(data);
-                x = tree.GetInt("x") + 0.5;
-                y = tree.GetInt("y") + 0.5;
-                z = tree.GetInt("z") + 0.5;
-                return true;
-            }
-            catch (Exception e)
-            {
-                sapi.World.Logger.Warning("Return position for {0} is unreadable: {1}", player.PlayerName, e.Message);
-                player.RemoveModdata(eventBehavior.TPThereAndBack.ReturnPosModDataKey);
-                return false;
-            }
-        }
-
-        // Crash recovery for inventory + health. Shares PlayerInventoryBackup.Restore with the normal
-        // end-of-event path so the two can't drift. Only this path notifies the player.
         private void RestoreEventBackup(IServerPlayer player)
         {
             if (PlayerInventoryBackup.Restore(player, sapi))
                 player.SendMessage(0, Lang.Get("canevents:inventory-restored"), EnumChatType.Notification);
         }
 
-        // Refunds a held escrow when the player is neither queued for its event nor in its running
-        // match. Idempotent: it re-checks state, so a repeated call is harmless. Offline players are
-        // skipped and refunded when they next log in.
+        // Idempotent. Offline players get it on next login.
         private void RefundIfNoLongerCommitted(string uid)
         {
             if (!(sapi.World.PlayerByUid(uid) is IServerPlayer player)) return;
@@ -330,8 +288,9 @@ namespace canevents.src.EventManagers
             {
                 var ev = FindEventByCode(code);
                 if (ev != null && _store.HasPlayerRegistration(uid, ev)) return;            // still queued for it
+                // In its live match. Not HoldsPlayer: a released loser still pays into the pot at the end.
                 if (RunningEventsSnapshot().Any(re => re.Event.CodeEquals(code)
-                        && re.IsParticipant(uid))) return;                     // in its live match
+                        && re.IsParticipant(uid) && !re.Roster.IsPreStartDropout(uid))) return;
             }
             RewardDistributor?.RefundEntryFeeEscrow(player);
         }

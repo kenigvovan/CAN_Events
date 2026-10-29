@@ -5,16 +5,14 @@ using Vintagestory.API.Server;
 
 namespace canevents.src.EventManagers
 {
-    /// <summary>The on-disk shape: { "Data": { playerUid: { eventCode: setName } } }. A wrapper object
-    /// rather than a bare dictionary, because that is what existing files hold.</summary>
+    // On disk: { "Data": { playerUid: { eventCode: setName } } }. Wrapped because existing files are.
     public class LoadoutPrefsFile
     {
         public Dictionary<string, Dictionary<string, string>> Data { get; set; }
             = new Dictionary<string, Dictionary<string, string>>();
     }
 
-    /// <summary>Per-player default loadout pick per event code, persisted in
-    /// ModConfig/canevents/loadout_preferences.json.</summary>
+    // Per-player default loadout per event, in ModConfig/canevents/loadout_preferences.json.
     public class LoadoutPreferences : JsonFileStore<LoadoutPrefsFile>
     {
         public LoadoutPreferences(ICoreServerAPI sapi)

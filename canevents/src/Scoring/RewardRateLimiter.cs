@@ -10,17 +10,13 @@ namespace canevents.src.Scoring
         public long LastUnix { get; set; }
     }
 
-    // Per-player token bucket limiting WINNER rewards over time: one token per rewarded win, refilling
-    // continuously up to <burst>, so a player may burst and is then throttled to the refill rate. Caps
-    // sustained farming regardless of how wins are spaced - harder to game than a sliding window.
+    // Token bucket per player for winner rewards: one token per win, refills up to burst.
     public class RewardRateLimiter : JsonFileStore<Dictionary<string, RewardBucket>>
     {
-        // Fallback for a non-positive configured refill: a finite refill keeps the store self-bounding
-        // (buckets refill to full and get pruned). "Never refill" would mean remembering every winner
-        // forever, so it is not allowed.
+        // Used when refill <= 0; without refill full buckets are never pruned.
         private const double FallbackRefillHours = 24.0;
 
-        // Mutable so an admin config change applies live via Reconfigure; read/written under lockObj.
+        // Guarded by lockObj.
         private double capacity;
         private double refillPerSecond;
         private bool dirty;
@@ -32,13 +28,10 @@ namespace canevents.src.Scoring
                 sapi.World.Logger.Warning(
                     "RewardRateLimiter: rewardRateCapRefillHours must be > 0 (got {0}); using {1}h so the store stays bounded.",
                     refillHoursPerToken, FallbackRefillHours);
-            Reconfigure(burst, refillHoursPerToken); // applies the fallback for a non-positive refill
+            Reconfigure(burst, refillHoursPerToken);
         }
 
-        /// <summary>
-        /// Live update of burst/refill. Existing buckets keep their tokens; the new rate takes effect on
-        /// the next refill. A non-positive refill falls back to <see cref="FallbackRefillHours"/>.
-        /// </summary>
+        // Existing buckets keep their tokens.
         public void Reconfigure(int burst, double refillHoursPerToken)
         {
             if (refillHoursPerToken <= 0) refillHoursPerToken = FallbackRefillHours;
@@ -49,15 +42,11 @@ namespace canevents.src.Scoring
             }
         }
 
-        // The CALLER decides scope: a non-empty scope (event code) gives that event its own bucket,
-        // null/empty shares one per player. "|" can't occur in a player UID or an event code.
+        // Empty scope = shared bucket. "|" can't appear in a uid or event code.
         private static string Key(string uid, string scope)
             => string.IsNullOrEmpty(scope) ? uid : uid + "|" + scope;
 
-        /// <summary>
-        /// Refills the bucket for elapsed time, then consumes a token if available; false means the
-        /// bucket is empty and the reward should be denied. Call <see cref="Flush"/> after a batch.
-        /// </summary>
+        // Call Flush after a batch.
         public bool TryConsume(string uid, string eventCode, long nowUnix)
         {
             if (string.IsNullOrEmpty(uid)) return true;
@@ -77,7 +66,6 @@ namespace canevents.src.Scoring
             }
         }
 
-        /// <summary>Available tokens for a (player, event) bucket right now (read-only; refilled to now).</summary>
         private double Peek(string uid, string eventCode, long nowUnix)
         {
             lock (lockObj)
@@ -87,10 +75,7 @@ namespace canevents.src.Scoring
             }
         }
 
-        /// <summary>
-        /// UI snapshot: whole winner rewards available now, and seconds until the next whole token
-        /// refills (0 when full).
-        /// </summary>
+        // secondsToNext is 0 when full.
         public (int remaining, double secondsToNext) PeekStatus(string uid, string eventCode, long nowUnix)
         {
             double tokens = Peek(uid, eventCode, nowUnix);
@@ -101,8 +86,7 @@ namespace canevents.src.Scoring
             return (remaining, secondsToNext);
         }
 
-        /// <summary>Clears a player's throttle - admin override for a false positive. Drops their shared
-        /// bucket and every per-event bucket they hold.</summary>
+        // Drops the shared bucket and all per-event ones.
         public void Reset(string uid)
         {
             if (string.IsNullOrEmpty(uid)) return;
@@ -122,7 +106,7 @@ namespace canevents.src.Scoring
         private double TokensOf(RewardBucket b, long nowUnix)
             => Math.Min(capacity, b.Tokens + Math.Max(0, nowUnix - b.LastUnix) * refillPerSecond);
 
-        /// <summary>Availability for the admin "ratecap show" command; anything unlisted is full.</summary>
+        // For "ratecap show".
         public string DescribeAvailability(string uid, long nowUnix)
         {
             lock (lockObj)
@@ -141,7 +125,6 @@ namespace canevents.src.Scoring
             }
         }
 
-        /// <summary>Persists pending changes (call once after a match's rewards are distributed).</summary>
         public void Flush()
         {
             lock (lockObj)
@@ -153,8 +136,7 @@ namespace canevents.src.Scoring
             }
         }
 
-        // Drops buckets refilled back to full: indistinguishable from a fresh player, so removing them
-        // changes nothing while bounding the store to currently-throttled players. Caller holds lockObj.
+        // A full bucket equals a fresh one, so drop it. Caller holds lockObj.
         private void PruneFull(long nowUnix)
         {
             List<string> stale = null;

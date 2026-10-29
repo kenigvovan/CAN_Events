@@ -1,4 +1,10 @@
 <Solution>
   <Project Path="CakeBuild/CakeBuild.csproj" />
   <Project Path="canevents/canevents.csproj" />
+  <Project Path="canevents.scenarios/canevents.scenarios.csproj" />
+  <Folder Name="/Atlas/">
+    <Project Path="../libs/1.22/Atlas-main/Atlas-main/src/Atlas.Bridge/Atlas.Bridge.csproj" />
+    <Project Path="../libs/1.22/Atlas-main/Atlas-main/src/Atlas/Atlas.csproj" />
+    <Project Path="../libs/1.22/Atlas-main/Atlas-main/src/Atlas.XUnit/Atlas.XUnit.csproj" />
+  </Folder>
 </Solution>

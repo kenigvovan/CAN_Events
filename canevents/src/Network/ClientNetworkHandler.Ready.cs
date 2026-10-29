@@ -5,10 +5,10 @@ namespace canevents.src.Network
     // Client half of the queue ready check.
     public partial class ClientNetworkHandler
     {
-        /// <summary>The confirmation waiting for an answer, or null.</summary>
+        // The confirmation waiting for an answer, or null.
         public MatchReadyRequestMsg PendingReady { get; private set; }
 
-        /// <summary>Fires when the prompt arrives or is withdrawn.</summary>
+        // Fires when the prompt arrives or is withdrawn.
         public event Action OnReadyPromptChanged;
 
         private void RegisterReadyHandlers()
@@ -35,7 +35,7 @@ namespace canevents.src.Network
         public void SendMatchReady(bool ready)
         {
             if (PendingReady == null) return;
-            clientChannel.SendPacket(new MatchReadyResponseMsg
+            Send(new MatchReadyResponseMsg
             {
                 EventId = PendingReady.EventId,
                 Ready = ready

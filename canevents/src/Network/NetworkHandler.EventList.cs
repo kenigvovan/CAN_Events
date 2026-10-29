@@ -11,8 +11,6 @@ using Vintagestory.API.Server;
 
 namespace canevents.src.Network
 {
-    // Server-side event-list push: the player-facing queue/running list and the admin
-    // enable/disable list.
     public partial class ServerNetworkHandler
     {
         private void OnRequestAdminEventList(IServerPlayer player, RequestAdminEventListMsg msg)
@@ -21,9 +19,15 @@ namespace canevents.src.Network
             SendAdminEventListTo(player);
         }
 
+        // After a reload changes the set of events.
+        public void BroadcastAdminEventList()
+        {
+            foreach (var p in sapi.World.AllOnlinePlayers)
+                if (p is IServerPlayer sp && RequireAdmin(sp)) SendAdminEventListTo(sp);
+        }
+
         private void SendAdminEventListTo(IServerPlayer player)
         {
-            var places = eventManager.eventPlacesManager.EventPlaces;
             var entries = eventManager.Events
                 .OrderBy(ev => ev.Category ?? "", StringComparer.OrdinalIgnoreCase)
                 .ThenBy(ev => ev.Code, StringComparer.OrdinalIgnoreCase)
@@ -31,7 +35,7 @@ namespace canevents.src.Network
                 {
                     var capacity = ev.Behaviors.OfType<IPartyCapacityProvider>().FirstOrDefault();
                     bool enabled = eventManager.IsEventEnabled(ev.Code);
-                    var (readiness, detail) = ComputeReadiness(ev, enabled, places);
+                    var (readiness, detail) = ComputeReadiness(ev, enabled);
                     return new AdminEventListEntryMsg
                     {
                         Code = ev.Code,
@@ -43,48 +47,38 @@ namespace canevents.src.Network
                         Rated = ev.Rated,
                         Readiness = readiness,
                         ReadinessDetail = detail,
-                        RequiredSpawns = ResolveRequiredSpawns(ev)
+                        RequiredSpawns = ResolveRequiredSpawns(ev),
+                        NeedsWaitingRoom = ev.GetBehavior<EventManagers.eventBehavior.WaitingRoomEB>() != null,
+                        IsOpenMatch = CANEventManager.OpenModeOf(ev) != null,
+                        Teams = CANEventManager.TeamCountOf(ev)
                     };
                 })
                 .ToArray();
-            serverChannel.SendPacket(new AdminEventListMsg { Events = entries }, player);
+            adminChannel.SendPacket(new AdminEventListMsg { Events = entries }, player);
         }
 
-        /// <summary>Can this event start right now, and if not, what is missing? The success path
-        /// must stay identical to DefaultEventPlacesManager.TryFindEventPlace.</summary>
-        private static (EventReadiness, string) ComputeReadiness(
-            CANEvent ev, bool eventEnabled, IEnumerable<EventPlacesManagers.Places.EventPlace> places)
+        // Maps PlaceAvailability's verdict onto the panel enum.
+        private (EventReadiness, string) ComputeReadiness(CANEvent ev, bool eventEnabled)
         {
-            var required = ev.EventTypes?.ToArray() ?? Array.Empty<string>();
             if (!eventEnabled) return (EventReadiness.EventDisabled, "event is turned off");
 
-            var matching = places
-                .Where(p => p.placeTypes != null && required.All(t => p.placeTypes.Contains(t)))
-                .ToList();
+            var report = eventManager.AvailabilityOf(ev);
+            if (report.Tagged == 0) return (EventReadiness.NoPlaceWithTags, report.TagText);
 
-            if (matching.Count == 0)
-                return (EventReadiness.NoPlaceWithTags, string.Join("+", required));
-
-            var usable = matching.Where(p => p.Enabled && p.spawnPositions != null && p.spawnPositions.Count > 0).ToList();
-
-            var free = usable.FirstOrDefault(p => !p.Occupied);
-            if (free != null) return (EventReadiness.Ready, free.Name ?? ("#" + free.Id));
-
-            if (usable.Count > 0)
-                return (EventReadiness.AllBusy, usable.Count + " matching place(s) in use");
-
-            var noSpawns = matching.FirstOrDefault(p => p.Enabled && (p.spawnPositions == null || p.spawnPositions.Count == 0));
-            if (noSpawns != null)
-                return (EventReadiness.NoSpawns, (noSpawns.Name ?? ("#" + noSpawns.Id)) + " has no spawn points");
-
-            return (EventReadiness.AllDisabled, matching.Count + " matching place(s), all disabled");
+            if (report.AnyFree)
+                return (EventReadiness.Ready, report.FirstFree.Name ?? ("#" + report.FirstFree.Id));
+            if (report.Occupied + report.PendingRestore > 0) return (EventReadiness.AllBusy, report.Summary);
+            if (report.NoSpawns > 0) return (EventReadiness.NoSpawns, report.Summary);
+            if (report.IncompleteSetup > 0) return (EventReadiness.IncompleteSetup, report.Summary);
+            return (EventReadiness.AllDisabled, report.Summary);
         }
 
-        /// <summary>Spawn points a full match wants, one per team.</summary>
+        // One per team.
         private static int ResolveRequiredSpawns(CANEvent ev)
         {
-            var assembling = ev.Behaviors.OfType<PartyAssemblingEB>().FirstOrDefault();
-            return assembling != null ? Math.Max(1, assembling.MaxPartiesCount) : 1;
+            // A queue-less event without an open mode (rare) needs just one spawn.
+            if (CANEventManager.OpenModeOf(ev) == null && ev.AssemblingEB == null) return 1;
+            return CANEventManager.TeamCountOf(ev);
         }
 
         private void OnToggleEventEnabled(IServerPlayer player, ToggleEventEnabledMsg msg)
@@ -118,14 +112,11 @@ namespace canevents.src.Network
 
             foreach (var ev in eventManager.Events)
             {
-                // No queue entry for admin-disabled events, but still surface any running match
-                // below so participants can find their HUD.
+                // Disabled events get no queue entry, but running matches are still listed.
                 bool isDisabled = !eventManager.IsEventEnabled(ev.Code);
                 int currentPlayers = 0;
                 bool isQueued = false;
-                // How long this player has been waiting, so the card can say it. Taken from their own
-                // registration rather than the oldest in the queue: "you have waited 12 minutes" is
-                // what decides whether to keep waiting, and someone else's wait says nothing about it.
+                // This player's own wait.
                 double queuedSeconds = 0;
 
                 if (queueSnapshot.TryGetValue(ev, out var regs))
@@ -145,7 +136,7 @@ namespace canevents.src.Network
                 int maxPlayers = capacity?.GetMaxPlayers() ?? 0;
                 int minPlayers = capacity?.GetMinPlayers() ?? 0;
 
-                // A hidden-role mode publishes nothing here: its set names are the roles.
+                // Empty for hidden-role modes.
                 TryGetSelectableSets(ev, out var loadoutSetNames, out var loadoutSetItemCodes,
                     out var loadoutSetDescriptions);
 
@@ -153,7 +144,6 @@ namespace canevents.src.Network
 
                 if (!isDisabled)
                 {
-                    // Entry fee + payout preview so the player sees the cost and the prizes before joining.
                     string entryFeeItems = ItemSetUtil.Pack(ev.EntryFee?.Items);
                     int rake = ev.EntryFee != null ? Math.Clamp(ev.EntryFee.RakePercent, 0, 100) : 0;
 
@@ -170,8 +160,6 @@ namespace canevents.src.Network
                                 .ToArray();
                     }
 
-                    // Per-viewer reward rate-cap status for this event (own bucket when it has a
-                    // separate cap, else the shared one); the distributor owns the policy.
                     var (capActive, rewardsRemaining, secondsToNext) =
                         eventManager.RewardDistributor?.GetRewardCapStatus(playerUid, ev) ?? (false, 0, 0.0);
 
@@ -196,7 +184,8 @@ namespace canevents.src.Network
                         ParticipationItems = participationItems,
                         RewardCapActive = capActive,
                         RewardsRemaining = rewardsRemaining,
-                        SecondsToNextReward = secondsToNext
+                        SecondsToNextReward = secondsToNext,
+                        HasShop = ev.Behaviors.OfType<EventManagers.eventBehavior.MatchShopEB>().Any(s => s.Enabled && s.ShowPreview)
                     });
                 }
 

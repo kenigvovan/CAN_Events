@@ -6,40 +6,28 @@ using Vintagestory.API.Server;
 
 namespace canevents.src.EventManagers
 {
-    // Persistent per-player escrow for an entry-fee wager, held in ModData (survives disconnect and
-    // crash) together with the event code it was paid for. Charging at QUEUE time rather than match
-    // start closes the "drop the fee during the countdown" dodge. Refunded if the player leaves the
-    // queue, settled at match end by RewardDistributor, or refunded on reconnect when a crash left it
-    // owning no queue slot and no running event.
-    //
-    // One ModData slot → one pending wager per player; the stored event code tells the refund logic
-    // which commitment the stake belongs to.
+    // Entry fee held in ModData from queue time (survives crash). One wager per player at a time.
     public static class EntryFeeEscrow
     {
         public const string ModDataKey = "canevents_entryfee_escrow";
 
-        /// <summary>
-        /// Charges the full fee from the player's inventory into escrow. Returns false without charging
-        /// if they can't pay the full amount or already hold an escrow (one wager at a time).
-        /// </summary>
+        // All or nothing; false if they can't pay or already hold an escrow.
         public static bool Charge(IServerPlayer player, string eventCode, IReadOnlyList<RewardItem> fee)
         {
             if (player == null || fee == null || fee.Count == 0) return false;
-            if (Has(player)) return false;   // one wager at a time, judged the one way
+            if (Has(player)) return false;
 
-            // Coalesce duplicate codes so [stone:4, stone:4] is charged as stone:8 rather than validated
-            // twice against the full carried count, which would mint the shortfall.
+            // Coalesce duplicates, or [stone:4, stone:4] would pass the check against 4 carried.
             var pairs = ItemSetUtil.Coalesce(fee);
             if (pairs.Count == 0) return false;
 
-            if (!InventoryUtil.Has(player, pairs)) return false; // can't pay the full ante
+            if (!InventoryUtil.Has(player, pairs)) return false;
 
             var tree = new TreeAttribute();
             tree.SetString("eventCode", eventCode ?? "");
             tree.SetInt("count", pairs.Count);
             for (int i = 0; i < pairs.Count; i++)
             {
-                // Has() above guarantees the full amount is there.
                 InventoryUtil.Remove(player, pairs[i].code, pairs[i].qty);
                 tree.SetString($"code_{i}", pairs[i].code);
                 tree.SetInt($"qty_{i}", pairs[i].qty);
@@ -48,7 +36,6 @@ namespace canevents.src.EventManagers
             return true;
         }
 
-        // Loads the escrow ModData as a tree, or null when nothing is stored / it can't be parsed.
         private static TreeAttribute ReadTree(IServerPlayer player)
         {
             byte[] data = player?.GetModdata(ModDataKey);
@@ -57,14 +44,12 @@ namespace canevents.src.EventManagers
             catch { return null; }
         }
 
-        /// <summary>The event code the held escrow was paid for, or null when the player holds none.</summary>
         public static string EventCodeOf(IServerPlayer player)
         {
             var code = ReadTree(player)?.GetString("eventCode");
             return string.IsNullOrEmpty(code) ? null : code;
         }
 
-        /// <summary>The escrowed items, or null when the player holds no escrow.</summary>
         public static List<RewardItem> Read(IServerPlayer player)
         {
             var tree = ReadTree(player);
@@ -81,19 +66,14 @@ namespace canevents.src.EventManagers
             return items.Count > 0 ? items : null;
         }
 
-        /// <summary>
-        /// True if the player currently holds an entry-fee escrow. Judged the same way
-        /// <see cref="ReadTree"/> judges it - an empty blob is no escrow. The two used to disagree,
-        /// and a player carrying one was refused every paid queue forever: the queue asked Has()
-        /// (yes) while the refund asked Read() (nothing to give back, nothing cleared).
-        /// </summary>
+        // Must match ReadTree's notion of empty, or a player gets stuck refused from paid queues.
         public static bool Has(IServerPlayer player)
         {
             byte[] data = player?.GetModdata(ModDataKey);
             return data != null && data.Length > 0;
         }
 
-        /// <summary>Drops the escrow record without returning anything (the stake was paid out / sunk).</summary>
+        // Doesn't refund.
         public static void Clear(IServerPlayer player) => player?.RemoveModdata(ModDataKey);
     }
 }

@@ -21,29 +21,21 @@ namespace canevents.src
 
         public bool Enabled { get; set; }
 
-        /// <summary>
-        /// What "announce this event" means. Returns true when it took the announcement over - the
-        /// signup windows do, by opening one, which tells players in chat AND gives them a countdown
-        /// and a way in. Left null (or returning false) the scheduler falls back to the bare chat
-        /// line it always sent. A delegate rather than a reference: the windows already hold a
-        /// reference to the scheduler, and two-way would be a cycle.
-        /// </summary>
-        // Namespace spelled out: Vintagestory.API.Common declares a Func<> of its own, and it is in
-        // scope here alongside System.
+        // Set by SignupWindows; null falls back to a plain chat line.
+        // Fully qualified: Vintagestory.API.Common has its own Func<>.
         public System.Func<string, bool> AnnounceHandler { get; set; }
 
-        // State exposed to the admin panel
+        // For the admin panel
         public int IntervalMinutes => config.scheduleIntervalMinutes;
         public int MinPlayersToStart => config.minPlayersToStart;
         public int MaxConcurrentEvents => config.maxConcurrentEvents;
         public string[] RotationCodes => config.enabledGameModes ?? Array.Empty<string>();
 
-        /// <summary>Seconds until the next scheduling attempt, or -1 when disabled.</summary>
+        // -1 when disabled.
         public float SecondsUntilNext => Enabled
             ? Math.Max(0f, config.scheduleIntervalMinutes * 60f - secondsSinceLastEvent)
             : -1f;
 
-        /// <summary>Which rotation entry would be tried next; leaves rotationIndex alone.</summary>
         public string PeekNextEnabledCode()
         {
             var modes = config.enabledGameModes;
@@ -79,7 +71,7 @@ namespace canevents.src
             float intervalSeconds = config.scheduleIntervalMinutes * 60f;
             if (secondsSinceLastEvent < intervalSeconds) return;
 
-            if (eventManager.RunningEventCount >= config.maxConcurrentEvents) return;
+            if (eventManager.ScheduledMatchCount >= config.maxConcurrentEvents) return;
 
             int onlinePlayers = sapi.World.AllOnlinePlayers.Length;
             if (onlinePlayers < config.minPlayersToStart)
@@ -89,9 +81,7 @@ namespace canevents.src
 
             if (config.enabledGameModes == null || config.enabledGameModes.Length == 0) return;
 
-            // Walk the rotation skipping codes that are disabled, unknown, or whose arenas are all
-            // busy; testing availability inside the walk keeps the tick productive instead of
-            // burning it on a busy mode. One full sweep max.
+            // One sweep of the rotation, skipping disabled/unknown modes and ones with no free arena.
             CANEvent targetEvent = null;
             string nextCode = null;
             for (int tried = 0; tried < config.enabledGameModes.Length; tried++)
@@ -107,7 +97,6 @@ namespace canevents.src
                     continue;
                 }
 
-                // Same availability test the actual place lookup uses, see EventPlace.IsAvailableFor.
                 var searchTypes = candidate.EventTypes.ToArray();
                 if (!eventManager.eventPlacesManager.EventPlaces.Any(p => p.IsAvailableFor(searchTypes))) continue;
 
@@ -117,15 +106,10 @@ namespace canevents.src
 
             if (targetEvent == null) return;
 
-            // Opening a signup window is the real announcement: it says the same thing in chat and
-            // adds the countdown, the panel and the hold on early assembly. The bare line is only for
-            // installs where nothing took the announcement over.
             bool handled;
             if (AnnounceHandler != null)
             {
-                // False means it declined - a window for this event is already open, say. Then nothing
-                // is announced at all; repeating the old chat line on top of an open window would be
-                // the announcement saying one thing and the panel another.
+                // False = declined (e.g. window already open); announce nothing then.
                 handled = AnnounceHandler(nextCode);
             }
             else
@@ -135,17 +119,13 @@ namespace canevents.src
                 handled = true;
             }
 
-            // Reset either way: a declined turn waits for the next interval rather than retrying every
-            // tick, which would also spin the rotation index past every other mode.
+            // Reset even if declined, or it retries every tick and spins the rotation.
             secondsSinceLastEvent = 0f;
             sapi.World.Logger.Notification("EventScheduler: {0} event '{1}'",
                 handled ? "Announced" : "Skipped (already announced)", nextCode);
         }
 
-        /// <summary>
-        /// Admin command: starts an event now from whoever is already queued, bypassing the mode's
-        /// thresholds. Announcing alone would not do - it only invites registrations.
-        /// </summary>
+        // Starts with whoever is queued, ignoring the mode's thresholds.
         public bool ForceStart(string eventCode, out string reason)
         {
             var targetEvent = eventManager.FindEventByCode(eventCode);
@@ -161,7 +141,7 @@ namespace canevents.src
                 return false;
             }
 
-            // The match is already assembled; it picks an arena on the next location-search tick.
+            // Arena is picked on the next location-search tick.
             EventManagers.eventBehavior.Shared.EventBroadcaster.BroadcastToServer(
                 sapi, Lang.Get("canevents:event-admin-announced", eventCode));
 
@@ -181,8 +161,7 @@ namespace canevents.src
 
         public void SetInterval(int minutes)
         {
-            // Clamped here rather than at each caller: the admin panel already did, the chat command
-            // did not, and zero means the interval check never holds - an announcement every tick.
+            // 0 would announce every tick; the chat command doesn't clamp.
             minutes = Math.Clamp(minutes, 1, 24 * 60);
 
             config.scheduleIntervalMinutes = minutes;
@@ -191,7 +170,37 @@ namespace canevents.src
             sapi.World.Logger.Notification("EventScheduler: Interval set to {0} minutes", minutes);
         }
 
-        // Admin toggles must persist, or they silently revert on restart.
+        // Returns whether the rotation changed.
+        public bool SetInRotation(string code, bool inRotation)
+        {
+            if (string.IsNullOrWhiteSpace(code)) return false;
+            var list = new List<string>(config.enabledGameModes ?? Array.Empty<string>());
+            int at = list.FindIndex(c => string.Equals(c, code, StringComparison.OrdinalIgnoreCase));
+
+            // The tick only increments the index, normalize before adjusting.
+            int oldCount = list.Count;
+            rotationIndex = oldCount > 0 ? rotationIndex % oldCount : 0;
+
+            if (inRotation)
+            {
+                if (at >= 0) return false;
+                list.Add(code);
+            }
+            else
+            {
+                if (at < 0) return false;
+                list.RemoveAt(at);
+                // Keep pointing at the entry that was next.
+                if (at < rotationIndex) rotationIndex--;
+                if (rotationIndex >= list.Count) rotationIndex = 0;
+            }
+
+            config.enabledGameModes = list.ToArray();
+            PersistConfig();
+            sapi.World.Logger.Notification("EventScheduler: rotation is now [{0}]", string.Join(", ", list));
+            return true;
+        }
+
         private void PersistConfig() => AdminStateStore.SaveConfig(sapi, config);
 
         public void Dispose()

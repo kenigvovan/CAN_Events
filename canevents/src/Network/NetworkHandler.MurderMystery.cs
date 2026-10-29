@@ -6,6 +6,7 @@ using canevents.src.EventManagers.eventBehavior.Shared;
 using canevents.src.EventManagers.events;
 using canevents.src.EventPlacesManagers.Places;
 using Newtonsoft.Json.Linq;
+using Vintagestory.API.Config;
 using Vintagestory.API.Server;
 
 namespace canevents.src.Network
@@ -27,14 +28,6 @@ namespace canevents.src.Network
         private void OnRemoveMmPickup(IServerPlayer player, RemoveMmPickupMsg msg)
             => PlaceEdit(player, msg.PlaceId, p => PlaceConfig.RemoveMurderMysteryPickup(p, msg.Index),
                 refreshOnFailure: true);
-
-        private void OnListMmPickups(IServerPlayer player, ListMmPickupsMsg msg)
-        {
-            if (!RequireAdmin(player)) return;
-            if (!TryResolvePlace(player, msg.PlaceId, out var place)) return;
-
-            ReplyOk(player, PlaceConfig.DescribeMurderMysteryPickups(place), place.Id);
-        }
 
         // The settings editor: damage, weapon-spawn timers and the reward, read from and written back
         // to the event JSON. Only MmConfigKeys.Editable travels either way.
@@ -59,11 +52,19 @@ namespace canevents.src.Network
             }
             catch (Exception e)
             {
-                ReplyFail(player, "Murder Mystery settings could not be read: " + e.Message);
+                ReplyFail(player, Lang.Get("canevents:mmcfg-unreadable", e.Message));
                 return;
             }
 
-            var (ok, message) = eventManager.UpdateEventMmConfig(msg.EventCode, settings);
+            if (settings == null)
+            {
+                Reply(player, false, Lang.Get("canevents:mmcfg-nothing"), msg.PlaceId);
+                return;
+            }
+
+            // Only MmConfigKeys are touched: loadouts and outfits share that object and must survive.
+            var (ok, message) = eventManager.EditEventBehaviorAttributes(msg.EventCode, BehaviorNames.MurderMystery,
+                attr => MmConfigKeys.CopyEditable(attr, settings), "canevents:mmcfg-saved");
             Reply(player, ok, message, msg.PlaceId);
 
             // Send the saved state back rather than trusting the panel's copy: the event may have
@@ -74,11 +75,11 @@ namespace canevents.src.Network
 
         private void SendMmConfig(IServerPlayer player, EventPlace place, string eventCode)
         {
-            var candidates = MmEventsForPlace(place);
-            var ev = ResolveMmEvent(candidates, eventCode);
+            var candidates = eventManager.EventsForPlace<MurderMysteryEB>(place);
+            var ev = eventManager.ResolveEventForPlace<MurderMysteryEB>(place, eventCode);
             var attrs = ev?.GetBehavior<MurderMysteryEB>()?.Attributes;
 
-            serverChannel.SendPacket(new MmConfigMsg
+            adminChannel.SendPacket(new MmConfigMsg
             {
                 PlaceId = place.Id,
                 EventCode = ev?.Code,
@@ -87,8 +88,8 @@ namespace canevents.src.Network
             }, player);
         }
 
-        /// <summary>The editable settings only, so the panel never holds - and cannot send back - the
-        /// loadout sets and outfits that share this object.</summary>
+        // Editable settings only: the panel must not hold, and send back, the loadout sets and outfits
+        // that share this object.
         private static JObject EditableMmAttributes(Vintagestory.API.Datastructures.JsonObject attrs)
         {
             var result = new JObject();
@@ -97,42 +98,6 @@ namespace canevents.src.Network
             foreach (var key in MmConfigKeys.Editable)
                 if (src[key] != null) result[key] = src[key];
             return result;
-        }
-
-        /// <summary>
-        /// Every Murder Mystery event that could run on this place, ordered by code so the panel's
-        /// list and default pick are stable across restarts (event files load in directory order).
-        /// Falls back to all of them when none match the place's tags.
-        /// </summary>
-        private List<CANEvent> MmEventsForPlace(EventPlace place)
-        {
-            var events = eventManager.Events
-                .Where(e => e.GetBehavior<MurderMysteryEB>() != null)
-                .OrderBy(e => e.Code, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            if (place?.placeTypes == null) return events;
-
-            var matching = events.Where(e => e.EventTypes != null && e.EventTypes.Count > 0
-                && e.EventTypes.All(t => place.placeTypes.Contains(t))).ToList();
-            return matching.Count > 0 ? matching : events;
-        }
-
-        /// <summary>The variant the admin named when it is a real MM event, else the first applicable
-        /// one: every variant (plain / bots) keeps its own settings.</summary>
-        private CANEvent ResolveMmEvent(List<CANEvent> candidates, string preferredCode)
-        {
-            if (!string.IsNullOrEmpty(preferredCode))
-            {
-                var picked = candidates.FirstOrDefault(
-                    e => e.Code.Equals(preferredCode, StringComparison.OrdinalIgnoreCase));
-                if (picked == null)
-                {
-                    var byCode = eventManager.FindEventByCode(preferredCode);
-                    if (byCode?.GetBehavior<MurderMysteryEB>() != null) picked = byCode;
-                }
-                if (picked != null) return picked;
-            }
-            return candidates.FirstOrDefault();
         }
     }
 }

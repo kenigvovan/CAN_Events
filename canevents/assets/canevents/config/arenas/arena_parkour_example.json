@@ -5,6 +5,6 @@
   "spawnOffsets": [
     { "x": 0, "y": 1, "z": 0 }
   ],
-  "description": "Example parkour template. Replace the schematic with your own (export via WorldEdit). Place canevents:parkourcheckpoint blocks inside and assign indices via /canep cp <i> and /canep cpfinish.",
+  "description": "Example parkour template. Replace the schematic with your own (export via WorldEdit). Mark checkpoints by standing on them with /canep cp [index] (or the event wand in checkpoint mode) and the finish with /canep cpfinish.",
   "onDemand": true
 }

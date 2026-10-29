@@ -9,8 +9,7 @@ namespace canevents.src.EventManagers
     // inventories (hotbar + backpacks + character), mirroring PlayerInventoryBackup's selection.
     public static class InventoryUtil
     {
-        /// <summary>Gives a stack to the player, dropping it at their feet when the inventory is full,
-        /// so the item is never silently destroyed. Every grant path must go through this.</summary>
+        // Drops at the feet when the inventory is full, so nothing is lost. Every grant goes through here.
         public static void Give(ICoreServerAPI sapi, IServerPlayer player, ItemStack stack, string context = null)
         {
             if (sapi == null || player == null || stack == null) return;
@@ -29,8 +28,7 @@ namespace canevents.src.EventManagers
                 context ?? "grant", stack.Collectible?.Code, player.PlayerName);
         }
 
-        /// <summary>Resolves an item or block code and grants that quantity. Returns false (and logs)
-        /// when the code matches neither, so callers don't announce something they didn't give.</summary>
+        // False (and logged) for an unknown code, so callers don't announce something they didn't give.
         public static bool GiveByCode(ICoreServerAPI sapi, IServerPlayer player, string code, int quantity, string context = null)
         {
             if (sapi == null || player == null || string.IsNullOrEmpty(code) || quantity <= 0) return false;
@@ -45,7 +43,6 @@ namespace canevents.src.EventManagers
             return false;
         }
 
-        /// <summary>Total quantity of <paramref name="code"/> the player is carrying.</summary>
         public static int Count(IServerPlayer player, string code)
         {
             if (player == null || string.IsNullOrEmpty(code)) return 0;
@@ -63,7 +60,6 @@ namespace canevents.src.EventManagers
             return total;
         }
 
-        /// <summary>True only if the player carries at least <c>qty</c> of every (code, qty) pair.</summary>
         public static bool Has(IServerPlayer player, IEnumerable<(string code, int qty)> items)
         {
             foreach (var (code, qty) in items)
@@ -71,8 +67,7 @@ namespace canevents.src.EventManagers
             return true;
         }
 
-        /// <summary>Removes up to <paramref name="qty"/> of <paramref name="code"/>; returns how many
-        /// were actually removed (may be less if the player no longer has enough).</summary>
+        // Returns how many were actually removed; may be fewer than qty.
         public static int Remove(IServerPlayer player, string code, int qty)
         {
             if (player == null || string.IsNullOrEmpty(code) || qty <= 0) return 0;

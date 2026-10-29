@@ -1,5 +1,6 @@
 using System.Reflection;
 using canevents.src.EventManagers;
+using canevents.src.EventManagers.eventBehavior.Shared;
 using HarmonyLib;
 using Vintagestory.API.Common;
 using Vintagestory.API.Common.Entities;
@@ -7,7 +8,7 @@ using Vintagestory.API.Server;
 
 namespace canevents.src.HarmonyPatches
 {
-    // EB implements this to override engine respawn point while a participant is alive in the event.
+    // Lets a behavior override the respawn point for active participants.
     public interface IProvidesRespawnPoint
     {
         bool TryGetRespawnPoint(string playerUid, out PlayerSpawnPos pos);
@@ -17,7 +18,6 @@ namespace canevents.src.HarmonyPatches
     {
         public static canevents Mod;
 
-        /// <summary>One log line per session for a failing prefix; see the catch in <see cref="Prefix"/>.</summary>
         private static bool errorLogged;
 
         public static void Apply(Harmony harmony)
@@ -30,7 +30,8 @@ namespace canevents.src.HarmonyPatches
             harmony.Patch(target, prefix: new HarmonyMethod(prefix));
         }
 
-        public static bool Prefix(IServerPlayer __instance, ref FuzzyEntityPos __result)
+        // consumeSpawnUse is true only on an actual respawn; false calls just read the point.
+        public static bool Prefix(IServerPlayer __instance, bool consumeSpawnUse, ref FuzzyEntityPos __result)
         {
             try
             {
@@ -39,9 +40,7 @@ namespace canevents.src.HarmonyPatches
                 string uid = __instance?.PlayerUID;
                 if (string.IsNullOrEmpty(uid)) return true;
 
-                // Snapshot: this runs on a respawn, which can land while a match is being started or
-                // torn down; iterating the live list would throw mid-loop and drop the player back on
-                // the vanilla spawn - in the middle of an arena.
+                // Snapshot: the list can change while a match starts or ends.
                 foreach (var re in mgr.RunningEventsSnapshot())
                 {
                     if (re == null) continue;
@@ -53,13 +52,25 @@ namespace canevents.src.HarmonyPatches
                             && provider.TryGetRespawnPoint(uid, out var sp)
                             && sp != null && sp.y.HasValue)
                         {
+                            // PlayerSpawnPos has no dimension, use the arena's.
+                            int dim = EventSpawns.ArenaDimension(re);
                             __result = new FuzzyEntityPos(
                                 sp.x + 0.5, sp.y.Value, sp.z + 0.5,
                                 sp.yaw ?? 0f, sp.pitch ?? 0f, sp.roll ?? 0f)
                             {
                                 Radius = 0f,
-                                UsesLeft = -1
+                                UsesLeft = -1,
+                                Dimension = dim
                             };
+                            // Engine respawn (TeleportTo) never sets Pos.Dimension, switch it ourselves.
+                            var entity = __instance.Entity;
+                            if (consumeSpawnUse && entity != null && entity.Pos.Dimension != dim)
+                            {
+                                Mod?.CANEventManager?.log?.Notification(
+                                    "RespawnPatch: {0} respawns into arena dimension {1} (was {2})",
+                                    __instance.PlayerName, dim, entity.Pos.Dimension);
+                                entity.ChangeDimension(dim);
+                            }
                             return false;
                         }
                     }
@@ -67,10 +78,7 @@ namespace canevents.src.HarmonyPatches
             }
             catch (System.Exception e)
             {
-                // On any error fall back to vanilla, never block respawn - but say so once. Silently
-                // respawning a fighter on the world spawn used to look like a mod that "sometimes
-                // forgets", with nothing in the log to work from. Once, because this runs per respawn
-                // and a broken state would otherwise flood the file.
+                // Fall back to vanilla spawn, log once.
                 if (!errorLogged)
                 {
                     errorLogged = true;

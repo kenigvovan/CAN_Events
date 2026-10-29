@@ -1,0 +1,74 @@
+{
+    "code": "tdm_open",
+    "rated": false,
+    "EventType": "OpenDeathmatch",
+    "EventPlaceTypes": [ "TDMOPEN" ],
+    "behaviors": [
+        { "name": "ArenaProtection", "attributes": {} },
+        { "name": "TeamMarkers", "attributes": {} },
+        {
+            "name": "SavePlayerAttributes",
+            "attributes": {}
+        },
+        {
+            "name": "TPThereAndBack",
+            "attributes": { "randomizeSpawns": false }
+        },
+        {
+            "name": "NoFriendlyFire",
+            "attributes": {}
+        },
+        {
+            "name": "OpenDeathmatch",
+            "attributes": {
+                "teams": 2,
+                "maxImbalance": 2,
+                "loadoutSets": [
+                    {
+                        "name": "Spearman",
+                        "items": [
+                            { "code": "game:spear-generic-steel", "quantity": 1 },
+                            { "code": "game:bread-spelt-charred", "quantity": 12 },
+                            { "code": "game:armor-head-scale-steel", "quantity": 1 },
+                            { "code": "game:armor-body-chain-steel", "quantity": 1 },
+                            { "code": "game:armor-legs-scale-steel", "quantity": 1 }
+                        ]
+                    },
+                    {
+                        "name": "Archer",
+                        "items": [
+                            { "code": "game:bow-long", "quantity": 1 },
+                            { "code": "game:arrow-steel", "quantity": 64 },
+                            { "code": "game:bread-amaranth-perfect", "quantity": 10 },
+                            { "code": "game:club-scrap-scrap", "quantity": 1 },
+                            { "code": "game:armor-head-lamellar-blackbronze", "quantity": 1 },
+                            { "code": "game:armor-body-lamellar-blackbronze", "quantity": 1 },
+                            { "code": "game:armor-legs-lamellar-blackbronze", "quantity": 1 }
+                        ]
+                    },
+                    {
+                        "name": "Plate",
+                        "items": [
+                            { "code": "game:blade-blackguard-iron", "quantity": 1 },
+                            { "code": "game:shield-crude", "quantity": 1 },
+                            { "code": "game:armor-head-plate-steel", "quantity": 1 },
+                            { "code": "game:armor-body-plate-steel", "quantity": 1 },
+                            { "code": "game:armor-legs-plate-steel", "quantity": 1 }
+                        ]
+                    }
+                ]
+            }
+        },
+        {
+            "name": "ArenaBots",
+            "attributes": {
+                "health": 15,
+                "meleeDamage": 2,
+                "weapons": [
+                    "game:spear-generic-flint",
+                    "game:club-generic-wood"
+                ]
+            }
+        }
+    ]
+}

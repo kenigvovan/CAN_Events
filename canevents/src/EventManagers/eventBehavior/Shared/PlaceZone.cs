@@ -2,22 +2,14 @@ using canevents.src.EventPlacesManagers.Places;
 
 namespace canevents.src.EventManagers.eventBehavior.Shared
 {
-    /// <summary>Where a mode's zone centre came from; the caller logs accordingly.</summary>
     public enum ZoneOrigin
     {
-        /// <summary>Read from the place's BehaviorData: what the admin configured.</summary>
         Configured,
-        /// <summary>Fell back to the centre of the place's bounds.</summary>
         BoundsCentre,
-        /// <summary>Neither available: the mode has no zone and must degrade gracefully.</summary>
         None
     }
 
-    /// <summary>
-    /// Resolves the centre point a zone-based mode plays around: the configured X/Y/Z from the
-    /// place's BehaviorData, else the centre of its bounds, else nothing. Only the centre is
-    /// shared; radius/height stay with the mode that understands them.
-    /// </summary>
+    // Zone centre: BehaviorData X/Y/Z, else bounds centre.
     public static class PlaceZone
     {
         public static ZoneOrigin TryResolveCentre(EventPlace place, string behaviorKey,
@@ -26,7 +18,7 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
             x = y = z = 0;
             if (place == null) return ZoneOrigin.None;
 
-            // Block coordinates address a corner; +0.5 measures the radius from the block's middle.
+            // +0.5: block centre.
             if (place.TryGetBehaviorData(behaviorKey, out var data)
                 && data["X"] != null && data["Y"] != null && data["Z"] != null)
             {
@@ -36,7 +28,6 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
                 return ZoneOrigin.Configured;
             }
 
-            // A misconfigured place still plays, instead of ending in a mute 0:0 draw.
             if (PlaceBounds.TryCentre(place, out x, out y, out z))
                 return ZoneOrigin.BoundsCentre;
 

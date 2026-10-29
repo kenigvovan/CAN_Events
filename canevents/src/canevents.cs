@@ -20,23 +20,36 @@ using Vintagestory.API.Util;
 
 namespace canevents.src
 {
-    public class canevents : ModSystem
+    public partial class canevents : ModSystem
     {
         public PartyManager partyManager;
         public EventScheduler eventScheduler;
         public EventManagers.SignupWindows signupWindows;
 
-        /// <summary>Harmony id for every patch this mod installs, on either side. Single-player runs
-        /// both sides in one process, so the two instances share it and each patch guards itself
-        /// against a double install.</summary>
+        // Shared by both sides; in singleplayer each patch guards against double install.
         private const string HarmonyId = "canevents.respawn";
 
         public Config config;
         public Dictionary<string, Type> CANEventBehaviors = new Dictionary<string, Type>();
-        List<CANEventType> eventTypes = new List<CANEventType>();
+        List<EventDefinitionFile> eventDefinitions = new List<EventDefinitionFile>();
+        // Shared with CANEventManager and TemplateEditor; refilled in place, never reassigned.
         List<EventPlacesManagers.ArenaTemplate> arenaTemplates = new List<EventPlacesManagers.ArenaTemplate>();
         List<CANEvent> Events;
+
+        // Reload diffs against this so unchanged events keep their object (queues are keyed by it).
+        private Dictionary<string, JToken> eventJsonByCode = new Dictionary<string, JToken>(StringComparer.OrdinalIgnoreCase);
+        // File name -> code at last load. Ordinal: file name case-sensitivity depends on the OS.
+        private Dictionary<string, string> eventCodeByFile = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        private sealed class EventDefinitionFile
+        {
+            public string FileName;
+            public CANEventType Type;
+            public JToken Json;
+        }
         public CANEventManager CANEventManager { get; set; }
+        // Server only.
+        public PlaceTargeting PlaceTargeting { get; private set; }
         private Harmony harmony;
         private Harmony clientHarmony;
         private Bots.BotCleanup botCleanup;
@@ -44,10 +57,13 @@ namespace canevents.src
         private Tournaments.TournamentStore tournamentStore;
         private Tournaments.TournamentManager tournamentManager;
 
-        /// <summary>Player-to-player challenges. Null while the server is starting.</summary>
+        // Null while the server is starting.
         public Duels.DuelManager Duels { get; private set; }
+        public EventManagers.JoinPads JoinPads { get; private set; }
+        public EventManagers.ArenaProtection ArenaProtection { get; private set; }
         private ICoreServerAPI _sapi;
         private PlayerDeathDelegate _onDeath;
+        private EntityDeathDelegate _onEntityDeath;
         private PlayerDelegate _onRespawn;
         private PlayerDelegate _onDisconnect;
         private PlayerDelegate _onReconnect;
@@ -60,334 +76,28 @@ namespace canevents.src
             api.RegisterBlockEntityClass("SpleefMelt", typeof(BlockEntities.BlockEntitySpleefMelt));
             api.RegisterBlockEntityBehaviorClass("SpleefMelt", typeof(BlockEntities.BEBehaviorSpleefMelt));
             api.RegisterBlockEntityClass("ParkourCheckpoint", typeof(BlockEntities.BlockEntityParkourCheckpoint));
-            api.RegisterBlockEntityBehaviorClass("ParkourCheckpoint", typeof(BlockEntities.BEBehaviorParkourCheckpoint));
             api.RegisterBlockBehaviorClass("CtfFlag", typeof(BlockBehaviors.BlockBehaviorCtfFlag));
+            api.RegisterItemClass("ItemEventWand", typeof(Items.ItemEventWand));
 
-            // Event bots: entity class and AI tasks must be registered on both sides, or the client
-            // logs a warning per bot.
+            // Both sides, or the client logs a warning per bot.
             api.RegisterEntity("ArenaBot", typeof(Bots.EntityArenaBot));
             Vintagestory.GameContent.AiTaskRegistry.Register<Bots.AiTaskArenaBotSeek>("caneventsbotseek");
             Vintagestory.GameContent.AiTaskRegistry.Register<Bots.AiTaskArenaBotMelee>("caneventsbotmelee");
             Vintagestory.GameContent.AiTaskRegistry.Register<Bots.AiTaskArenaBotFlee>("caneventsbotflee");
         }
 
-        public override void StartServerSide(ICoreServerAPI api)
-        {
-            LoadConfig(api);
-            // Before commands and network handlers: both gate on it.
-            CanEventsPrivileges.RegisterAll(api);
-            // Party system lives in the canparty mod (hard dependency); we only consume it.
-            partyManager = api.ModLoader.GetModSystem<canparty.canpartyModSystem>()?.Manager;
-            if (partyManager == null)
-            {
-                api.Logger.Error("[canevents] canparty mod is required but its PartyManager is unavailable. Party queues will not work.");
-            }
-
-
-
-            RegisterEventBehavior(typeof(SavePlayerAttributes), "SavePlayerAttributes");
-            RegisterEventBehavior(typeof(FullPartyRequired), "FullPartyRequired");
-            RegisterEventBehavior(typeof(ByPartsPartyCollected), "ByPartsPartyCollected");
-            RegisterEventBehavior(typeof(TPThereAndBack), "TPThereAndBack");
-            RegisterEventBehavior(typeof(ArenaFightEB), "ArenaFight");
-            RegisterEventBehavior(typeof(NoFriendlyFireEB), "NoFriendlyFire");
-            RegisterEventBehavior(typeof(SpleefEB), "Spleef");
-            RegisterEventBehavior(typeof(ShrinkingSpleefEB), "ShrinkingSpleef");
-            RegisterEventBehavior(typeof(ParkourEB), "Parkour");
-            RegisterEventBehavior(typeof(DeathmatchEB), "Deathmatch");
-            RegisterEventBehavior(typeof(KingOfTheHillEB), "KingOfTheHill");
-            RegisterEventBehavior(typeof(HungerGamesEB), "HungerGames");
-            RegisterEventBehavior(typeof(JuggernautEB), "Juggernaut");
-            RegisterEventBehavior(typeof(CaptureTheFlagEB), "CaptureTheFlag");
-            RegisterEventBehavior(typeof(MurderMysteryEB), "MurderMystery");
-            RegisterEventBehavior(typeof(ArenaBotsEB), "ArenaBots");
-            Events = new List<CANEvent>();
-            foreach (var it in eventTypes)
-            {
-                if (!it.Enabled)
-                {
-                    api.World.Logger.Notification("Event '{0}' is disabled in config, skipping.", it.Code);
-                    continue;
-                }
-                // EventType is only a category label; the behavior list is the real contract.
-                var tmpEvent = new CANEvent();
-                foreach (var behaior in it.Behaviors)
-                {
-                    if (CANEventBehaviors.TryGetValue(behaior.Name, out var behaviorType))
-                    {
-                        var behaviorInstance = Activator.CreateInstance(behaviorType, new object[] { behaior.Name, behaior.Attributes, null }) as CANEventBehavior;
-                        behaviorInstance.Initialize();
-                        if (behaviorInstance is PartyAssemblingEB)
-                        {
-                            tmpEvent.AssemblingEB = behaviorInstance as PartyAssemblingEB;
-                        }
-                        tmpEvent.Behaviors.Add(behaviorInstance);
-                    }
-                }
-                foreach (var en in it.EventPlaceTypes)
-                {
-                    var tag = PlaceTags.Normalize(en);
-                    if (!string.IsNullOrEmpty(tag)) tmpEvent.EventTypes.Add(tag);
-                }
-                tmpEvent.Code = it.Code;
-                tmpEvent.Category = string.IsNullOrWhiteSpace(it.Category) ? it.EventType : it.Category;
-                tmpEvent.Reward = it.Reward;
-                tmpEvent.EntryFee = it.EntryFee;
-                tmpEvent.Rated = it.Rated;
-                tmpEvent.Mutators = EventMutators.ParseAll(it.Mutators, out var badMutators);
-                foreach (var bad in badMutators)
-                    api.World.Logger.Warning("Event '{0}': unknown or malformed mutator '{1}' ignored.", it.Code, bad);
-                foreach (var disabled in EventMutators.Normalize(config.disabledMutators))
-                    if (tmpEvent.Mutators.Remove(disabled))
-                        api.World.Logger.Notification(
-                            "Event '{0}': mutator '{1}' removed - disabled in config.", it.Code, disabled);
-                Events.Add(tmpEvent);
-            }
-
-            this.CANEventManager = new EventManagers.CANEventManager(partyManager, api, Events.ToHashSet());
-
-            // Sweeps bot bodies whose match is gone (crash mid-match, chunk unloaded while it ran).
-            botCleanup = new Bots.BotCleanup(api, this.CANEventManager);
-
-            // Enforces the issuedGearDrop policy on kit thrown on the ground - the one way match
-            // gear could otherwise leave a match and stay in the world for good.
-            issuedGearWatcher = new EventManagers.IssuedGearDropWatcher(api, this.CANEventManager);
-
-            // Initialize network
-            ServerNetworkHandler = new Network.ServerNetworkHandler(api, this.CANEventManager);
-            var networkHandler = ServerNetworkHandler;
-            networkHandler.MainDialogHotkey = config.mainDialogHotkey;
-            networkHandler.WirePartyManager(partyManager);
-
-            // Initialize rewards, leaderboard, spectator
-            var matchHistory    = new Scoring.MatchHistory(api);
-            var leaderboard     = new Scoring.LeaderboardData(api);
-            var spectatorMgr    = new SpectatorManager(api);
-            networkHandler.MatchHistory = matchHistory;
-            this.CANEventManager.MatchHistory       = matchHistory;
-            this.CANEventManager.HeadToHead         = new Scoring.HeadToHeadStore(api);
-            this.CANEventManager.RewardDistributor  = new Scoring.RewardDistributor(api, config);
-            this.CANEventManager.ArenaTemplates      = arenaTemplates;
-            var savedBlocksPath = System.IO.Path.Combine(Vintagestory.API.Config.GamePaths.ModConfig, "canevents", "savedBlocks");
-            this.CANEventManager.SchematicPlacer = new EventPlacesManagers.SchematicPlacer(api, savedBlocksPath);
-            // Sweep schematic arenas left placed by an unclean shutdown and restore the terrain.
-            // Persistent "Place Here" arenas keep their rollback file on purpose and are kept;
-            // only on-demand arenas (and files with no registered place) are true orphans.
-            var placerForSweep = this.CANEventManager.SchematicPlacer;
-            var placesForSweep = this.CANEventManager.eventPlacesManager;
-            api.Event.ServerRunPhase(EnumServerRunPhase.RunGame, () =>
-            {
-                var keep = new System.Collections.Generic.HashSet<long>(
-                    placesForSweep.EventPlaces
-                        .Where(p => !p.SchematicOnDemand)
-                        .Select(p => p.Id));
-                placerForSweep.RestoreAllOrphaned(keep);
-            });
-            // HG loot chests use the same crash-safe rollback (hgloot_*.json); sweep orphans too.
-            EventManagers.eventBehavior.Shared.HungerGamesLootStore.Configure(api, savedBlocksPath);
-            api.Event.ServerRunPhase(EnumServerRunPhase.RunGame,
-                () => EventManagers.eventBehavior.Shared.HungerGamesLootStore.RestoreAllOrphaned());
-            this.CANEventManager.TemplateEditor = new EventPlacesManagers.TemplateEditor(
-                arenaTemplates,
-                this.CANEventManager.eventPlacesManager,
-                this.CANEventManager.SchematicPlacer);
-
-            // MatchServices is the single source of truth for the shared services.
-            this.CANEventManager.MatchServices = new MatchServices
-            {
-                NetworkHandler = networkHandler,
-                Leaderboard    = leaderboard,
-                LoadoutManager = this.CANEventManager.LoadoutManager,
-                OutfitManager  = this.CANEventManager.Store(EventManagers.ItemSetKinds.Outfit),
-                Spectator      = spectatorMgr,
-                Config         = config
-            };
-            this.CANEventManager.Start();
-
-            // Initialize scheduler
-            this.eventScheduler = new EventScheduler(api, config, this.CANEventManager);
-
-            // Registration windows hold the queue open on purpose, so they need both the manager whose
-            // assembly they pause and the scheduler that starts the match when the time is up. The two
-            // wires back out are delegates, so neither the match driver nor the scheduler has to know
-            // this feature exists.
-            this.signupWindows = new EventManagers.SignupWindows(api, this.CANEventManager, this.eventScheduler);
-            this.CANEventManager.QueueHold = this.signupWindows.IsHolding;
-            this.eventScheduler.AnnounceHandler =
-                code => this.signupWindows.Open(code, config.signupWindowMinutes, out _, auto: true);
-
-            // Tournaments drive the match machinery externally; wired after the scheduler so they can
-            // pause it while a bracket runs. No RunningEvent survives a restart, so in-flight matches
-            // are reset to pending and replayed.
-            tournamentStore = new Tournaments.TournamentStore(api);
-            tournamentManager = new Tournaments.TournamentManager(
-                api, this.CANEventManager, tournamentStore, this.eventScheduler);
-            this.CANEventManager.Tournaments = tournamentManager;
-            tournamentManager.Start();
-            api.Event.ServerRunPhase(EnumServerRunPhase.RunGame, () => tournamentManager.RecoverAfterRestart());
-
-            // Arena chunk pins are static and would survive a world reload inside the same process,
-            // leaving arenas that no longer exist counted as held (see ArenaChunkPin.Reset).
-            api.Event.ServerRunPhase(EnumServerRunPhase.Shutdown,
-                () => EventPlacesManagers.ArenaChunkPin.Reset());
-
-            // Duels: after the manager and network handler exist, before commands that reach them.
-            Duels = new Duels.DuelManager(api, this.CANEventManager, config);
-            Duels.Start();
-            networkHandler.Duels = Duels;
-
-            CommandsRegister.RegisterCommands(api);
-
-            RespawnPatch.Mod = this;
-            harmony = new Harmony(HarmonyId);
-            RespawnPatch.Apply(harmony);
-            // Server side of the spectator body fix: it owns the collision box.
-            HarmonyPatches.SpectatorBodyMetricsPatch.Apply(harmony);
-
-            _sapi = api;
-            _onDeath      = (player, source) => this.CANEventManager.OnDeath(player, source);
-            _onRespawn    = player => this.CANEventManager.OnRespawn(player);
-            _onDisconnect = player => this.CANEventManager.OnDisconnect(player);
-            _onReconnect  = player =>
-            {
-                // Armour an older build of this mod seated by dress-type index can be stuck in a
-                // character slot Combat Overhaul has switched off, where it crashes vanilla's damage
-                // handler on every hit the player takes and the player cannot reach it to take it off.
-                // Cleared on join, before anything else touches the inventory.
-                Compat.CharacterInventoryCompat.ClearUnusableSlots(player, api.World.Logger);
-                this.CANEventManager.OnReconnect(player);
-            };
-            api.Event.PlayerDeath       += _onDeath;
-            api.Event.PlayerRespawn     += _onRespawn;
-            api.Event.PlayerDisconnect  += _onDisconnect;
-            api.Event.PlayerNowPlaying  += _onReconnect;
-
-        }
-
         public override void AssetsLoaded(ICoreAPI api)
         {
             base.AssetsLoaded(api);
-            if (api is ICoreServerAPI serverApi)
+            if (api is ICoreServerAPI)
             {
-                // Event definitions live in ModConfig/canevents/events/ so admins can edit them without
-                // rebuilding; the shipped assets are only the seed source for that folder.
-                var userEventsDir = System.IO.Path.Combine(Vintagestory.API.Config.GamePaths.ModConfig, "canevents", "events");
-                try
-                {
-                    if (!System.IO.Directory.Exists(userEventsDir)) System.IO.Directory.CreateDirectory(userEventsDir);
-                    // Seed only files the folder lacks (by name); never overwrite - the folder copy wins.
-                    foreach (var asset in api.Assets.GetMany("config/events/", "canevents"))
-                    {
-                        if (!asset.Location.Path.EndsWithOrdinal(".json")) continue;
-                        var fname = System.IO.Path.GetFileName(asset.Location.Path);
-                        var target = System.IO.Path.Combine(userEventsDir, fname);
-                        if (System.IO.File.Exists(target)) continue;
-                        System.IO.File.WriteAllBytes(target, asset.Data);
-                        api.World.Logger.Notification("Seeded event definition: {0}", fname);
-                    }
-                }
-                catch (Exception exSeedEvents)
-                {
-                    api.World.Logger.Warning("Failed to seed default event definitions: {0}", exSeedEvents.Message);
-                }
-
-                // The ModConfig folder is the authoritative copy.
-                if (System.IO.Directory.Exists(userEventsDir))
-                {
-                    foreach (var file in System.IO.Directory.GetFiles(userEventsDir, "*.json"))
-                    {
-                        try
-                        {
-                            var eventType = Newtonsoft.Json.JsonConvert.DeserializeObject<CANEventType>(System.IO.File.ReadAllText(file));
-                            if (eventType == null || string.IsNullOrEmpty(eventType.Code))
-                            {
-                                api.World.Logger.Warning("Event definition {0} has no code, skipped.", file);
-                                continue;
-                            }
-                            eventType.InitType();
-                            eventTypes.Add(eventType);
-                        }
-                        catch (Exception e)
-                        {
-                            api.World.Logger.Error("Event definition {0} could not be loaded: {1}", file, e.Message);
-                        }
-                    }
-                }
-
-                // Seed default schematics into ModConfig/canevents/schematics/ (only if missing).
-                try
-                {
-                    var schematicsDir = System.IO.Path.Combine(Vintagestory.API.Config.GamePaths.ModConfig, "canevents", "schematics");
-                    if (!System.IO.Directory.Exists(schematicsDir)) System.IO.Directory.CreateDirectory(schematicsDir);
-                    foreach (var asset in api.Assets.GetMany("config/defaultschematics/", "canevents"))
-                    {
-                        if (!asset.Location.Path.EndsWithOrdinal(".json")) continue;
-                        var fname = System.IO.Path.GetFileName(asset.Location.Path);
-                        var target = System.IO.Path.Combine(schematicsDir, fname);
-                        if (System.IO.File.Exists(target)) continue;
-                        System.IO.File.WriteAllBytes(target, asset.Data);
-                        api.World.Logger.Notification("Seeded default schematic: {0}", fname);
-                    }
-                }
-                catch (Exception exSeed)
-                {
-                    api.World.Logger.Warning("Failed to seed default schematics: {0}", exSeed.Message);
-                }
-
-                // Load arena templates from mod assets
-                foreach (KeyValuePair<AssetLocation, JObject> entry in api.Assets.GetMany<JObject>(serverApi.Server.Logger, "config/arenas/", "canevents"))
-                {
-                    if (entry.Key.Path.EndsWithOrdinal(".json"))
-                    {
-                        try
-                        {
-                            var template = entry.Value.ToObject<ArenaTemplate>();
-                            arenaTemplates.Add(template);
-                            api.World.Logger.Notification("Loaded arena template: {0}", template.Code);
-                        }
-                        catch (Exception e)
-                        {
-                            api.World.Logger.Error("Arena template {0} could not be loaded: {1}", entry.Key, e.Message);
-                        }
-                    }
-                }
-
-                // Load / override arena templates from ModConfig (user-editable)
-                var userArenasDir = System.IO.Path.Combine(Vintagestory.API.Config.GamePaths.ModConfig, "canevents", "arenas");
-                if (!System.IO.Directory.Exists(userArenasDir))
-                {
-                    System.IO.Directory.CreateDirectory(userArenasDir);
-                }
-                foreach (var file in System.IO.Directory.EnumerateFiles(userArenasDir, "*.json"))
-                {
-                    try
-                    {
-                        var json = System.IO.File.ReadAllText(file);
-                        var template = Newtonsoft.Json.JsonConvert.DeserializeObject<ArenaTemplate>(json);
-                        if (template == null || string.IsNullOrEmpty(template.Code))
-                        {
-                            api.World.Logger.Warning("Arena template {0} has no code, skipped.", file);
-                            continue;
-                        }
-                        var existing = arenaTemplates.FindIndex(t => t.Code == template.Code);
-                        if (existing >= 0)
-                        {
-                            arenaTemplates[existing] = template;
-                            api.World.Logger.Notification("Overrode arena template from ModConfig: {0}", template.Code);
-                        }
-                        else
-                        {
-                            arenaTemplates.Add(template);
-                            api.World.Logger.Notification("Loaded arena template from ModConfig: {0}", template.Code);
-                        }
-                    }
-                    catch (Exception e)
-                    {
-                        api.World.Logger.Error("Arena template {0} could not be loaded: {1}", file, e.Message);
-                    }
-                }
+                eventDefinitions = LoadEventDefinitions(api, null, null);
+                eventCodeByFile = eventDefinitions.ToDictionary(d => d.FileName, d => d.Type.Code, StringComparer.Ordinal);
+                SeedDefaultSchematics(api);
+                arenaTemplates.AddRange(LoadArenaTemplates(api, null, null));
             }
         }
+
         public Network.ServerNetworkHandler ServerNetworkHandler { get; private set; }
         public Network.ClientNetworkHandler ClientNetworkHandler { get; private set; }
         private Gui.Native.EventHudGui eventHudGui;
@@ -396,218 +106,50 @@ namespace canevents.src
         private Gui.Native.EventBrowserGui eventBrowserGui;
         private Gui.Native.LoadoutPickGui loadoutPickGui;
         private Gui.Native.TournamentReadyGui tournamentReadyGui;
-        private Action<Network.TournamentReadyRequestMsg> _onTournamentReady;
-        private Action<Network.TournamentReadyClosedMsg> _onTournamentReadyClosed;
         private Gui.Native.EventInviteHud eventInviteHud;
         private Gui.Native.SpectatorPanelGui spectatorPanel;
         private Gui.Native.DuelPromptGui duelPrompt;
         private Gui.Native.DuelChallengeGui duelChallengeGui;
         private Gui.Native.MatchReadyGui matchReadyGui;
-        private Gui.AdminPanelDialog adminPanel;
+        private Gui.Native.TeamPickGui teamPickGui;
+        private Gui.Native.InventoryAuditGui inventoryAuditGui;
+        private Gui.Native.MatchShopGui matchShopGui;
+        private Gui.Native.ShopPointsHud shopPointsHud;
+        private Gui.Native.ShopPreviewGui shopPreviewGui;
+        private Action unwireNativeDialogs;
+        private Gui.Admin.AdminPanelGui adminPanelGui;
+        private Gui.PlaceHighlighter placeHighlighter;
         private Gui.CtfFlagRenderer ctfFlagRenderer;
         private Gui.HgZoneDomeRenderer hgZoneDomeRenderer;
         private ICoreClientAPI clientApi;   // kept only to unregister the renderer on dispose
-
-        public override void StartClientSide(ICoreClientAPI api)
-        {
-            // Client side of the spectator body fix: it owns the camera height. Skipped in
-            // single-player, where StartServerSide already installed it on the same method.
-            clientHarmony = new Harmony(HarmonyId);
-            HarmonyPatches.SpectatorBodyMetricsPatch.Apply(clientHarmony);
-
-            // The hotkey starts at a hardcoded default; the admin value arrives via ClientConfigSyncMsg
-            // and is applied unless the player rebound it.
-            ClientNetworkHandler = new Network.ClientNetworkHandler(api);
-
-            // Player-facing GUI uses the game's own dialogs, not ImGui: VSImGui is a client-side mod and
-            // without it nothing drew. Only the admin panel stays on ImGui.
-            hudLayout = Gui.HudLayout.Load(api);
-            eventHudGui = new Gui.Native.EventHudGui(api, ClientNetworkHandler, hudLayout);
-            hudLayoutEditor = new Gui.Native.HudLayoutEditorGui(api, hudLayout, () =>
-            {
-                eventHudGui.OnLayoutChanged();
-                eventInviteHud?.OnLayoutChanged();
-            });
-            loadoutPickGui = new Gui.Native.LoadoutPickGui(api, ClientNetworkHandler);
-            duelChallengeGui = new Gui.Native.DuelChallengeGui(api, ClientNetworkHandler);
-            eventBrowserGui = new Gui.Native.EventBrowserGui(api, ClientNetworkHandler)
-            {
-                LoadoutPick = loadoutPickGui,
-                DuelChallenge = duelChallengeGui,
-                OnEditHudLayout = () => hudLayoutEditor.TryOpen()
-            };
-            // Backing out of a challenge returns to the list it was opened from.
-            duelChallengeGui.OnCancelled = () => eventBrowserGui.TryOpen();
-            tournamentReadyGui = new Gui.Native.TournamentReadyGui(api, ClientNetworkHandler);
-            // The signup invite is a HUD toast, not a dialog: it must stay readable for the whole
-            // window without holding the mouse, and it subscribes to its own packets.
-            eventInviteHud = new Gui.Native.EventInviteHud(api, ClientNetworkHandler, hudLayout)
-            {
-                LoadoutPick = loadoutPickGui
-            };
-            // Cancelling a queue-time class pick returns to the browser it was opened from.
-            loadoutPickGui.OnQueuePickCancelled = () => eventBrowserGui.TryOpen();
-            // Broadcaster panel. Opens itself off the spectate state packet and stays closed for
-            // everyone else, so registering it unconditionally costs nothing.
-            spectatorPanel = new Gui.Native.SpectatorPanelGui(api, ClientNetworkHandler);
-
-            // Duel invitation and queue ready check. Both open themselves off a server packet, like
-            // the tournament ready-check.
-            duelPrompt = new Gui.Native.DuelPromptGui(api, ClientNetworkHandler);
-            matchReadyGui = new Gui.Native.MatchReadyGui(api, ClientNetworkHandler);
-
-            api.Gui.RegisterDialog(eventHudGui, eventBrowserGui, loadoutPickGui, hudLayoutEditor,
-                tournamentReadyGui, eventInviteHud, spectatorPanel, duelPrompt, matchReadyGui);
-
-            // Step the broadcaster camera between fighters. Both return false while not spectating,
-            // which leaves the keys free for whatever else has them bound.
-            api.Input.RegisterHotKey(Gui.Native.SpectatorPanelGui.NextHotkeyCode,
-                Vintagestory.API.Config.Lang.Get("canevents:hotkey-spectate-next"), GlKeys.BracketRight,
-                HotkeyType.GUIOrOtherControls);
-            api.Input.SetHotKeyHandler(Gui.Native.SpectatorPanelGui.NextHotkeyCode,
-                _ => spectatorPanel.TryStep(1));
-
-            api.Input.RegisterHotKey(Gui.Native.SpectatorPanelGui.PrevHotkeyCode,
-                Vintagestory.API.Config.Lang.Get("canevents:hotkey-spectate-prev"), GlKeys.BracketLeft,
-                HotkeyType.GUIOrOtherControls);
-            api.Input.SetHotKeyHandler(Gui.Native.SpectatorPanelGui.PrevHotkeyCode,
-                _ => spectatorPanel.TryStep(-1));
-
-            // Two keys answer the registration panel, so both joining and changing your mind cost no
-            // clicks and no open windows. Ordinary hotkeys: they appear in Settings -> Controls and
-            // each player can rebind them; the panel prints whatever binding is in force.
-            api.Input.RegisterHotKey(Gui.Native.EventInviteHud.JoinHotkeyCode,
-                Vintagestory.API.Config.Lang.Get("canevents:hotkey-join"), GlKeys.G,
-                HotkeyType.GUIOrOtherControls);
-            api.Input.SetHotKeyHandler(Gui.Native.EventInviteHud.JoinHotkeyCode,
-                _ => eventInviteHud.TryToggleQueue());
-
-            // Shift+G by default: the same finger, and a modifier makes an accidental dismissal of a
-            // panel you meant to answer far less likely.
-            api.Input.RegisterHotKey(Gui.Native.EventInviteHud.DismissHotkeyCode,
-                Vintagestory.API.Config.Lang.Get("canevents:hotkey-dismiss"), GlKeys.G,
-                HotkeyType.GUIOrOtherControls, shiftPressed: true);
-            api.Input.SetHotKeyHandler(Gui.Native.EventInviteHud.DismissHotkeyCode,
-                _ => eventInviteHud.TryDismissCurrent());
-
-            // The server can raise the class pick on its own (party leader queued the group), so it
-            // must work with the browser closed.
-            ClientNetworkHandler.OnLoadoutPickRequested += loadoutPickGui.OpenForMatchStart;
-
-            // Same idea for the tournament ready check: it must find the player wherever they are.
-            _onTournamentReady = msg => tournamentReadyGui.OpenFor(msg);
-            _onTournamentReadyClosed = msg => tournamentReadyGui.CloseFor(msg.TournamentId, msg.MatchId);
-            ClientNetworkHandler.OnTournamentReadyRequested += _onTournamentReady;
-            ClientNetworkHandler.OnTournamentReadyClosed += _onTournamentReadyClosed;
-
-            adminPanel = new Gui.AdminPanelDialog(api, ClientNetworkHandler);
-
-            // Same editor from chat, for players who closed the browser and want it back.
-            api.ChatCommands.Create("canhud")
-                .WithDescription(Vintagestory.API.Config.Lang.Get("canevents:hud-edit-open"))
-                .HandleWith(_ =>
-                {
-                    hudLayoutEditor.TryOpen();
-                    return TextCommandResult.Success(Vintagestory.API.Config.Lang.Get("canevents:hud-edit-hint"));
-                })
-                .BeginSubCommand("reset")
-                    .WithDescription(Vintagestory.API.Config.Lang.Get("canevents:hud-edit-reset"))
-                    .HandleWith(_ =>
-                    {
-                        hudLayout.ResetAll();
-                        hudLayout.Save(api);
-                        eventHudGui.OnLayoutChanged();
-                        eventInviteHud?.OnLayoutChanged();
-                        return TextCommandResult.Success(Vintagestory.API.Config.Lang.Get("canevents:hud-edit-reset-done"));
-                    })
-                .EndSubCommand()
-                // How much of the registration toast this player wants. Off is allowed on purpose:
-                // the countdown also lives on the event's card in the browser, so turning the panel
-                // off loses nothing but the panel.
-                .BeginSubCommand("invite")
-                    .WithDescription(Vintagestory.API.Config.Lang.Get("canevents:hud-invite-mode-desc"))
-                    .WithArgs(api.ChatCommands.Parsers.OptionalWord("mode"))
-                    .HandleWith(args =>
-                    {
-                        string mode = (args.Parsers[0].GetValue() as string)?.ToLowerInvariant();
-                        switch (mode)
-                        {
-                            case "full": hudLayout.InviteMode = Gui.HudLayout.InviteDisplay.Full; break;
-                            case "mini": hudLayout.InviteMode = Gui.HudLayout.InviteDisplay.Mini; break;
-                            case "off":  hudLayout.InviteMode = Gui.HudLayout.InviteDisplay.Off; break;
-                            case null:
-                            case "":
-                                // No argument: say what it is set to rather than guess at a change.
-                                return TextCommandResult.Success(Vintagestory.API.Config.Lang.Get(
-                                    "canevents:hud-invite-mode-current", hudLayout.InviteMode.ToString().ToLowerInvariant()));
-                            default:
-                                return TextCommandResult.Error(Vintagestory.API.Config.Lang.Get("canevents:hud-invite-mode-usage"));
-                        }
-
-                        hudLayout.Save(api);
-                        eventInviteHud?.OnLayoutChanged();
-                        return TextCommandResult.Success(Vintagestory.API.Config.Lang.Get(
-                            "canevents:hud-invite-mode-set", mode));
-                    })
-                .EndSubCommand();
-
-            // In-world flag on CTF carriers. Session-long: there is no client signal for "CTF began",
-            // and it draws nothing while no one carries.
-            clientApi = api;
-            ctfFlagRenderer = new Gui.CtfFlagRenderer(api, ClientNetworkHandler);
-            api.Event.RegisterRenderer(ctfFlagRenderer, EnumRenderStage.Opaque, "canevents-ctfflag");
-
-            // HG storm dome, also session-long. OIT stage, not Opaque: its shader writes the OIT buffers.
-            hgZoneDomeRenderer = new Gui.HgZoneDomeRenderer(api, ClientNetworkHandler);
-            api.Event.RegisterRenderer(hgZoneDomeRenderer, EnumRenderStage.OIT, "canevents-hgzonedome");
-        }
-        private void LoadConfig(ICoreAPI api)
-        {
-            config = api.LoadModConfig<Config>(this.Mod.Info.ModID + ".json");
-
-            // Always written back so keys added in a new mod version appear in an existing file.
-            config ??= new Config();
-            AdminStateStore.SaveConfig(api, config);
-        }
-        public bool RegisterEventBehavior(Type behavior, string name)
-        {
-            if (CANEventBehaviors.TryAdd(name, behavior))
-            {
-                return true;
-            }
-            return false;
-        }
 
         public override void Dispose()
         {
             if (_sapi != null)
             {
                 _sapi.Event.PlayerDeath      -= _onDeath;
+                _sapi.Event.OnEntityDeath    -= _onEntityDeath;
                 _sapi.Event.PlayerRespawn    -= _onRespawn;
                 _sapi.Event.PlayerDisconnect -= _onDisconnect;
                 _sapi.Event.PlayerNowPlaying -= _onReconnect;
             }
             botCleanup?.Dispose();
+            JoinPads?.Stop();
+            ArenaProtection?.Stop();
             issuedGearWatcher?.Dispose();
             Duels?.Dispose();
-            // Before CANEventManager.Dispose: it unsubscribes from the manager's match events.
+            // Both before CANEventManager.Dispose.
             tournamentManager?.Dispose();
             ServerNetworkHandler?.Dispose();
-            // Before CANEventManager.Dispose: the leaderboard is reached through its MatchServices.
             CANEventManager?.Leaderboard?.Dispose();
             CANEventManager?.Dispose();
             signupWindows?.Dispose();
             eventScheduler?.Dispose();
-            adminPanel?.Dispose();
-            if (loadoutPickGui != null && ClientNetworkHandler != null)
-                ClientNetworkHandler.OnLoadoutPickRequested -= loadoutPickGui.OpenForMatchStart;
-            if (ClientNetworkHandler != null)
-            {
-                if (_onTournamentReady != null)
-                    ClientNetworkHandler.OnTournamentReadyRequested -= _onTournamentReady;
-                if (_onTournamentReadyClosed != null)
-                    ClientNetworkHandler.OnTournamentReadyClosed -= _onTournamentReadyClosed;
-            }
+            adminPanelGui?.Dispose();
+            placeHighlighter?.Dispose();
+            // Unwire before disposing the dialogs.
+            unwireNativeDialogs?.Invoke();
+            unwireNativeDialogs = null;
             eventBrowserGui?.Dispose();
             loadoutPickGui?.Dispose();
             tournamentReadyGui?.Dispose();
@@ -616,9 +158,14 @@ namespace canevents.src
             duelPrompt?.Dispose();
             duelChallengeGui?.Dispose();
             matchReadyGui?.Dispose();
+            teamPickGui?.Dispose();
+            inventoryAuditGui?.Dispose();
+            matchShopGui?.Dispose();
+            shopPointsHud?.Dispose();
+            shopPreviewGui?.Dispose();
             hudLayoutEditor?.Dispose();
             eventHudGui?.Dispose();
-            // Unregister before disposing, or the next frame draws meshes we just freed.
+            // Unregister first, or the next frame draws freed meshes.
             if (ctfFlagRenderer != null)
             {
                 clientApi?.Event.UnregisterRenderer(ctfFlagRenderer, EnumRenderStage.Opaque);
@@ -629,6 +176,7 @@ namespace canevents.src
                 clientApi?.Event.UnregisterRenderer(hgZoneDomeRenderer, EnumRenderStage.OIT);
                 hgZoneDomeRenderer.Dispose();   // frees the uploaded dome mesh
             }
+            ClientTrace.Uninstall();
             try { harmony?.UnpatchAll(HarmonyId); } catch { }
             try { clientHarmony?.UnpatchAll(HarmonyId); } catch { }
             HarmonyPatches.SpectatorBodyMetricsPatch.Reset();

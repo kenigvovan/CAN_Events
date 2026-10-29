@@ -10,16 +10,8 @@ using Vintagestory.GameContent;
 
 namespace canevents.src.EventManagers.eventBehavior.Shared
 {
-    /// <summary>
-    /// Plain clothes for everyone in a match - players and bots alike, who both arrive naked
-    /// (PlayerInventoryBackup.ClearInventory wipes the character inventory too).
-    ///
-    /// Clothes, NOT armour: `clothes-*` items carry warmth and no protection, so dressing a fighter
-    /// never changes the fight, and only empty clothing slots are filled.
-    ///
-    /// Configured by the `outfits` attribute (array of arrays of item codes); an empty array disables
-    /// it, absent uses the defaults below. Outfit is picked by a stable hash of the uid.
-    /// </summary>
+    // Plain clothes (no armour) for players and bots, who arrive naked after ClearInventory.
+    // `outfits` attribute: array of item-code arrays; [] disables, absent uses the defaults.
     public static class EventOutfit
     {
         private static readonly string[][] DefaultOutfits =
@@ -32,10 +24,9 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
             new[] { "game:clothes-upperbody-linen-tunic",    "game:clothes-lowerbody-nomad-trousers",       "game:clothes-foot-nomad-boots" },
         };
 
-        /// <summary>Reads the `outfits` attribute, falling back to the defaults when absent.</summary>
         public static List<string[]> Parse(JsonObject attributes)
         {
-            var configured = attributes?["outfits"]?.AsArray();
+            var configured = attributes?[BehaviorConfigKeys.Outfits]?.AsArray();
             if (configured == null) return new List<string[]>(DefaultOutfits);
 
             var result = new List<string[]>();
@@ -44,14 +35,10 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
                 var codes = outfit.AsArray<string>();
                 if (codes != null && codes.Length > 0) result.Add(codes);
             }
-            return result;   // deliberately can be empty: "outfits": [] means "no clothes"
+            return result;   // empty means no clothes
         }
 
-        /// <summary>
-        /// Managed outfits from the outfit store if the event has any, else the ones parsed from
-        /// its JSON. Mirrors LoadoutService.GetEffectiveSets: a set becomes one outfit, its item
-        /// codes in order, quantities ignored (you wear one of each).
-        /// </summary>
+        // Like LoadoutService.GetEffectiveSets: one set = one outfit, quantities ignored.
         public static List<string[]> GetEffectiveOutfits(string eventCode, LoadoutManager store,
             List<string[]> fallback)
         {
@@ -66,21 +53,10 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
                 var codes = set.Items?.Select(i => i.Code).Where(c => !string.IsNullOrEmpty(c)).ToArray();
                 if (codes != null && codes.Length > 0) result.Add(codes);
             }
-            // An outfit store holding nothing but empty sets must not silently undress everyone.
             return result.Count > 0 ? result : fallback;
         }
 
-        /// <summary>
-        /// Who wears which outfit, decided once per match.
-        ///
-        /// <paramref name="stable"/> keeps the historic rule - same uid, same outfit, across matches
-        /// and restarts - so regulars stay recognisable. False deals the outfits out as a shuffled
-        /// permutation instead, so everyone in one match looks different (wrapping around when there
-        /// are more players than outfits). A hidden-role mode needs the latter: with a stable outfit
-        /// the colour IS the player, and "the murderer wore red" names them outright.
-        ///
-        /// Returns null when there is nothing to assign; callers pass -1 per player then.
-        /// </summary>
+        // stable: same uid -> same outfit across matches. Otherwise shuffled per match (hidden-role modes).
         public static Dictionary<string, int> Assign(IEnumerable<string> uids, int outfitCount,
             bool stable, Random rand = null)
         {
@@ -94,8 +70,7 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
                 return result;
             }
 
-            // Shuffled deck, refilled as it runs out: the first outfitCount players are guaranteed
-            // distinct, and a bigger lobby repeats in a different order rather than by uid hash.
+            // Shuffled deck, refilled when empty.
             var deck = new List<int>();
             foreach (var uid in uids)
             {
@@ -115,8 +90,7 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
             return result;
         }
 
-        /// <summary>Dresses a player. Only fills clothing slots that are still empty.
-        /// <paramref name="outfitIndex"/> of -1 falls back to the stable per-uid pick.</summary>
+        // outfitIndex -1 = stable per-uid pick.
         public static void Dress(IServerPlayer player, ICoreServerAPI sapi, List<string[]> outfits,
             int outfitIndex = -1, bool reclaimCarried = false)
         {
@@ -126,7 +100,7 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
                 reclaimCarried ? player : null);
         }
 
-        /// <summary>Dresses a bot body through its seraph gear inventory (same slot layout).</summary>
+        // Bots: seraph gear inventory, same slot layout.
         public static void Dress(Entity entity, ICoreServerAPI sapi, List<string[]> outfits, string uid,
             int outfitIndex = -1)
         {
@@ -134,12 +108,7 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
             Dress(inv, sapi, outfits, uid, entity?.GetName(), outfitIndex);
         }
 
-        /// <param name="reclaimFrom">
-        /// When set, a piece the player took off and is still carrying is put back on instead of a
-        /// fresh one being conjured. That is what makes "the outfit stays on" a lock rather than a
-        /// duplicator: without it, taking the coat off and keeping it in the backpack leaves the
-        /// player wearing a second coat.
-        /// </param>
+        // reclaimFrom: re-wear a carried piece instead of conjuring a duplicate.
         private static void Dress(IInventory inv, ICoreServerAPI sapi, List<string[]> outfits, string uid,
             string who, int outfitIndex, IServerPlayer reclaimFrom = null)
         {
@@ -149,9 +118,7 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
                 ? outfitIndex % outfits.Count
                 : StableIndex(uid, outfits.Count);
 
-            // Every piece is seated first, then notified parents-before-dependents: a gear slot
-            // announced while its parent is missing sends CombatOverhaul's client into an uncatchable
-            // MarkDirty recursion - see GearSlotOrderCompat.
+            // MarkDirty after all slots are filled, parents first (CombatOverhaul, see GearSlotOrderCompat).
             var dressed = new List<ItemSlot>();
 
             foreach (string code in outfits[pick])
@@ -174,10 +141,7 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
                         ? parsed
                         : (EnumCharacterDressType?)null;
 
-                // Where it would go is settled before anything is taken or conjured: emptyOnly, so the
-                // loadout's armour - which came first and balances the fight - is never displaced, and
-                // by the slot's own CanHold rather than by dress-type index, which would land in the
-                // slots Combat Overhaul switched off. See CharacterInventoryCompat.
+                // By CanHold, not dress-type index: CO disables some slots. See CharacterInventoryCompat.
                 var slot = Compat.CharacterInventoryCompat.FindWearSlot(
                     inv, new ItemStack(item), dressType, emptyOnly: true);
                 if (slot == null) continue;
@@ -186,30 +150,20 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
                 if (piece == null)
                 {
                     piece = new ItemStack(item);
-                    // Marked like a loadout item: an outfit is conjured from thin air too, so a
-                    // piece dropped on the arena would otherwise lie there for good - and in a
-                    // hidden-role mode someone else's colours are a disguise.
                     IssuedGear.Mark(piece, who ?? uid);
                 }
                 slot.Itemstack = piece;
                 dressed.Add(slot);
             }
 
-            // Outfit pieces are conjured from thin air, so one whose parent slot item is missing is
-            // simply not worn - nothing to hand back.
             Compat.GearSlotOrderCompat.MarkDirtyAfterFill(dressed, stack =>
                 sapi.World.Logger.Debug("[outfit] {0} skipped: its parent gear is not worn.", stack.Collectible?.Code));
 
-            // Only when something actually went on: Dress is also called on a timer by modes that
-            // keep an outfit on, and a line per player per tick would bury the log.
+            // Some modes call Dress on a timer.
             if (dressed.Count > 0) sapi.World.Logger.Debug("[outfit] Dressed {0}", who ?? uid);
         }
 
-        /// <summary>
-        /// Pulls an outfit piece the player is carrying back out of their bags, so it can go back on
-        /// instead of a copy being made. Only ever takes a piece this mod issued: a coat of their own
-        /// that happens to match the code is theirs, not part of the match wardrobe.
-        /// </summary>
+        // Only issued pieces; the player's own matching coat is left alone.
         private static ItemStack TakeCarried(IServerPlayer player, string code)
         {
             if (player == null || code == null) return null;
@@ -217,7 +171,6 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
             foreach (var inv in player.InventoryManager.Inventories.Values)
             {
                 if (inv.ClassName == "creative") continue;
-                // The character inventory is where it is going; anything already there is worn.
                 if (inv.ClassName == GlobalConstants.characterInvClassName) continue;
 
                 for (int i = 0; i < inv.Count; i++)
@@ -228,7 +181,6 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
                     if (!IssuedGear.IsIssued(stack)) continue;
                     if (stack.Collectible.Code.ToString() != code) continue;
 
-                    // One piece is worn at a time; the rest of the stack stays where it is.
                     var piece = stack.Clone();
                     piece.StackSize = 1;
                     stack.StackSize--;
@@ -240,8 +192,7 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
             return null;
         }
 
-        // Same uid -> same outfit, across matches and server restarts. string.GetHashCode is
-        // randomised per process in .NET Core, so it cannot be used here.
+        // string.GetHashCode is randomised per process in .NET Core.
         private static int StableIndex(string uid, int count)
         {
             int hash = 17;

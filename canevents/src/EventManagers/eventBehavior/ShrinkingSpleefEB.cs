@@ -18,77 +18,43 @@ namespace canevents.src.EventManagers.eventBehavior
         public ShrinkingSpleefEB(string name, JsonObject attributes, RunningEvent runningEvent)
             : base(name, attributes, runningEvent) { }
 
-        public override string Name { get => "ShrinkingSpleef"; set { } }
+        public override string Name => BehaviorNames.ShrinkingSpleef;
 
-        public override void Initialize()
-        {
-            base.Initialize();
-            stepMeltDelay   = Config.Float("stepMeltDelay", 1.5f);
-            ParsePrefightSeconds();
-            Config.WarnUnknown();
-        }
+        protected override void ReadModeConfig()
+            => stepMeltDelay = Config.Float("stepMeltDelay", 1.5f);
 
         protected override void AfterPlatformPlaced(List<BlockPos> positions)
         {
-            if (stepMeltDelay <= 0f) return; // melt disabled, don't waste BEs
-
-            var blockAccessor = runningEvent.sapi.World.BlockAccessor;
-            int spawned = 0, verified = 0;
-            foreach (var pos in positions)
-            {
-                blockAccessor.SpawnBlockEntity("SpleefMelt", pos);
-                spawned++;
-                var check = blockAccessor.GetBlockEntity(pos);
-                if (check is BlockEntities.BlockEntitySpleefMelt) verified++;
-            }
-            log.Notification("Spawned {0} SpleefMelt BEs, {1} verified; sample pos: {2}",
-                spawned, verified, positions.Count > 0 ? positions[0].ToString() : "(none)");
-        }
-
-        // TPThereAndBack teleports players into the cage; the base runs the caged countdown and
-        // calls OnCageOpened when it expires.
-        public override void OnStart()
-        {
-            base.OnStart();   // platform protection
-            StartPrefight();
-        }
-
-        public override void OnTick(float dt)
-        {
-            if (TickPrefight(dt)) return;
-
-            base.OnTick(dt);   // step detection runs on a faster separate listener, see OnCageOpened
+            if (stepMeltDelay <= 0f) return;
+            SpawnMeltEntities(positions, startDelay: null); // idle until stepped on
         }
 
         private void StepDetectTick(float dt)
         {
             if (PrefightActive) return;
-            var blockAccessor = runningEvent.sapi.World.BlockAccessor;
-            var sapi = runningEvent.sapi;
 
             foreach (var plGuid in runningEvent.ParticipantsStillInEvent)
             {
-                var player = sapi.World.PlayerByUid(plGuid) as IServerPlayer;
-                if (player == null) continue;
+                // BodyOf so bots count too.
+                var body = runningEvent.BodyOf(plGuid);
+                if (body == null) continue;
 
-                var feet = player.Entity.Pos.AsBlockPos;
-                scratchPos.Set(feet.X, feet.Y, feet.Z);
-                scratchPos.dimension = feet.dimension;
-                var be = blockAccessor.GetBlockEntity(scratchPos) as BlockEntities.BlockEntitySpleefMelt;
-                if (be == null)
-                {
-                    scratchPos.Set(feet.X, feet.Y - 1, feet.Z);
-                    scratchPos.dimension = feet.dimension;
-                    be = blockAccessor.GetBlockEntity(scratchPos) as BlockEntities.BlockEntitySpleefMelt;
-                }
-                if (be == null) continue;
-                if (!be.IsMelting) be.StartMelt(sapi, stepMeltDelay);
+                var feet = body.Pos.AsBlockPos;
+                var be = MeltAt(feet, 0) ?? MeltAt(feet, -1);
+                if (be != null && !be.IsMelting) be.StartMelt(runningEvent.sapi, stepMeltDelay);
             }
+        }
+
+        private BlockEntities.BlockEntitySpleefMelt MeltAt(BlockPos feet, int dy)
+        {
+            scratchPos.Set(feet.X, feet.Y + dy, feet.Z);
+            scratchPos.dimension = feet.dimension;
+            return runningEvent.sapi.World.BlockAccessor.GetBlockEntity(scratchPos) as BlockEntities.BlockEntitySpleefMelt;
         }
 
         protected override void OnCageOpened()
         {
-            // Fast listener (250 ms) so even brief taps on a block register
+            // 250 ms so brief steps still register.
             if (stepMeltDelay > 0f && stepDetectListenerId < 0)
             {
                 stepDetectListenerId = runningEvent.RegisterMatchTick(StepDetectTick, 250);
@@ -97,17 +63,12 @@ namespace canevents.src.EventManagers.eventBehavior
 
         public override void OnEnd()
         {
-            if (stepDetectListenerId >= 0)
-            {
-                runningEvent.sapi.Event.UnregisterGameTickListener(stepDetectListenerId);
-                stepDetectListenerId = -1;
-            }
+            runningEvent.UnregisterMatchTick(stepDetectListenerId);
+            stepDetectListenerId = -1;
 
-            // Base OnEnd removes leftover SpleefMelt BEs before restoring the platform.
             base.OnEnd();
         }
 
-        // No Clone() override: Initialize() re-reads every field from Attributes, and RunningEvent
-        // always calls it after the base Activator clone.
+        // No Clone() override: RunningEvent calls Initialize() after cloning, which re-reads Attributes.
     }
 }

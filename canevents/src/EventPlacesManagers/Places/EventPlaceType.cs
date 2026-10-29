@@ -5,11 +5,8 @@ using Newtonsoft.Json.Linq;
 
 namespace canevents.src.EventPlacesManagers.Places
 {
-    /// <summary>
-    /// Place-type tags, free-form strings at runtime (replacing the old closed <c>EventPlaceType</c>
-    /// enum) so an unknown tag can't crash anything. <see cref="Known"/> is the canonical list for
-    /// GUI checkboxes and command completion.
-    /// </summary>
+    // Free-form strings (the old EventPlaceType enum was closed), so an unknown tag can't crash
+    // anything. Known is the canonical list for GUI checkboxes and command completion.
     public static class PlaceTags
     {
         public const string Arena1x1 = "ARENA1X1";
@@ -24,21 +21,22 @@ namespace canevents.src.EventPlacesManagers.Places
         public const string HungerGames = "HUNGERGAMES";
         public const string Ctf = "CTF";
         public const string MurderMystery = "MURDERMYSTERY";
+        public const string Battle = "BATTLE";
+        public const string OpenDeathmatch = "TDMOPEN";
 
         // Appended, never reordered: LegacyOrdinals below maps old numeric tags by position.
         public static readonly string[] Known =
         {
             Arena1x1, Arena2x2, Arena3x3, Arena5x5, Ffa,
-            Spleef, Parkour, Deathmatch, Koth, HungerGames, Ctf, MurderMystery
+            Spleef, Parkour, Deathmatch, Koth, HungerGames, Ctf, MurderMystery,
+            Battle, OpenDeathmatch
         };
 
         public static string Normalize(string tag) => tag?.Trim().ToUpperInvariant();
     }
 
-    /// <summary>
-    /// Reads <see cref="EventPlace.placeTypes"/> tolerantly: legacy files store the old enum as INTEGER
-    /// ordinals, new ones store tag strings. Always writes strings, upgrading the file on next save.
-    /// </summary>
+    // Legacy files store the old enum as integer ordinals, new ones tag strings. Always writes
+    // strings, upgrading the file on next save.
     public class PlaceTagsConverter : JsonConverter<string[]>
     {
         // Old enum order: index = the integer ordinal that legacy files contain.
