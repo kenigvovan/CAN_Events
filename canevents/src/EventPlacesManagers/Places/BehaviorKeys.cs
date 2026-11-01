@@ -10,5 +10,7 @@ namespace canevents.src.EventPlacesManagers.Places
         public const string CaptureTheFlag = "CaptureTheFlag";
         public const string MurderMystery = "MurderMystery";
         public const string WaitingRoom = "WaitingRoom";
+        // Mob spawn points, shared by every mode with match mobs.
+        public const string Mobs = "Mobs";
     }
 }

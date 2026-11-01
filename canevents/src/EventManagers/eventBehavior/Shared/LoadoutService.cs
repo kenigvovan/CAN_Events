@@ -23,10 +23,14 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
                     {
                         foreach (var item in setObj["items"].AsArray())
                         {
+                            // Upgrades work inline too, not only from the loadout editor; they need an id.
+                            var upgrades = item["upgrades"].Exists ? item["upgrades"].AsObject<List<UpgradeStep>>() : null;
                             set.Items.Add(new LoadoutEntry
                             {
                                 Code = item["code"].AsString(),
-                                Quantity = item["quantity"].AsInt(1)
+                                Quantity = item["quantity"].AsInt(1),
+                                Id = item["id"].AsString(upgrades != null ? item["code"].AsString() : null),
+                                Upgrades = upgrades
                             });
                         }
                     }

@@ -144,7 +144,9 @@ namespace canevents.src.Network
                 EventId = re.Id,
                 TeamScores = data.TeamScores,
                 ZoneOwnerTeam = data.ZoneOwnerTeam,
-                TeamScoreLimit = data.TeamScoreLimit
+                TeamScoreLimit = data.TeamScoreLimit,
+                BossName = data.BossName,
+                BossHealth = data.BossHealth
             };
         }
 

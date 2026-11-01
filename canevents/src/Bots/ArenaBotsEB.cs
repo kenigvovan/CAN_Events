@@ -107,6 +107,7 @@ namespace canevents.src.EventManagers.eventBehavior
             {
                 if (weapons.Count > 0)
                     botManager.GiveWeapon(uid, weapons[world.Rand.Next(weapons.Count)]);
+                Mobs.Ai.RaiderProfiles.SetForBot(body);
                 EventManagers.eventBehavior.Shared.EventOutfit.Dress(
                     body, runningEvent.sapi,
                     wardrobe?.Wardrobe ?? outfits,
@@ -226,6 +227,7 @@ namespace canevents.src.EventManagers.eventBehavior
         public void AfterBotDeath(string uid, Entity entity, DamageSource source)
         {
             (botManager ?? runningEvent.Bots).Forget(uid);
+            Bots.BotTargeting.Forget(entity);
 
             // Delayed: removing on the death tick leaves a ghost body on the client.
             // Spawn disables auto-despawn, so despawn explicitly.

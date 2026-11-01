@@ -12,10 +12,6 @@ namespace canevents.src.EventManagers
     {
         public const string Key = "canevents_return_pos";
 
-        // A hop refused because another is still in flight is retried this often, this many times.
-        private const int RetryMs = 5000;
-        private const int MaxRetries = 4;
-
         public static void Write(IServerPlayer player, BlockPos pos)
         {
             if (player == null || pos == null) return;
@@ -61,26 +57,21 @@ namespace canevents.src.EventManagers
             string uid = player.PlayerUID;
             byte[] marker = player.GetModdata(Key);
 
-            if (delayMs <= 0) Attempt(sapi, uid, pos, reason, marker, 0);
-            else sapi.Event.RegisterCallback(_ => Attempt(sapi, uid, pos, reason, marker, 0), delayMs);
+            if (delayMs <= 0) Attempt(sapi, uid, pos, reason, marker);
+            else sapi.Event.RegisterCallback(_ => Attempt(sapi, uid, pos, reason, marker), delayMs);
         }
 
-        private static void Attempt(ICoreServerAPI sapi, string uid, BlockPos pos, string reason,
-            byte[] marker, int attempt)
+        // A hop in flight is waited out by EventTeleport itself.
+        private static void Attempt(ICoreServerAPI sapi, string uid, BlockPos pos, string reason, byte[] marker)
         {
             if (!(sapi.World.PlayerByUid(uid) is IServerPlayer player)) return;
-            // Someone else already settled it (landed, or a newer match wrote its own marker).
-            if (attempt > 0 && !Same(player.GetModdata(Key), marker)) return;
 
-            bool scheduled = EventTeleport.Send(sapi, player, pos, 0.5, 0.5, 0.5, reason, () =>
+            EventTeleport.Send(sapi, player, pos, 0.5, 0.5, 0.5, reason, () =>
             {
                 // Only the marker this hop was for: a newer match may have written its own since.
                 if (sapi.World.PlayerByUid(uid) is IServerPlayer landed && Same(landed.GetModdata(Key), marker))
                     landed.RemoveModdata(Key);
             });
-
-            if (!scheduled && attempt < MaxRetries)
-                sapi.Event.RegisterCallback(_ => Attempt(sapi, uid, pos, reason, marker, attempt + 1), RetryMs);
         }
 
         private static bool Same(byte[] a, byte[] b)

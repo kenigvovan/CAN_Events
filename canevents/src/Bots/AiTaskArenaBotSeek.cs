@@ -11,7 +11,9 @@ namespace canevents.src.Bots
         public AiTaskArenaBotSeek(EntityAgent entity, JsonObject taskConfig, JsonObject aiConfig)
             : base(entity, taskConfig, aiConfig) { }
 
+        // entityCodes only lists players and bots; match mobs can be any creature.
         public override bool IsTargetableEntity(Entity e, float range)
-            => base.IsTargetableEntity(e, range) && BotMatchLink.IsOpponent(entity, e);
+            => (Mobs.MatchMobLink.IsMatchMob(e) ? e.Alive && CanSense(e, range) : base.IsTargetableEntity(e, range))
+               && BotMatchLink.IsOpponent(entity, e);
     }
 }

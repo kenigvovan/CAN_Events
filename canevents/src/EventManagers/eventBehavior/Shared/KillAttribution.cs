@@ -37,6 +37,13 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
             var cause = source?.GetCauseEntity();
             if (cause == null) return info;
 
+            // Named in the feed, but no credit: a mob is not on the roster.
+            if (Mobs.MatchMobLink.IsMatchMob(cause))
+            {
+                info.KillerName = cause.GetName();
+                return info;
+            }
+
             string killerUid = Bots.BotMatchLink.UidOf(cause);
             if (killerUid == null) return info;
             // Non-participants get no credit.

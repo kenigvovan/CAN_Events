@@ -405,6 +405,8 @@ namespace canevents.src.EventManagers
             var ev = FindEventByCode(code);
             if (ev == null) return (false, Lang.Get("canevents:event-not-found", code));
 
+            // The reward panel has no control for it, so a save from there must not drop it.
+            if (reward != null && reward.AllowWithBots == null) reward.AllowWithBots = ev.Reward?.AllowWithBots;
             ev.Reward = reward;
             ev.EntryFee = fee;
 

@@ -69,6 +69,14 @@ namespace canevents.src.Network
         // 0 = no limit.
         [ProtoMember(5)]
         public int TeamScoreLimit;
+
+        // Boss bar; empty name = no boss right now. Older clients skip unknown fields.
+        [ProtoMember(6)]
+        public string BossName;
+
+        // 0..1
+        [ProtoMember(7)]
+        public float BossHealth;
     }
 
     // Nested only, not registered on the channel (same for the other *EntryMsg types).

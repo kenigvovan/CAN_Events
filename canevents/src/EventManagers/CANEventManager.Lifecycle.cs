@@ -371,6 +371,7 @@ namespace canevents.src.EventManagers
             }
 
             DispatchToBehaviors(runningEvent, "OnEnd", beh => beh.OnEnd());
+            log.Safely("despawn match mobs for " + code, runningEvent.DespawnMobs);
 
             // Players who died earlier and respawned have a pending fix no respawn will apply.
             foreach (var pl in runningEvent.OnlineParticipants)

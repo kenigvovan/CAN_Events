@@ -1,0 +1,165 @@
+{
+	code: "arenaraider",
+	// Same body class as the bots (seraph gear inventory, held item rendering), but a match mob, not a roster seat.
+	class: "ArenaBot",
+	hitboxSize: { x: 0.6, y: 1.85 },
+	deadHitboxSize: { x: 0.6, y: 0.6 },
+	eyeHeight: 1.7,
+	canClimb: true,
+	habitat: "land",
+	drops: [],
+	attributes: {
+		isMechanical: false,
+		skinnableParts: [
+			{
+				code: "baseskin",
+				type: "texture",
+				variants: [
+					{ code: "skin1", texture: "game:entity/humanoid/seraphskinparts/body/skin1" },
+					{ code: "skin3", texture: "game:entity/humanoid/seraphskinparts/body/skin3" },
+					{ code: "skin5", texture: "game:entity/humanoid/seraphskinparts/body/skin5" },
+					{ code: "skin7", texture: "game:entity/humanoid/seraphskinparts/body/skin7" },
+					{ code: "skin9", texture: "game:entity/humanoid/seraphskinparts/body/skin9" }
+				]
+			},
+			{
+				code: "eyecolor",
+				type: "texture",
+				textureRenderTo: { x: 109, y: 0 },
+				variants: [
+					{ code: "amethyst", texture: "game:entity/humanoid/seraphskinparts/eyes/amethyst" },
+					{ code: "bismuth", texture: "game:entity/humanoid/seraphskinparts/eyes/bismuth" }
+				]
+			},
+			{
+				code: "hairbase",
+				type: "shape",
+				shapeTemplate: { base: "game:entity/humanoid/seraphskinparts/hair-base/{code}" },
+				variants: [
+					{ code: "bald" },
+					{ code: "balding" },
+					{ code: "layered" }
+				]
+			},
+			{
+				code: "facialexpression",
+				type: "shape",
+				variants: [
+					{ code: "angry", shape: { base: "game:entity/humanoid/seraphskinparts/face/angry" } },
+					{ code: "determined", shape: { base: "game:entity/humanoid/seraphskinparts/face/determined" } }
+				]
+			}
+		]
+	},
+	client: {
+		renderer: "Shape",
+		pitchStep: false,
+		shape: { base: "game:entity/humanoid/seraph-faceless" },
+		textures: {
+			"seraph": { base: "game:entity/humanoid/seraph-naked-hairless" }
+		},
+		behaviors: [
+			{ code: "repulseagents" },
+			{ code: "controlledphysics", stepHeight: 1.1 },
+			{ code: "interpolateposition" },
+			{ code: "nametag", selfnameonly: false },
+			{ code: "extraskinnable" },
+			{ code: "seraphinventory" }
+		],
+		animations: [
+			{
+				code: "walk",
+				animation: "walk",
+				blendMode: "Average",
+				mulWithWalkSpeed: true,
+				animationSpeed: 1.1,
+				triggeredBy: { onControls: ["Move"], matchExact: true }
+			},
+			{
+				code: "sprint",
+				animation: "sprint",
+				blendMode: "Average",
+				mulWithWalkSpeed: true,
+				animationSpeed: 0.6,
+				triggeredBy: { onControls: ["Move", "SprintMode"], matchExact: true }
+			},
+			{
+				code: "idle",
+				animation: "idle1",
+				blendMode: "Average",
+				triggeredBy: { onControls: ["Idle"], matchExact: true, defaultAnim: true }
+			},
+			{ code: "hit", animation: "hit", animationSpeed: 1.4, weight: 10, blendMode: "AddAverage" },
+			{ code: "bowaim", animation: "bowaim", animationSpeed: 1, weight: 10, blendMode: "AddAverage" },
+			{ code: "hurt", animation: "hurt", animationSpeed: 1.4, weight: 10, blendMode: "AddAverage" },
+			// No deaddecay, same as the bots: its particles crash the client on a skin-part shape.
+			{ code: "die", animation: "die", animationSpeed: 1.25, weight: 10, blendMode: "Average", triggeredBy: { onControls: ["Dead"] } }
+		]
+	},
+	server: {
+		behaviors: [
+			{ code: "repulseagents" },
+			{ code: "controlledphysics", stepHeight: 1.1 },
+			{ code: "nametag", selfnameonly: false },
+			{ code: "extraskinnable" },
+			{ code: "seraphinventory" },
+			{ code: "health", currenthealth: 20, maxhealth: 20 },
+			{ code: "breathe" },
+			{
+				code: "taskai",
+				aitasks: [
+					{
+						// Targets come from the match director; none of these tasks scans for them.
+						code: "caneventsraidershoot",
+						priority: 2.2,
+						drawMs: 1100,
+						projectile: "game:arrow-copper",
+						projectileDamage: 3,
+						projectileSpeed: 32,
+						spreadDeg: 3,
+						mincooldown: 1200,
+						maxcooldown: 2200,
+						animation: "bowaim"
+					},
+					{
+						code: "caneventsraidermelee",
+						entityCodes: ["player", "arenabot"],
+						priority: 2,
+						damage: 2,
+						damageTier: 1,
+						weaponDamageMultiplier: 1,
+						minDist: 3,
+						minVerDist: 1.5,
+						attackAngleRangeDeg: 60,
+						attackRange: 4,
+						mincooldown: 600,
+						maxcooldown: 1000,
+						damagePlayerAtMs: 400,
+						attackDurationMs: 900,
+						animation: "hit",
+						animationSpeed: 1.4
+					},
+					{
+						code: "caneventsraiderengage",
+						priority: 1.5,
+						movespeed: 0.03,
+						animation: "sprint",
+						animationSpeed: 1
+					},
+					{
+						code: "idle",
+						priority: 0.5,
+						priorityForCancel: 1.2,
+						minduration: 1000,
+						maxduration: 2500,
+						animation: "idle1"
+					}
+				]
+			}
+		]
+	},
+	sounds: {
+		hurt: "game:player/hurt",
+		death: "game:player/death"
+	}
+}

@@ -1,0 +1,93 @@
+{
+    "code": "bossraid",
+    "rated": false,
+    "EventType": "Waves",
+    "EventPlaceTypes": [ "WAVES" ],
+    "behaviors": [
+        { "name": "ArenaProtection", "attributes": {} },
+        {
+            "name": "ByPartsPartyCollected",
+            "attributes": {
+                "maxPartiesCount": 4,
+                "minPartiesCount": 1,
+                "maxPartySize": 4,
+                "minPartySize": 1
+            }
+        },
+        {
+            "name": "SavePlayerAttributes",
+            "attributes": { "spectateOnElimination": true }
+        },
+        {
+            "name": "TPThereAndBack",
+            "attributes": {}
+        },
+        {
+            "name": "Waves",
+            "attributes": {
+                "intermissionSeconds": 10,
+                "healthPerPlayer": 0.5,
+                "waves": [
+                    {
+                        "name": "The warlord",
+                        "timeLimitSeconds": 480,
+                        "boss": {
+                            "archetype": "boss",
+                            "healthMul": 12,
+                            "damageMul": 1.5
+                        },
+                        "mobs": [
+                            { "archetype": "archer", "count": 1, "perPlayer": 1 }
+                        ],
+                        "phases": [
+                            {
+                                "atHealth": 0.66,
+                                "adds": [ { "archetype": "skirmisher", "count": 2, "perPlayer": 1 } ]
+                            },
+                            {
+                                "atHealth": 0.33,
+                                "damageMul": 1.3,
+                                "adds": [
+                                    { "archetype": "brute", "count": 2 },
+                                    { "archetype": "archer", "count": 2 }
+                                ]
+                            }
+                        ]
+                    }
+                ],
+                "loadoutSets": [
+                    {
+                        "name": "Spearman",
+                        "items": [
+                            { "code": "game:spear-generic-steel", "quantity": 1 },
+                            { "code": "game:bread-spelt-charred", "quantity": 12 },
+                            { "code": "game:armor-head-scale-steel", "quantity": 1 },
+                            { "code": "game:armor-body-chain-steel", "quantity": 1 },
+                            { "code": "game:armor-legs-scale-steel", "quantity": 1 }
+                        ]
+                    },
+                    {
+                        "name": "Archer",
+                        "items": [
+                            { "code": "game:bow-long", "quantity": 1 },
+                            { "code": "game:arrow-steel", "quantity": 64 },
+                            { "code": "game:bread-amaranth-perfect", "quantity": 10 }
+                        ]
+                    }
+                ]
+            }
+        },
+        {
+            "name": "MatchShop",
+            "attributes": {
+                "startPoints": 8,
+                "pointsPerKill": 1,
+                "buyRadius": 6,
+                "items": [
+                    { "id": "poultice", "code": "game:poultice-linen-horsetail", "quantity": 2, "cost": 2, "maxBuys": 3 },
+                    { "id": "arrows", "code": "game:arrow-steel", "quantity": 32, "cost": 3, "maxBuys": 2, "kits": [ "Archer" ] }
+                ]
+            }
+        }
+    ]
+}

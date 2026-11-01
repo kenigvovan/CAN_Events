@@ -34,6 +34,14 @@ namespace canevents.src
         // Last hop per player uid.
         private static readonly Dictionary<string, Hop> lastHop = new Dictionary<string, Hop>();
 
+        // uid -> the newest hop asked for. Only that one may still land: a waiting or loading older hop
+        // would otherwise put the player back where they no longer belong (seat after the spawn).
+        private static readonly Dictionary<string, long> newestRequest = new Dictionary<string, long>();
+        private static long requestSeq;
+
+        // A hop asked for while another is in flight waits for it in steps of this.
+        private const int InFlightRetryMs = 250;
+
         // uid -> until when (server ms) a disconnect is the server's own doing (kick, test teardown),
         // so neither the disconnect nor the landing check reports it as a crash on arrival.
         private static readonly Dictionary<string, long> expectedGone = new Dictionary<string, long>();
@@ -46,6 +54,7 @@ namespace canevents.src
             {
                 lastHop.Clear();
                 expectedGone.Clear();
+                newestRequest.Clear();
             }
         }
 
@@ -85,17 +94,53 @@ namespace canevents.src
         {
             if (sapi == null || player?.Entity == null) return false;
 
+            string uid = player.PlayerUID;
+            long request;
+            lock (lastHop) newestRequest[uid] = request = ++requestSeq;
+
+            // One hop at a time: each landing resets CurrentChunkSentRadius, so stacked hops can keep the
+            // client from ever finishing chunk loading. Dropping this one instead left a revived player at
+            // the spectator seat with the hop to their spawn lost.
+            if (InFlight(sapi, player))
+            {
+                LogOf(sapi).Notification("{0} [{1}]: a teleport is still in flight, this one waits for it",
+                    player.PlayerName, reason);
+                WaitThenHop(sapi, uid, x, y, z, dimension, reason, onTeleported, request);
+                return true;
+            }
+
+            StartHop(sapi, player, x, y, z, dimension, reason, onTeleported, request);
+            return true;
+        }
+
+        // Age check in case Teleporting gets stuck.
+        private static bool InFlight(ICoreServerAPI sapi, IServerPlayer player)
+            => player.Entity.Teleporting && HopIsRecent(sapi, player.PlayerUID);
+
+        private static bool IsNewest(string uid, long request)
+        {
+            lock (lastHop) return newestRequest.TryGetValue(uid, out long newest) && newest == request;
+        }
+
+        private static void WaitThenHop(ICoreServerAPI sapi, string uid, double x, double y, double z,
+            int dimension, string reason, Action onTeleported, long request)
+        {
+            sapi.Event.RegisterCallback(_ =>
+            {
+                if (!IsNewest(uid, request)) return;
+                if (!(sapi.World.PlayerByUid(uid) is IServerPlayer player) || player.Entity == null) return;
+
+                if (InFlight(sapi, player)) WaitThenHop(sapi, uid, x, y, z, dimension, reason, onTeleported, request);
+                else StartHop(sapi, player, x, y, z, dimension, reason, onTeleported, request);
+            }, InFlightRetryMs);
+        }
+
+        private static void StartHop(ICoreServerAPI sapi, IServerPlayer player,
+            double x, double y, double z, int dimension, string reason, Action onTeleported, long request)
+        {
             var log = LogOf(sapi);
             string uid = player.PlayerUID;
             var from = player.Entity.Pos;
-
-            // One hop at a time: each landing resets CurrentChunkSentRadius, so stacked hops can keep the
-            // client from ever finishing chunk loading. Age check in case Teleporting gets stuck.
-            if (player.Entity.Teleporting && HopIsRecent(sapi, uid))
-            {
-                log.Notification("{0} [{1}]: a teleport is still in flight, skipping this one", player.PlayerName, reason);
-                return false;
-            }
 
             int cx = ColumnOf(x), cz = ColumnOf(z);
             bool serverHasIt = sapi.WorldManager.GetChunk(cx, ChunkYOf(y, dimension), cz) != null;
@@ -124,9 +169,9 @@ namespace canevents.src
                 sapi.WorldManager.LoadChunkColumnPriority(cx - Ring, cz - Ring, cx + Ring, cz + Ring,
                     new ChunkLoadOptions
                     {
-                        OnLoaded = () => Land(sapi, uid, x, y, z, dimension, reason, onTeleported)
+                        OnLoaded = () => Land(sapi, uid, x, y, z, dimension, reason, onTeleported, request)
                     });
-                return true;
+                return;
             }
 
             // Other dims: wait only for the landing column (neighbors may never exist), just request the rest.
@@ -135,7 +180,7 @@ namespace canevents.src
                     if (dx != 0 || dz != 0) DimensionChunks.Request(sapi, cx + dx, cz + dz, dimension);
 
             DimensionChunks.LoadColumns(sapi, new[] { (cx, cz) }, dimension,
-                () => Land(sapi, uid, x, y, z, dimension, reason, onTeleported),
+                () => Land(sapi, uid, x, y, z, dimension, reason, onTeleported, request),
                 () =>
                 {
                     lock (lastHop) lastHop.Remove(uid);
@@ -143,7 +188,6 @@ namespace canevents.src
                         + "(was it ever created?).", player.PlayerName, reason, cx, cz, dimension,
                         DimensionChunks.DefaultTimeoutMs / 1000);
                 });
-            return true;
         }
 
         // Chunk rows of dimension d start at d*1024.
@@ -160,13 +204,20 @@ namespace canevents.src
 
         // Player may have left while chunks were loading.
         private static void Land(ICoreServerAPI sapi, string uid,
-            double x, double y, double z, int dimension, string reason, Action onTeleported)
+            double x, double y, double z, int dimension, string reason, Action onTeleported, long request)
         {
             var player = sapi.World.PlayerByUid(uid) as IServerPlayer;
             if (player?.Entity == null)
             {
                 LogOf(sapi).Notification("uid {0} [{1}]: gone before the chunks were ready, no teleport",
                     uid, reason);
+                return;
+            }
+
+            if (!IsNewest(uid, request))
+            {
+                LogOf(sapi).Notification("{0} [{1}]: a newer teleport was asked for while the chunks loaded, this one is dropped",
+                    player.PlayerName, reason);
                 return;
             }
 
@@ -228,6 +279,8 @@ namespace canevents.src
             Hop hop;
             lock (lastHop)
             {
+                // A hop still waiting must not fire after they log back in.
+                newestRequest.Remove(player.PlayerUID);
                 if (!lastHop.TryGetValue(player.PlayerUID, out hop)) return;
                 lastHop.Remove(player.PlayerUID);
             }

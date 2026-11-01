@@ -22,12 +22,24 @@ namespace canevents.src.Bots
         }
 
         public override bool IsTargetableEntity(Entity e, float range)
-            => base.IsTargetableEntity(e, range) && BotMatchLink.IsOpponent(entity, e);
+            => (Mobs.MatchMobLink.IsMatchMob(e) ? e.Alive && CanSense(e, range) : base.IsTargetableEntity(e, range))
+               && BotMatchLink.IsOpponent(entity, e);
 
         public override void StartExecute()
         {
             damage = ResolveDamage();
             base.StartExecute();
+        }
+
+        // Hit-and-run profile: the movement task backs off for a moment after a landed hit.
+        protected override void attackTarget()
+        {
+            bool wasAlive = targetEntity?.Alive == true;
+            base.attackTarget();
+            var profile = Mobs.Ai.RaiderProfiles.Of(entity);
+            if (wasAlive && profile.HitAndRunSeconds > 0f)
+                entity.Attributes.SetLong(Mobs.Ai.RaiderProfiles.RetreatUntilAttribute,
+                    world.ElapsedMilliseconds + (long)(profile.HitAndRunSeconds * 1000));
         }
 
         private float ResolveDamage()

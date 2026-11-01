@@ -24,6 +24,15 @@ namespace canevents.src.Bots
 
         private void OnEntityLoaded(Entity entity)
         {
+            if (Mobs.MatchMobLink.IsMatchMob(entity))
+            {
+                if (Mobs.MatchMobManager.Of(Mobs.MatchMobLink.MatchIdOf(entity))?.Readopt(entity) == true) return;
+                sapi.World.Logger.Notification(
+                    "[mobs] Removing orphaned match mob {0} at {1} (no live match).", entity.Code, entity.Pos.AsBlockPos);
+                sapi.World.DespawnEntity(entity, new EntityDespawnData { Reason = EnumDespawnReason.Removed });
+                return;
+            }
+
             if (entity is not EntityArenaBot) return;
 
             string uid = BotMatchLink.UidOf(entity);

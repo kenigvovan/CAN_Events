@@ -68,6 +68,8 @@ namespace canevents.src
             RegisterEventBehavior(typeof(ArenaProtectionEB), BehaviorNames.ArenaProtection);
             RegisterEventBehavior(typeof(TeamMarkersEB), BehaviorNames.TeamMarkers);
             RegisterEventBehavior(typeof(MatchShopEB), BehaviorNames.MatchShop);
+            RegisterEventBehavior(typeof(WavesEB), BehaviorNames.Waves);
+            RegisterEventBehavior(typeof(MobRaidsEB), BehaviorNames.MobRaids);
             Events = new List<CANEvent>();
             foreach (var def in eventDefinitions)
             {
@@ -200,6 +202,12 @@ namespace canevents.src
             HarmonyPatches.MatchDeathExternalsPatch.Apply(harmony, api);
             // Locks mod stash slots (e.g. trash slot) during a match.
             HarmonyPatches.PersonalStashPatch.Apply(harmony, api);
+            // Match mobs only see the fighters of their own match.
+            HarmonyPatches.MatchMobTargetingPatch.Apply(harmony, api);
+            // Optional: canrpgmobs as a wave mob source.
+            Compat.RpgMobsProvider.Apply(harmony, api);
+            // Optional: canrpgclasses spells take match teams, not parties, as allies.
+            Compat.RpgClassesCompat.Apply(api, this.CANEventManager);
 
             _sapi = api;
             _onDeath      = (player, source) => this.CANEventManager.OnDeath(player, source);

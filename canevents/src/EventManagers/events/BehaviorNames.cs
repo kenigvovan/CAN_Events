@@ -25,6 +25,8 @@ namespace canevents.src.EventManagers.events
         public const string ArenaProtection = "ArenaProtection";
         public const string TeamMarkers = "TeamMarkers";
         public const string MatchShop = "MatchShop";
+        public const string Waves = "Waves";
+        public const string MobRaids = "MobRaids";
 
         // Claimant id for refused block edits, not a behavior name.
         public const string HungerGamesClaimant = "hungergames";

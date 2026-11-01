@@ -97,8 +97,10 @@ namespace canevents.src.Scoring
                 return;
             }
 
-            // Bots in lobby or tournament sub-match: settle stakes, no event reward.
-            if (runningEvent.SuppressRewards || runningEvent.ParticipantsBefore.Any(Bots.BotIdentity.IsBot))
+            // Bots in lobby or tournament sub-match: settle stakes, no event reward, unless the event allows bots.
+            int botCount = runningEvent.ParticipantsBefore.Count(Bots.BotIdentity.IsBot);
+            var botMode = BotRewardModes.Of(ev.Reward);
+            if (runningEvent.SuppressRewards || (botCount > 0 && botMode == BotRewardMode.None))
             {
                 sapi.World.Logger.Notification(
                     "RewardDistributor: no event reward for {0} - {1}.", ev.Code,
@@ -112,6 +114,14 @@ namespace canevents.src.Scoring
             string capKey = UsesOwnRewardBucket(ev) ? ev.Code : null;
             long now = UnixTime.Now;
 
+            int lobby = runningEvent.ParticipantsBefore.Count;
+            share = botCount > 0 && botMode == BotRewardMode.Scaled && lobby > 0
+                ? (double)(lobby - botCount) / lobby
+                : 1.0;
+            if (share < 1.0)
+                sapi.World.Logger.Notification("RewardDistributor: {0} pays {1:0.##} of its rewards - {2} of {3} were bots.",
+                    ev.Code, share, botCount, lobby);
+
             // Ranking from the MatchResult snapshot; behavior OnEnd may have wiped the live state.
             var placementTiers = ev.Reward?.PlacementRewards;
             var ranking = (placementTiers != null && placementTiers.Count > 0) ? result.Ranking : null;
@@ -123,6 +133,26 @@ namespace canevents.src.Scoring
             entryFees.Settle(runningEvent, winners);
             DistributeParticipation(runningEvent, rewarded, capKey, rateCapOn, now);
             rateLimiter?.Flush();
+            share = 1.0;
+        }
+
+        // Human share of a lobby with bots, for "scaled" events. Set for the length of one DistributeRewards.
+        private double share = 1.0;
+
+        // A fractional unit is paid with that chance, so a 1-item prize at share 0.5 pays every other match on average.
+        private List<RewardItem> Scaled(List<RewardItem> items)
+        {
+            if (share >= 1.0 || items == null) return items;
+            var result = new List<RewardItem>();
+            foreach (var item in items)
+            {
+                if (item == null) continue;
+                double exact = item.Quantity * share;
+                int quantity = (int)Math.Floor(exact);
+                if (sapi.World.Rand.NextDouble() < exact - quantity) quantity++;
+                if (quantity > 0) result.Add(new RewardItem { Code = item.Code, Quantity = quantity });
+            }
+            return result;
         }
 
         // Winners skip participation even if they got nothing.
@@ -163,12 +193,18 @@ namespace canevents.src.Scoring
         private bool PayOrQueue(string uid, List<RewardItem> items, string capKey, bool rateCapped, long now,
             string reason, string source, string successLangKey, params object[] msgArgs)
         {
+            // Only "allowWithBots" events get here with bots; a bot is never paid or queued.
+            if (Bots.BotIdentity.IsBot(uid)) return true;
+
             var player = sapi.World.PlayerByUid(uid) as IServerPlayer;
             if (rateCapped && !rateLimiter.TryConsume(uid, capKey, now))
             {
                 player?.SendMessage(0, Lang.Get("canevents:reward-rate-capped"), EnumChatType.Notification);
                 return true;
             }
+
+            items = Scaled(items);
+            if (items.Count == 0) return true;
             if (player == null)
             {
                 Payouts.Queue(uid, items, reason, source);

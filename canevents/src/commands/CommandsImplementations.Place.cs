@@ -451,6 +451,21 @@ namespace canevents.src.commands
         public TextCommandResult HgLootList(TextCommandCallingArgs args)
             => DescribeAtFeet(args, target => placeConfig.DescribeHungerGamesLoot(target));
 
+        public TextCommandResult MobSpawnAdd(TextCommandCallingArgs args)
+        {
+            string tag = args.Parsers[0].GetValue() as string;
+            return EditAtFeet(args, (target, pos) => placeConfig.AddMobSpawn(target, pos, tag));
+        }
+
+        public TextCommandResult MobSpawnRemove(TextCommandCallingArgs args)
+            => EditAtFeet(args, (target, pos) => placeConfig.RemoveMobSpawnAt(target, pos));
+
+        public TextCommandResult MobSpawnClear(TextCommandCallingArgs args)
+            => EditTarget(args, target => placeConfig.ClearMobSpawns(target));
+
+        public TextCommandResult MobSpawnList(TextCommandCallingArgs args)
+            => DescribeAtFeet(args, target => placeConfig.DescribeMobSpawns(target));
+
         public TextCommandResult KothHillSet(TextCommandCallingArgs args)
         {
             float radius = Convert.ToSingle(args.Parsers[0].GetValue());

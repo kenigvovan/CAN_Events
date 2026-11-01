@@ -41,10 +41,16 @@ namespace canevents.src.EventManagers
             if (!diedInAMatch) CorpseReturnGuard.ForgetPending(player);
         }
 
-        // Bots only; players come through PlayerDeath.
+        // Bots and match mobs; players come through PlayerDeath.
         public void OnEntityDeath(Vintagestory.API.Common.Entities.Entity entity, DamageSource source)
         {
             if (entity is Vintagestory.API.Common.EntityPlayer) return;
+
+            if (Mobs.MatchMobLink.IsMatchMob(entity))
+            {
+                Mobs.MatchMobManager.Of(Mobs.MatchMobLink.MatchIdOf(entity))?.OnMobDied(entity, source);
+                return;
+            }
 
             string uid = Bots.BotMatchLink.UidOf(entity);
             if (uid == null || !Bots.BotIdentity.IsBot(uid)) return;
@@ -66,6 +72,11 @@ namespace canevents.src.EventManagers
         {
             // Vanilla has recorded the death spot by now.
             CorpseReturnGuard.ApplyPending(sapi, player);
+
+            // PlayerRespawn reaches mods even when vanilla ignored the key because they're alive: a late
+            // click after a round mode revived them would clear their gear. A real respawn is still dead
+            // here, vanilla revives only once the spawn chunks are loaded (queued, never in this call).
+            if (player.Entity == null || player.Entity.Alive) return;
 
             foreach (var re in RunningEventsSnapshot())
             {
@@ -261,6 +272,11 @@ namespace canevents.src.EventManagers
             re.GetBehavior<eventBehavior.SavePlayerAttributes>()?.Release(uid);
 
             RestoreEventBackup(player);
+            // Own-gear matches have no backup to restore, so RestoreEventBackup doesn't reset them.
+            Compat.RpgClassesCompat.ResetCombat(player.Entity);
+            // As when leaving an open match; the end-of-match clear would come only after they ran home with it.
+            Compat.DownedCompat.Clear(player);
+            eventBehavior.Shared.EventBroadcaster.ClearSpeedMutator(player);
 
             // Forget the match's return pos so the end teleport doesn't pull them back.
             re.GetBehavior<eventBehavior.TPThereAndBack>()?.ForgetReturnPos(uid);
@@ -273,8 +289,10 @@ namespace canevents.src.EventManagers
 
         private void RestoreEventBackup(IServerPlayer player)
         {
-            if (PlayerInventoryBackup.Restore(player, sapi))
-                player.SendMessage(0, Lang.Get("canevents:inventory-restored"), EnumChatType.Notification);
+            if (!PlayerInventoryBackup.Restore(player, sapi)) return;
+            // Only on a real restore: on a plain login it would wipe the buffs they earned out in the world.
+            Compat.RpgClassesCompat.ResetCombat(player.Entity);
+            player.SendMessage(0, Lang.Get("canevents:inventory-restored"), EnumChatType.Notification);
         }
 
         // Idempotent. Offline players get it on next login.

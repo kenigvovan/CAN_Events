@@ -43,6 +43,7 @@ namespace canevents.src.Bots
         // Vanilla targeting only checks entity code, so without this bots chase anyone nearby.
         public static bool IsOpponent(Entity self, Entity candidate)
         {
+            if (Mobs.MatchMobLink.IsMatchMob(candidate)) return FightsMob(self, candidate);
             if (!TryEngage(self, candidate, out var match, out var myUid, out var theirUid)) return false;
 
             // Role modes decide themselves (everyone is their own team there).
@@ -53,6 +54,17 @@ namespace canevents.src.Bots
             int myTeam = match.TeamIndexOf(myUid);
             int theirTeam = match.TeamIndexOf(theirUid);
             return myTeam < 0 || theirTeam < 0 || myTeam != theirTeam;
+        }
+
+        // Any match mob is everyone's enemy, as long as both are in the same live match.
+        private static bool FightsMob(Entity self, Entity mob)
+        {
+            if (self == null || mob == null || !mob.Alive) return false;
+            var match = MatchOf(self);
+            if (match == null || match.CombatSuspended) return false;
+            if (Mobs.MatchMobLink.MatchIdOf(mob) != match.Id) return false;
+            string myUid = UidOf(self);
+            return myUid != null && match.IsActive(myUid);
         }
 
         // Only role modes make bots flee.

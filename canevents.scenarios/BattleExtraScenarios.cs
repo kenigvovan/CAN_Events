@@ -1,7 +1,9 @@
 using Atlas.Api;
 using Atlas.XUnit;
 using canevents.scenarios.Infrastructure;
+using canevents.src;
 using canevents.src.EventManagers;
+using canevents.src.EventManagers.eventBehavior;
 using canevents.src.EventManagers.events;
 using canevents.src.Network;
 using Vintagestory.API.Common;
@@ -126,6 +128,118 @@ public class BattleExtraScenarios : LiveScenarioBase
         Assert.True(!PacketsOf<LoadoutPickRequestMsg>(b).Any(m => m.EventId == match.Id),
             "b has a saved default, yet was asked for a class");
         await World.Until(() => CountOf(b.Player, "game:armor-body-plate-steel") == 1, "b's Plate again for round 2", 300);
+        await a.ExecuteCommand("/eventadmin stop");
+    }
+
+    // B27, seen in game: the death that ended the round came within MakeSpectator's 100 ms delay. The
+    // intermission revived the fallen first, then the late seating made them a spectator for all of the next round.
+    [AtlasScenario]
+    public async Task Fallen_Should_NotBeSeated_When_RoundEndsWithinSeatingDelay()
+    {
+        AddBattleArena(NewArea(), winsToWin: 3, roundSeconds: 120);
+        UseMutator(Battle, EventMutators.Loadout, "Spearman");
+        var (a, b) = await TwoFighters("btlseat");
+        var match = await StartBattleToLobby(a, b);
+        Manager.PickSideInLobby(a.Player, Battle, 0);
+        Manager.PickSideInLobby(b.Player, Battle, 1);
+        await UntilRoundLive(match);
+        var rounds = match.GetBehavior<BattleRoundsEB>()!;
+        string uid = b.Player.PlayerUID;
+        var data = b.Player.WorldData;
+
+        Kill(b, a);
+        await World.Until(() => !match.IsActive(uid), "b out of the round", 100);
+        // The match ticks once a second, so in game the window is hit about one time in ten; ending the
+        // round by hand puts the intermission inside it every time.
+        Assert.False(match.Spectator.IsSpectating(uid), "precondition: b was seated before the round could end");
+        rounds.OnTick(0f);
+        Assert.False(rounds.RoundLive, "the round did not end with one team left");
+
+        await World.Ticks(15);
+        Assert.True(match.IsActive(uid) && b.Player.Entity.Alive, "b was not revived for the next round");
+        Assert.True(data.CurrentGameMode == EnumGameMode.Survival && !match.Spectator.IsSpectating(uid),
+            $"the late seating made b a spectator in the intermission (mode {data.CurrentGameMode})");
+        Assert.True(b.Player.GetModdata(SpectatorManager.ModDataKey) == null, "a saved game mode was left in ModData");
+
+        await World.Until(() => rounds.RoundLive, "the next round to start", 300);
+        Assert.True(data.CurrentGameMode == EnumGameMode.Survival, $"b plays round 2 as {data.CurrentGameMode}");
+        Assert.True(CountOf(b.Player, "game:spear-generic-steel") == 1, "b got no kit for round 2");
+        await a.ExecuteCommand("/eventadmin stop");
+    }
+
+    // B27 the other way round: only a RemoveSpectator calls the delayed seating off. A player still in play
+    // (a parkour finisher) is seated as before.
+    [AtlasScenario]
+    public async Task DelayedSeating_Should_BeCalledOff_Only_By_RemoveSpectator()
+    {
+        AddBattleArena(NewArea(), winsToWin: 3, roundSeconds: 120);
+        UseMutator(Battle, EventMutators.Loadout, "Spearman");
+        var (a, b) = await TwoFighters("btlpend");
+        var match = await StartBattleToLobby(a, b);
+        Manager.PickSideInLobby(a.Player, Battle, 0);
+        Manager.PickSideInLobby(b.Player, Battle, 1);
+        await UntilRoundLive(match);
+        var data = a.Player.WorldData;
+
+        match.Spectator.MakeSpectator(a.Player, match);
+        match.Spectator.RemoveSpectator(a.Player);
+        await World.Ticks(15);
+        Assert.True(data.CurrentGameMode == EnumGameMode.Survival && !match.Spectator.IsSpectating(a.Player.PlayerUID),
+            $"a seating called off by RemoveSpectator still ran (mode {data.CurrentGameMode})");
+
+        match.Spectator.MakeSpectator(a.Player, match);
+        await World.Until(() => data.CurrentGameMode == EnumGameMode.Spectator, "an active player to be seated", 100);
+
+        await a.ExecuteCommand("/eventadmin stop");
+        await World.Until(() => data.CurrentGameMode == EnumGameMode.Survival, "the game mode back after the match", 300);
+    }
+
+    // B28: the intermission's hop to the spawn came while the hop to the spectator seat was still in flight
+    // and was dropped, so the revived player started the round mid-arena. A hop now waits for the one in
+    // flight, and of two the newer one wins.
+    [AtlasScenario]
+    public async Task Teleport_Should_WaitForOneInFlight_And_NewestShouldWin()
+    {
+        var centre = AreaCentre(NewArea());
+        var east = centre.AddCopy(6, 2, 0);
+        var west = centre.AddCopy(-6, 2, 0);
+        ITestPlayer p = await JoinSurvivor("tpqueue");
+
+        EventTeleport.Send(World.Api, p.Player, east, 0.5, 0, 0.5, "test older");
+        EventTeleport.Send(World.Api, p.Player, west, 0.5, 0, 0.5, "test newer");
+        await World.Until(() => !p.Player.Entity.Teleporting && DistanceXZ(p.Position, west) <= 1.5, "the newer hop to land", 300);
+        await World.Ticks(30);
+        Assert.True(DistanceXZ(p.Position, west) <= 1.5, "the older hop landed after the newer one");
+
+        // As if the last landing were still loading on the client.
+        p.Player.Entity.Teleporting = true;
+        bool accepted = EventTeleport.Send(World.Api, p.Player, east, 0.5, 0, 0.5, "test waiting");
+        Assert.True(accepted, "a hop asked for while another is in flight was refused");
+        await World.Ticks(20);
+        Assert.True(DistanceXZ(p.Position, west) <= 1.5, "a hop went through while another was in flight");
+
+        p.Player.Entity.Teleporting = false;
+        await World.Until(() => DistanceXZ(p.Position, east) <= 1.5, "the waiting hop to land once the one in flight did", 300);
+    }
+
+    // B29: vanilla ignores a respawn key from someone alive but still raises PlayerRespawn for mods. A late
+    // click after the intermission had revived the player cleared the kit they were just given.
+    [AtlasScenario]
+    public async Task LateRespawnClick_Should_NotClearKit_Of_ALivingPlayer()
+    {
+        AddBattleArena(NewArea(), winsToWin: 3, roundSeconds: 120);
+        UseMutator(Battle, EventMutators.Loadout, "Spearman");
+        var (a, b) = await TwoFighters("btllate");
+        var match = await StartBattleToLobby(a, b);
+        Manager.PickSideInLobby(a.Player, Battle, 0);
+        Manager.PickSideInLobby(b.Player, Battle, 1);
+        await UntilRoundLive(match);
+        await World.Until(() => CountOf(a.Player, "game:spear-generic-steel") == 1, "a's kit", 100);
+
+        Assert.True(a.Player.Entity.Alive, "precondition: a must be alive");
+        Manager.OnRespawn(a.Player);
+        await World.Ticks(20);
+        Assert.True(CountOf(a.Player, "game:spear-generic-steel") == 1, "a respawn key from a living player cleared the kit");
         await a.ExecuteCommand("/eventadmin stop");
     }
 }

@@ -1,0 +1,140 @@
+{
+    "code": "waves",
+    "rated": false,
+    "EventType": "Waves",
+    "EventPlaceTypes": [ "WAVES" ],
+    "behaviors": [
+        { "name": "ArenaProtection", "attributes": {} },
+        {
+            "name": "ByPartsPartyCollected",
+            "attributes": {
+                "maxPartiesCount": 4,
+                "minPartiesCount": 1,
+                "maxPartySize": 4,
+                "minPartySize": 1
+            }
+        },
+        {
+            "name": "SavePlayerAttributes",
+            "attributes": { "spectateOnElimination": true }
+        },
+        {
+            "name": "TPThereAndBack",
+            "attributes": {}
+        },
+        {
+            "name": "Waves",
+            "attributes": {
+                "intermissionSeconds": 12,
+                "waveTimeLimitSeconds": 300,
+                "spawnIntervalSeconds": 0.6,
+                "maxAliveMobs": 24,
+                "healthPerPlayer": 0.25,
+                "damagePerWave": 0.1,
+                "mobSpread": 4,
+                "waves": [
+                    {
+                        "mobs": [
+                            { "code": "game:drifter-normal", "count": 4, "perPlayer": 2 }
+                        ]
+                    },
+                    {
+                        "mobs": [
+                            { "code": "game:drifter-normal", "count": 4, "perPlayer": 1 },
+                            { "code": "game:drifter-deep", "count": 2, "perPlayer": 1 }
+                        ]
+                    },
+                    {
+                        "name": "The pack",
+                        "mobs": [
+                            { "code": "game:wolf-eurasian-adult-male", "count": 3, "perPlayer": 1 },
+                            { "code": "game:drifter-deep", "count": 3 }
+                        ]
+                    },
+                    {
+                        "name": "Raiders",
+                        "mobs": [
+                            { "archetype": "brute", "count": 2, "perPlayer": 1 },
+                            { "archetype": "archer", "count": 2, "perPlayer": 1 },
+                            { "archetype": "skirmisher", "count": 1, "perPlayer": 1 }
+                        ]
+                    },
+                    {
+                        "mobs": [
+                            { "code": "game:bowtorn-surface", "count": 2, "perPlayer": 1 },
+                            { "code": "game:drifter-tainted", "count": 4, "perPlayer": 1 }
+                        ]
+                    },
+                    {
+                        "name": "The warlord",
+                        "timeLimitSeconds": 420,
+                        "mobs": [
+                            {
+                                "archetype": "boss",
+                                "count": 1,
+                                "healthMul": 6,
+                                "damageMul": 1.5,
+                                "outfit": [ "game:armor-head-scale-steel", "game:armor-body-chain-steel", "game:armor-legs-scale-steel" ]
+                            },
+                            { "archetype": "archer", "count": 2, "perPlayer": 1 },
+                            { "code": "game:drifter-corrupt", "count": 3, "perPlayer": 1 }
+                        ]
+                    }
+                ],
+                "loadoutSets": [
+                    {
+                        "name": "Spearman",
+                        "items": [
+                            {
+                                "id": "spear", "code": "game:spear-generic-copper", "quantity": 1,
+                                "upgrades": [
+                                    { "code": "game:spear-generic-iron", "cost": 4 },
+                                    { "code": "game:spear-generic-steel", "cost": 8 }
+                                ]
+                            },
+                            {
+                                "id": "body", "code": "game:armor-body-chain-copper", "quantity": 1,
+                                "upgrades": [
+                                    { "code": "game:armor-body-chain-iron", "cost": 4 },
+                                    { "code": "game:armor-body-plate-steel", "cost": 8 }
+                                ]
+                            },
+                            { "code": "game:bread-spelt-charred", "quantity": 12 }
+                        ]
+                    },
+                    {
+                        "name": "Archer",
+                        "items": [
+                            {
+                                "id": "bow", "code": "game:bow-simple", "quantity": 1,
+                                "upgrades": [
+                                    { "code": "game:bow-long", "cost": 5 },
+                                    { "code": "game:bow-recurve", "cost": 8 }
+                                ]
+                            },
+                            { "code": "game:arrow-copper", "quantity": 48 },
+                            { "code": "game:bread-amaranth-perfect", "quantity": 10 },
+                            { "code": "game:club-scrap-scrap", "quantity": 1 }
+                        ]
+                    }
+                ]
+            }
+        },
+        {
+            "name": "MatchShop",
+            "attributes": {
+                "startPoints": 6,
+                "pointsPerKill": 1,
+                "pointsPerRoundWin": 4,
+                "buyAnywhere": false,
+                "buyRadius": 6,
+                "items": [
+                    { "id": "poultice", "code": "game:poultice-linen-horsetail", "quantity": 2, "cost": 2, "maxBuys": 3 },
+                    { "id": "helmet", "code": "game:armor-head-scale-steel", "cost": 5 },
+                    { "id": "legs", "code": "game:armor-legs-scale-steel", "cost": 5 },
+                    { "id": "arrows", "code": "game:arrow-steel", "quantity": 32, "cost": 3, "maxBuys": 2, "kits": [ "Archer" ] }
+                ]
+            }
+        }
+    ]
+}

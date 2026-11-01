@@ -70,6 +70,12 @@ namespace canevents.src.EventManagers
         public ArenaBotManager Bots => bots ??= new ArenaBotManager(this);
         private ArenaBotManager bots;
 
+        public global::canevents.src.Mobs.MatchMobManager Mobs => mobs ??= new global::canevents.src.Mobs.MatchMobManager(this);
+        private global::canevents.src.Mobs.MatchMobManager mobs;
+
+        // Without creating a manager for matches that never had mobs.
+        public void DespawnMobs() => mobs?.DespawnAll();
+
         // HG truce. Players are held by damage hooks, bots check this flag.
         public bool CombatSuspended { get; set; }
 
@@ -472,6 +478,8 @@ namespace canevents.src.EventManagers
         {
             // An open match runs on with one team, or none.
             if (IsOpenMatch) return;
+            // Round and co-op modes end the match themselves; one side down is only a lost round there.
+            if (GetBehavior<EventManagers.eventBehavior.Shared.IDecidesOnDropout>() != null) return;
             if (ParticipantsByGroupsStillInEvent.Count > 1) return;
 
             RequestFinish(ParticipantsByGroupsStillInEvent.Count == 1

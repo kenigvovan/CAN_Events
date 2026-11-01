@@ -59,7 +59,11 @@ namespace canevents.src.EventManagers.eventBehavior
             // Snapshot here, not in OnBeforeStart: items dropped during the countdown would be duped.
             // A waiting room snapshots at teleport instead (SnapshotNow), so nothing can be dropped there.
             foreach (var player in runningEvent.ActiveOnlineParticipants)
+            {
                 if (!snapshotted.Contains(player.PlayerUID)) TakeSnapshot(player);
+                // Again for those from the waiting room: buffs cast there must not reach the fight.
+                else Compat.RpgClassesCompat.ResetCombat(player.Entity);
+            }
 
             // For deaths that bypass the damage pipeline (/kill, void). Fires inside Die() before the inventory drop.
             runningEvent.sapi.Event.OnEntityDeath += OnAnyEntityDeath;
@@ -111,6 +115,7 @@ namespace canevents.src.EventManagers.eventBehavior
             if (!KeepOwnGear) PlayerInventoryBackup.ClearInventory(player);
             // After Save, so the snapshot keeps the real saturation.
             Shared.EventBroadcaster.Feed(player);
+            Compat.RpgClassesCompat.ResetCombat(player.Entity);
             if (!KeepOwnGear) HookLethalDamage(player);
         }
 
@@ -121,8 +126,11 @@ namespace canevents.src.EventManagers.eventBehavior
 
             // Offline players are restored on reconnect (CANEventManager.RestoreEventBackup).
             foreach (var player in runningEvent.OnlineParticipants)
-                if (runningEvent.HoldsPlayer(player.PlayerUID))
-                    PlayerInventoryBackup.Restore(player, runningEvent.sapi);
+            {
+                if (!runningEvent.HoldsPlayer(player.PlayerUID)) continue;
+                PlayerInventoryBackup.Restore(player, runningEvent.sapi);
+                Compat.RpgClassesCompat.ResetCombat(player.Entity);
+            }
         }
 
         // From CANEventManager.TryReleaseEliminated: own inventory is back, stop the lethal-hit sweep.
@@ -153,6 +161,7 @@ namespace canevents.src.EventManagers.eventBehavior
         {
             Release(player.PlayerUID);
             if (!KeepOwnGear) PlayerInventoryBackup.Restore(player, runningEvent.sapi);
+            Compat.RpgClassesCompat.ResetCombat(player.Entity);
         }
 
         public override void OnParticipantDropped(string uid) => Release(uid);
@@ -203,6 +212,7 @@ namespace canevents.src.EventManagers.eventBehavior
                 PlayerInventoryBackup.ClearInventory(player);
             // Vanilla revive saturation is off via noSatietyRestoreOnRevive (CANEventManager.OnRespawn).
             Shared.EventBroadcaster.Feed(player);
+            if (runningEvent.IsActive(uid)) Compat.RpgClassesCompat.ResetCombat(player.Entity);
         }
 
         // Respawn hooks run in behavior (JSON) order.

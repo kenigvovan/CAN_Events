@@ -10,6 +10,10 @@
       <HintPath>..\..\..\..\AppData\Roaming\Vintagestory\Lib\cairo-sharp.dll</HintPath>
       <Private>False</Private>
     </Reference>
+    <Reference Include="Manifold">
+      <HintPath>$(USERPROFILE)\Downloads\Manifold-0.6.1 (1)\Manifold.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
     <Reference Include="canparty">
       <HintPath>..\..\libs\1.22\canparty.dll</HintPath>
       <Private>False</Private>

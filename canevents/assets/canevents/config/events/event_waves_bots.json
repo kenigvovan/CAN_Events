@@ -1,0 +1,93 @@
+{
+    "code": "waves_bots",
+    "rated": false,
+    "EventType": "Waves",
+    "EventPlaceTypes": [ "WAVES" ],
+    "reward": { "allowWithBots": "scaled" },
+    "behaviors": [
+        { "name": "ArenaProtection", "attributes": {} },
+        {
+            "name": "ByPartsPartyCollected",
+            "attributes": {
+                "maxPartiesCount": 4,
+                "minPartiesCount": 1,
+                "maxPartySize": 1,
+                "minPartySize": 1,
+                "botFillToParties": 3
+            }
+        },
+        {
+            "name": "SavePlayerAttributes",
+            "attributes": { "spectateOnElimination": true }
+        },
+        {
+            "name": "TPThereAndBack",
+            "attributes": {}
+        },
+        {
+            "name": "Waves",
+            "attributes": {
+                "intermissionSeconds": 12,
+                "waveTimeLimitSeconds": 300,
+                "spawnIntervalSeconds": 0.6,
+                "maxAliveMobs": 24,
+                "healthPerPlayer": 0.25,
+                "damagePerWave": 0.1,
+                "mobSpread": 4,
+                "waves": [
+                    {
+                        "mobs": [
+                            { "code": "game:drifter-normal", "count": 4, "perPlayer": 2 }
+                        ]
+                    },
+                    {
+                        "mobs": [
+                            { "code": "game:drifter-normal", "count": 4, "perPlayer": 1 },
+                            { "code": "game:drifter-deep", "count": 2, "perPlayer": 1 }
+                        ]
+                    },
+                    {
+                        "name": "The pack",
+                        "mobs": [
+                            { "code": "game:wolf-eurasian-adult-male", "count": 3, "perPlayer": 1 },
+                            { "code": "game:drifter-deep", "count": 3 }
+                        ]
+                    }
+                ],
+                "loadoutSets": [
+                    {
+                        "name": "Spearman",
+                        "items": [
+                            { "code": "game:spear-generic-steel", "quantity": 1 },
+                            { "code": "game:bread-spelt-charred", "quantity": 12 },
+                            { "code": "game:armor-head-scale-steel", "quantity": 1 },
+                            { "code": "game:armor-body-chain-steel", "quantity": 1 },
+                            { "code": "game:armor-legs-scale-steel", "quantity": 1 }
+                        ]
+                    }
+                ]
+            }
+        },
+        {
+            "name": "MatchShop",
+            "attributes": {
+                "startPoints": 6,
+                "pointsPerKill": 1,
+                "pointsPerRoundWin": 4,
+                "buyRadius": 6,
+                "items": [
+                    { "id": "poultice", "code": "game:poultice-linen-horsetail", "quantity": 2, "cost": 2, "maxBuys": 3 },
+                    { "id": "helmet", "code": "game:armor-head-scale-steel", "cost": 5 }
+                ]
+            }
+        },
+        {
+            "name": "ArenaBots",
+            "attributes": {
+                "health": 20,
+                "meleeDamage": 3,
+                "weapons": [ "game:spear-generic-steel" ]
+            }
+        }
+    ]
+}

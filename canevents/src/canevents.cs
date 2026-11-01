@@ -84,6 +84,9 @@ namespace canevents.src
             Vintagestory.GameContent.AiTaskRegistry.Register<Bots.AiTaskArenaBotSeek>("caneventsbotseek");
             Vintagestory.GameContent.AiTaskRegistry.Register<Bots.AiTaskArenaBotMelee>("caneventsbotmelee");
             Vintagestory.GameContent.AiTaskRegistry.Register<Bots.AiTaskArenaBotFlee>("caneventsbotflee");
+            Vintagestory.GameContent.AiTaskRegistry.Register<Mobs.Ai.AiTaskRaiderEngage>("caneventsraiderengage");
+            Vintagestory.GameContent.AiTaskRegistry.Register<Mobs.Ai.AiTaskRaiderMelee>("caneventsraidermelee");
+            Vintagestory.GameContent.AiTaskRegistry.Register<Mobs.Ai.AiTaskRaiderShoot>("caneventsraidershoot");
         }
 
         public override void AssetsLoaded(ICoreAPI api)
@@ -132,6 +135,7 @@ namespace canevents.src
                 _sapi.Event.PlayerRespawn    -= _onRespawn;
                 _sapi.Event.PlayerDisconnect -= _onDisconnect;
                 _sapi.Event.PlayerNowPlaying -= _onReconnect;
+                Compat.RpgClassesCompat.Remove(_sapi);
             }
             botCleanup?.Dispose();
             JoinPads?.Stop();

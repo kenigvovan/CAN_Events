@@ -9,6 +9,9 @@ namespace canevents.src.EventManagers.eventBehavior.Shared
         public int[] TeamScores;
         public int ZoneOwnerTeam = -1;
         public int TeamScoreLimit;
+        // null = no boss bar.
+        public string BossName;
+        public float BossHealth;
     }
 
     // RunningEvent resolves exactly one scorer per match (RunningEvent.Scorer).

@@ -167,6 +167,7 @@ namespace canevents.src.Bots
         {
             foreach (var entity in bodies.Values)
             {
+                BotTargeting.Forget(entity);
                 if (entity == null || entity.World == null) continue;
                 // Not Die(): auto-despawn is off (see Spawn), the corpse would stay forever.
                 runningEvent.sapi.World.DespawnEntity(entity, new EntityDespawnData { Reason = EnumDespawnReason.Removed });

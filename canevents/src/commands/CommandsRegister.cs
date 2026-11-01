@@ -20,6 +20,7 @@ namespace canevents.src.commands
             // /canparty is owned by the canparty mod; registering it here would throw
             // "Command with such name already exists" when both mods are installed.
             RegisterEventPlaceCommand(sapi, ci, parsers);
+            ArenaPackCommands.Register(sapi, parsers);
             RegisterArenaCommand(sapi, ci, parsers);
             RegisterAdminCommand(sapi, ci, parsers);
             TournamentCommands.Register(sapi, parsers);
@@ -196,6 +197,23 @@ namespace canevents.src.commands
                     .BeginSub("hglootlist")
                        .HandleWith(ci.HgLootList)
                        .WithDesc("List all Hunger Games loot spots on the place you're standing in.")
+                    .EndSub()
+                    .BeginSub("mobspawn")
+                       .HandleWith(ci.MobSpawnAdd)
+                       .WithArgs(parsers.OptionalWord("tag"))
+                       .WithDesc("Add a mob spawn point (block under your feet) with an optional tag for wave lines.")
+                    .EndSub()
+                    .BeginSub("mobspawnremove")
+                       .HandleWith(ci.MobSpawnRemove)
+                       .WithDesc("Remove the mob spawn point under your feet.")
+                    .EndSub()
+                    .BeginSub("mobspawnclear")
+                       .HandleWith(ci.MobSpawnClear)
+                       .WithDesc("Clear all mob spawn points on the place you're standing in.")
+                    .EndSub()
+                    .BeginSub("mobspawnlist")
+                       .HandleWith(ci.MobSpawnList)
+                       .WithDesc("List all mob spawn points on the place you're standing in.")
                     .EndSub()
                     .BeginSub("mmpickup")
                        .HandleWith(ci.MmPickupAdd)

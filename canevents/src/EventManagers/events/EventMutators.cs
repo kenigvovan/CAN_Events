@@ -30,6 +30,11 @@ namespace canevents.src.EventManagers.events
         // Non-persistent stat, so a crash or relog drops it.
         public const string Speed = "speed";
 
+        // Match mobs (MobLines): "horde:2" doubles the counts, elite toughens one in five, nightmare all of them.
+        public const string Horde = "horde";
+        public const string Elite = "elite";
+        public const string Nightmare = "nightmare";
+
         public enum ValueKind
         {
             None,
@@ -56,6 +61,9 @@ namespace canevents.src.EventManagers.events
             new MutatorSpec { Key = Loadout,       Kind = ValueKind.Text },
             new MutatorSpec { Key = Health,        Kind = ValueKind.Number, Min = 0.1f, Max = 1f },
             new MutatorSpec { Key = Speed,         Kind = ValueKind.Number, Min = 0.5f, Max = 2f },
+            new MutatorSpec { Key = Horde,         Kind = ValueKind.Number, Min = 0.5f, Max = 4f },
+            new MutatorSpec { Key = Elite,         Kind = ValueKind.None },
+            new MutatorSpec { Key = Nightmare,     Kind = ValueKind.None },
         };
 
         public static MutatorSpec SpecOf(string key)
@@ -124,6 +132,8 @@ namespace canevents.src.EventManagers.events
                     return Lang.Get("canevents:mutator-speed", value ?? "1");
                 case Loadout:
                     return Lang.Get("canevents:mutator-loadout", value ?? "?");
+                case Horde:
+                    return Lang.Get("canevents:mutator-horde", value ?? "1");
                 default:
                     // Unknown key (client/server version mismatch): show it raw.
                     return SpecOf(key) != null ? Lang.Get("canevents:mutator-" + key) : key;

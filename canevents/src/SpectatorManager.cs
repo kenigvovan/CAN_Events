@@ -45,6 +45,9 @@ namespace canevents.src
         // Online players only, by uid.
         private Dictionary<string, SpectatorSeat> seats = new Dictionary<string, SpectatorSeat>();
 
+        // MakeSpectator's delayed seating not yet run.
+        private readonly HashSet<string> pendingSeats = new HashSet<string>();
+
         private class SpectatorSeat
         {
             public BlockPos Anchor;
@@ -67,11 +70,14 @@ namespace canevents.src
         public void MakeSpectator(IServerPlayer player, RunningEvent runningEvent)
         {
             SaveOriginalWorldData(player);
+            pendingSeats.Add(player.PlayerUID);
 
             // Delayed so revive runs after the engine's death broadcast (we're inside
             // TriggerPlayerDeath). Respawn or FinishEvent may get here first.
             sapi.Event.RegisterCallback((float dt) =>
             {
+                // Gone: a RemoveSpectator in between (next round already started) called it off.
+                if (!pendingSeats.Remove(player.PlayerUID)) return;
                 if (runningEvent.EventState == EventState.Finished) return;
 
                 if (seats.ContainsKey(player.PlayerUID)) return;
@@ -108,6 +114,8 @@ namespace canevents.src
             // Downed won't clear its crawl/immobile/drag-seat state for us, and the engine skips
             // body-metrics updates in Spectator mode.
             DownedCompat.Clear(player);
+            // Out of the fight: no aura on teammates below, no pet, totem or trap fighting on.
+            if (role == SpectatorRole.Eliminated) RpgClassesCompat.ResetCombat(player.Entity);
 
             player.WorldData.CurrentGameMode = EnumGameMode.Spectator;
             // Without FreeMove a spectator can't move at all (no gravity in Spectator). Mounting resets it.
@@ -182,6 +190,7 @@ namespace canevents.src
         public void RemoveSpectator(IServerPlayer player)
         {
             if (player == null) return;
+            pendingSeats.Remove(player.PlayerUID);
 
             bool wasObserver = seats.TryGetValue(player.PlayerUID, out var seat)
                 && seat.Role == SpectatorRole.Observer;
@@ -310,6 +319,7 @@ namespace canevents.src
         public void OnSpectatorDisconnect(string playerUid)
         {
             seats.Remove(playerUid);
+            pendingSeats.Remove(playerUid);
         }
 
         public bool IsSpectating(string playerUid)

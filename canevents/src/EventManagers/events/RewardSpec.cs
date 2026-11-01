@@ -36,5 +36,24 @@ namespace canevents.src.EventManagers.events
         [JsonProperty] public bool? Participation { get; set; }
 
         [JsonProperty] public List<RewardItem> ParticipationItems { get; set; }
+
+        // Bots on the roster: "none" (default) pays nothing, "scaled" pays the human share of the lobby,
+        // "full" pays as usual. Meant for co-op modes where bots fill a party; PvP bot fill stays "none".
+        [JsonProperty] public string AllowWithBots { get; set; }
+    }
+
+    public enum BotRewardMode { None, Scaled, Full }
+
+    public static class BotRewardModes
+    {
+        public static BotRewardMode Of(RewardSpec spec)
+        {
+            switch (spec?.AllowWithBots?.Trim().ToLowerInvariant())
+            {
+                case "scaled": return BotRewardMode.Scaled;
+                case "full": return BotRewardMode.Full;
+                default: return BotRewardMode.None;
+            }
+        }
     }
 }

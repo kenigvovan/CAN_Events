@@ -37,7 +37,9 @@ namespace canevents.src.Gui.Native
         // Shape of the current composition.
         private int composedScoreRows = -1;
         private int composedFeedRows = -1;
-        private bool composedZone, composedTimer, composedCountdown;
+        private bool composedZone, composedTimer, composedCountdown, composedBoss;
+        // Last percent drawn on the boss bar; same once-per-change rule as barSecond.
+        private int bossPercent = -1;
         private int composedFrameW, composedFrameH;
 
         // Colours are baked into the composed font/statbar, so a colour change is a shape change.
@@ -156,6 +158,7 @@ namespace canevents.src.Gui.Native
             return wantCountdown != composedCountdown
                 || wantTimer != composedTimer
                 || wantZone != composedZone
+                || WantBoss() != composedBoss
                 || scoreRows != composedScoreRows
                 || feedRows != composedFeedRows
                 || IsUrgent() != composedUrgent
@@ -171,6 +174,8 @@ namespace canevents.src.Gui.Native
             composedCountdown = WantCountdown(state);
             composedTimer = state?.EventState != EventState.LocationFound;
             composedZone = networkHandler.HgZone?.Active == true;
+            composedBoss = WantBoss();
+            bossPercent = -1;
             composedScoreRows = networkHandler.CurrentScoreboard?.Entries?.Length ?? 0;
             composedFeedRows = Math.Min(MaxFeedRows, networkHandler.KillFeed?.Count ?? 0);
             composedUrgent = IsUrgent();
@@ -187,6 +192,7 @@ namespace canevents.src.Gui.Native
             if (composedCountdown) ComposeCountdown();
             if (composedTimer) ComposeTimer();
             if (composedZone) ComposeZone();
+            if (composedBoss) ComposeBoss();
             if (composedScoreRows > 0) ComposeScoreboard();
             if (composedFeedRows > 0) ComposeKillFeed();
         }
@@ -256,6 +262,43 @@ namespace canevents.src.Gui.Native
                     .AddDynamicText("", nextFont, ElementBounds.Fixed(8, 26, w - 16, 18), "next")
                 .EndChildElements()
                 .Compose();
+        }
+
+        private bool WantBoss() => !string.IsNullOrEmpty(networkHandler.CurrentScoreboard?.BossName);
+
+        // Under the timer, where the storm panel would sit; the two never share a mode.
+        private void ComposeBoss()
+        {
+            const double w = 360, h = 44;
+            double screenW = capi.Render.FrameWidth / RuntimeEnv.GUIScale;
+            var bounds = PanelBounds(null, w, h, screenW / 2 - w / 2, 70);
+            var bg = ElementBounds.Fixed(0, 0, w, h);
+
+            var nameFont = CairoFont.WhiteSmallText().WithColor(Palette.Title).WithOrientation(EnumTextOrientation.Center);
+
+            Composers["boss"] = capi.Gui
+                .CreateCompo("canevents-hud-boss", bounds)
+                .AddGameOverlay(bg, Palette.HudBg)
+                .BeginChildElements(bg)
+                    .AddDynamicText("", nameFont, ElementBounds.Fixed(10, 4, w - 20, 18), "name")
+                    .AddStatbar(ElementBounds.Fixed(10, 26, w - 20, 10), Palette.Stop, "hp")
+                .EndChildElements()
+                .Compose();
+        }
+
+        private void UpdateBossTexts()
+        {
+            var scoreboard = networkHandler.CurrentScoreboard;
+            if (scoreboard == null) return;
+            var compo = Composers["boss"];
+            int percent = (int)Math.Ceiling(GameMath.Clamp(scoreboard.BossHealth, 0f, 1f) * 100);
+            compo.GetDynamicText("name").SetNewText(scoreboard.BossName + "  " + percent + "%");
+
+            var bar = compo.GetStatbar("hp");
+            if (bar == null || percent == bossPercent) return;
+            bossPercent = percent;
+            bar.SetLineInterval(10);
+            bar.SetValues(percent, 0, 100);
         }
 
         private void ComposeScoreboard()
@@ -437,6 +480,7 @@ namespace canevents.src.Gui.Native
             }
 
             if (composedZone && Composers.ContainsKey("zone")) UpdateZoneTexts();
+            if (composedBoss && Composers.ContainsKey("boss")) UpdateBossTexts();
             if (composedScoreRows > 0 && Composers.ContainsKey("score")) UpdateScoreTexts();
             if (composedFeedRows > 0 && Composers.ContainsKey("feed")) UpdateFeedTexts();
         }

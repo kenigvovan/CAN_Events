@@ -205,6 +205,11 @@ namespace canevents.src.EventManagers.eventBehavior
             hold?.End();
             runningEvent.CombatSuspended = false;
 
+            // At the round start, not the intermission's: the truce only stops damage, so a stun or debuff
+            // cast during the countdown would otherwise open the round.
+            foreach (var uid in runningEvent.ParticipantsBefore)
+                if (runningEvent.IsActive(uid)) Compat.RpgClassesCompat.ResetCombat(runningEvent.BodyOf(uid));
+
             foreach (var player in runningEvent.ActiveOnlineParticipants)
             {
                 // Anything bought during the intermission is in the inventory by now.

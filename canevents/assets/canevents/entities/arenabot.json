@@ -114,6 +114,7 @@
 				triggeredBy: { onControls: ["Idle"], matchExact: true, defaultAnim: true }
 			},
 			{ code: "hit", animation: "hit", animationSpeed: 1.4, weight: 10, blendMode: "AddAverage" },
+			{ code: "bowaim", animation: "bowaim", animationSpeed: 1, weight: 10, blendMode: "AddAverage" },
 			{ code: "swordhit", animation: "swordhit", animationSpeed: 1.2, weight: 10, blendMode: "AddAverage" },
 			{ code: "hurt", animation: "hurt", animationSpeed: 1.4, weight: 10, blendMode: "AddAverage" },
 			// Triggered by the Dead control, the same way every vanilla creature does it. With an
@@ -170,16 +171,24 @@
 						animationSpeed: 1.4
 					},
 					{
-						code: "caneventsbotseek",
-						// Matched against the entity code PATH only - the engine never sees the
-						// domain here, so "canevents:arenabot" would never match and bots would
-						// only ever attack players.
-						entityCodes: ["player", "arenabot"],
+						// Bow-armed bots only (archer profile, set from the weapon at spawn).
+						code: "caneventsraidershoot",
+						priority: 2.2,
+						drawMs: 1100,
+						projectile: "game:arrow-copper",
+						projectileDamage: 3,
+						projectileSpeed: 32,
+						spreadDeg: 4,
+						mincooldown: 1300,
+						maxcooldown: 2300,
+						animation: "bowaim"
+					},
+					{
+						// Movement shared with the raiders: closes in, steps back after a hit,
+						// an archer keeps its distance and sidesteps. Target from BotTargeting.
+						code: "caneventsraiderengage",
 						priority: 1.5,
-						mincooldown: 200,
-						maxcooldown: 400,
 						movespeed: 0.025,
-						seekingRange: 30,
 						animation: "sprint",
 						animationSpeed: 1
 					},

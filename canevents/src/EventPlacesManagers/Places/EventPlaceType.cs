@@ -23,13 +23,14 @@ namespace canevents.src.EventPlacesManagers.Places
         public const string MurderMystery = "MURDERMYSTERY";
         public const string Battle = "BATTLE";
         public const string OpenDeathmatch = "TDMOPEN";
+        public const string Waves = "WAVES";
 
         // Appended, never reordered: LegacyOrdinals below maps old numeric tags by position.
         public static readonly string[] Known =
         {
             Arena1x1, Arena2x2, Arena3x3, Arena5x5, Ffa,
             Spleef, Parkour, Deathmatch, Koth, HungerGames, Ctf, MurderMystery,
-            Battle, OpenDeathmatch
+            Battle, OpenDeathmatch, Waves
         };
 
         public static string Normalize(string tag) => tag?.Trim().ToUpperInvariant();

@@ -1,0 +1,72 @@
+{
+    "code": "waves_rpg",
+    "enabled": false,
+    "rated": false,
+    "EventType": "Waves",
+    "EventPlaceTypes": [ "WAVES" ],
+    "behaviors": [
+        { "name": "ArenaProtection", "attributes": {} },
+        {
+            "name": "ByPartsPartyCollected",
+            "attributes": {
+                "maxPartiesCount": 4,
+                "minPartiesCount": 1,
+                "maxPartySize": 4,
+                "minPartySize": 1
+            }
+        },
+        {
+            "name": "SavePlayerAttributes",
+            "attributes": { "spectateOnElimination": true }
+        },
+        {
+            "name": "TPThereAndBack",
+            "attributes": {}
+        },
+        {
+            "name": "Waves",
+            "attributes": {
+                "comment": "Needs canrpgmobs. Lines with rpg/rpgGroup are skipped without it; raider lines always work.",
+                "intermissionSeconds": 12,
+                "waveTimeLimitSeconds": 300,
+                "maxAliveMobs": 20,
+                "healthPerPlayer": 0.25,
+                "damagePerWave": 0.1,
+                "waves": [
+                    {
+                        "mobs": [
+                            { "rpg": "goblin|brute", "count": 3, "perPlayer": 1, "level": 2 },
+                            { "rpg": "goblin|shaman", "count": 1, "level": 2 }
+                        ]
+                    },
+                    {
+                        "mobs": [
+                            { "rpgGroup": "goblin_patrol", "count": 1, "perPlayer": 1 },
+                            { "archetype": "archer", "count": 2 }
+                        ]
+                    },
+                    {
+                        "name": "The warchief",
+                        "timeLimitSeconds": 420,
+                        "mobs": [
+                            { "rpg": "goblin_warchief", "count": 1, "tier": "boss" },
+                            { "rpg": "goblin|shaman", "count": 1, "perPlayer": 1, "level": 3 }
+                        ]
+                    }
+                ],
+                "loadoutSets": [
+                    {
+                        "name": "Spearman",
+                        "items": [
+                            { "code": "game:spear-generic-steel", "quantity": 1 },
+                            { "code": "game:bread-spelt-charred", "quantity": 12 },
+                            { "code": "game:armor-head-scale-steel", "quantity": 1 },
+                            { "code": "game:armor-body-chain-steel", "quantity": 1 },
+                            { "code": "game:armor-legs-scale-steel", "quantity": 1 }
+                        ]
+                    }
+                ]
+            }
+        }
+    ]
+}
